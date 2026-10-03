@@ -1,0 +1,8 @@
+schema: spec-driven
+
+context: |
+  萬星（Wanxing）：Agent 服务的对外运行与服务平台，自 paas 分阶段独立的本产品仓。
+  领域语言见根 CONTEXT.md（机群/萬星平面/借用契约）；产品定位见 docs/adr/0001；
+  推进伞见 docs/program/wanxing-independence.md。
+  惯例沿用母仓 paas：中文优先、proposal 短小带 Non-goals、tasks 按可验收绿点切。
+  借用契约（謙面 registry / packs internal API / sub2api）只经 HTTP + env 可重指。
