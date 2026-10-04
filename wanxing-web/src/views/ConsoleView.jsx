@@ -127,33 +127,71 @@ export function ConsoleView() {
       .catch((e) => setAlNote(String(e?.message || e)));
   };
 
+  const loginLogto = () => {
+    fetch("/api/wanxing/v1/console/auth/config")
+      .then(async (r) => {
+        if (!r.ok) throw new Error("identity not configured on this deployment");
+        return r.json();
+      })
+      .then(({ endpoint, app_id }) => {
+        const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(48))))
+          .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        sessionStorage.setItem("wx-pkce-verifier", verifier);
+        crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)).then((dig) => {
+          const challenge = btoa(String.fromCharCode(...new Uint8Array(dig)))
+            .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+          const state = String(Math.random()).slice(2, 10);
+          sessionStorage.setItem("wx-pkce-state", state);
+          const u = new URL(endpoint + "/oidc/auth");
+          u.searchParams.set("client_id", app_id);
+          u.searchParams.set("redirect_uri", window.location.origin + "/console-callback");
+          u.searchParams.set("response_type", "code");
+          u.searchParams.set("scope", "openid email profile");
+          u.searchParams.set("state", state);
+          u.searchParams.set("code_challenge", challenge);
+          u.searchParams.set("code_challenge_method", "S256");
+          window.location.href = u.toString();
+        });
+      })
+      .catch((e) => alert(String(e?.message || e)));
+  };
+  const email = localStorage.getItem("wanxing-console-email");
+
   if (!token) {
     return (
-      <div className="max-w-sm mx-auto mt-16 space-y-3">
+      <div className="max-w-sm mx-auto mt-16 space-y-4">
         <h1 className="text-xl font-semibold">部署者控制台</h1>
-        <p className="text-sm text-slate-500">输入萬星服务凭据（观测面 token）以继续。</p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            localStorage.setItem(TOKEN_KEY, draft);
-            setToken(draft);
-          }}
-          className="space-y-3"
+        <button
+          onClick={loginLogto}
+          className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm"
         >
-          <input
-            type="password"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="service token"
-            className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
-          />
-          <button className="w-full px-3 py-2 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm">
-            进入
-          </button>
-        </form>
+          使用寻数账号登录（Logto）
+        </button>
+        <details className="text-xs text-slate-500">
+          <summary className="cursor-pointer select-none">运维通道：服务凭据</summary>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              localStorage.setItem(TOKEN_KEY, draft);
+              localStorage.removeItem("wanxing-console-email");
+              setToken(draft);
+            }}
+            className="space-y-3 pt-2"
+          >
+            <input
+              type="password"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="service token"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+            />
+            <button className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm">进入</button>
+          </form>
+        </details>
       </div>
     );
   }
+
 
   const states = board?.states ?? {};
   const runners = Object.entries(board?.runners ?? {});
@@ -166,7 +204,7 @@ export function ConsoleView() {
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-semibold">机群总览</h1>
         <span className="text-xs text-slate-400">
-          {board ? `${board.window ?? "24h"} 窗口 · 30s 自动刷新` : ""}
+          {email ? `${email} · ` : ""}{board ? `${board.window ?? "24h"} 窗口 · 30s 自动刷新` : ""}
         </span>
         <button
           onClick={() => {

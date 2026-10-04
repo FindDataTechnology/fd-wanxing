@@ -13,7 +13,8 @@ import express from "express";
 const ok = (res, body) => res.status(200).json(body);
 
 export function registerConsoleRoutes(app, {
-  requireToken, // () => boolean gate (bearer check done by caller's helper)
+  requireToken, // (req) => boolean service-token gate
+  logtoAuth = null, // createLogtoAuth() — the identity gate (⑤ increment 2)
   bookkeeping, // { rows(), resolve(slug) } — the snapshot cache
   store, // wanxing store (allowlist*)
   sub2api, // client or null
@@ -49,8 +50,41 @@ export function registerConsoleRoutes(app, {
     return { agentPath, paused: paused === true };
   };
 
+  // Dual gate: the ops service token, or a verified Logto identity (email
+  // allowlist, fail-closed — see logto-auth.js).
+  const gate = async (req, res) => {
+    if (requireToken(req)) return true;
+    const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const ident = logtoAuth ? await logtoAuth.verifyIdToken(token) : null;
+    if (ident) {
+      req.consoleIdentity = ident;
+      return true;
+    }
+    res.status(401).json({ error: "console credential or verified identity required" });
+    return false;
+  };
+
+  // PKCE exchange proxy: the static face cannot call the tenant token
+  // endpoint cross-origin; the facade exchanges and returns the verified
+  // identity bound to the ID token.
+  if (logtoAuth?.configured) {
+    app.post("/api/wanxing/v1/console/auth/exchange", express.json({ limit: "4kb" }), async (req, res) => {
+      const { code, verifier, redirect_uri: redirectUri } = req.body ?? {};
+      if (!code || !verifier || !redirectUri) return res.status(400).json({ error: "code, verifier, redirect_uri required" });
+      try {
+        const out = await logtoAuth.exchangeCode({ code, verifier, redirectUri });
+        res.json(out);
+      } catch (e) {
+        res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: String(e?.message || e) });
+      }
+    });
+    app.get("/api/wanxing/v1/console/auth/config", (_req, res) => {
+      res.json({ configured: true, app_id: logtoAuth.appId, endpoint: logtoAuth.endpoint });
+    });
+  }
+
   app.get("/api/wanxing/v1/console/deployments", async (req, res) => {
-    if (!requireToken(req)) return res.status(401).json({ error: "console credential required" });
+    if (!(await gate(req, res))) return;
     let rows;
     try {
       rows = await bookkeeping.rows();
@@ -82,7 +116,7 @@ export function registerConsoleRoutes(app, {
   });
 
   const pauseAction = (paused) => async (req, res) => {
-    if (!requireToken(req)) return res.status(401).json({ error: "console credential required" });
+    if (!(await gate(req, res))) return;
     const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
     if (!row) return res.status(404).json({ error: "deployment not found" });
     try {
@@ -97,12 +131,12 @@ export function registerConsoleRoutes(app, {
   app.post("/api/wanxing/v1/console/deployments/:slug/resume", pauseAction(false));
 
   app.get("/api/wanxing/v1/console/deployments/:slug/callers", async (req, res) => {
-    if (!requireToken(req)) return res.status(401).json({ error: "console credential required" });
+    if (!(await gate(req, res))) return;
     return ok(res, { callers: store.allowlistList(req.params.slug) });
   });
 
   app.post("/api/wanxing/v1/console/deployments/:slug/callers", express.json({ limit: "16kb" }), async (req, res) => {
-    if (!requireToken(req)) return res.status(401).json({ error: "console credential required" });
+    if (!(await gate(req, res))) return;
     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
     if (!email || !/^[^@\s]+@[^@\s]+$/.test(email)) return res.status(400).json({ error: "email required" });
     if (!sub2api || sub2api.degraded()) return res.status(503).json({ error: "billing plane not configured — allowlists are inactive" });
@@ -123,7 +157,7 @@ export function registerConsoleRoutes(app, {
   });
 
   app.delete("/api/wanxing/v1/console/deployments/:slug/callers", express.json({ limit: "16kb" }), async (req, res) => {
-    if (!requireToken(req)) return res.status(401).json({ error: "console credential required" });
+    if (!(await gate(req, res))) return;
     const userId = Number(req.body?.userId ?? req.query?.userId);
     if (!Number.isInteger(userId)) return res.status(400).json({ error: "userId required" });
     store.allowlistRemove(req.params.slug, userId);

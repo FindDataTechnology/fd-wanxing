@@ -18,6 +18,7 @@ import { createA2aFace } from "./a2a.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
+import { createLogtoAuth } from "./logto-auth.js";
 import { createSub2apiClient } from "./lib/sub2api-admin.js";
 
 export function registerWanxingRoutes(app, {
@@ -119,11 +120,18 @@ export function registerWanxingRoutes(app, {
   // console credential is the ingest token the web face already holds; the
   // Logto identity increment replaces the gate, not the routes.
   const consoleToken = () => env.FLEET_OBSERVER_TOKEN || env.WANXING_CONSOLE_TOKEN || "";
+  const logtoAuth = createLogtoAuth({
+    endpoint: env.WANXING_LOGTO_ENDPOINT || "",
+    appId: env.WANXING_LOGTO_APP_ID || "",
+    allowlist: env.WANXING_CONSOLE_ALLOWLIST || "",
+    fetchImpl: fetchImpl ?? undefined,
+  });
   registerConsoleRoutes(app, {
     requireToken: (req) => {
       const t = consoleToken();
       return Boolean(t) && req.headers.authorization === `Bearer ${t}`;
     },
+    logtoAuth,
     bookkeeping,
     store,
     sub2api,
