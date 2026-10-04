@@ -1,0 +1,65 @@
+# fd-wanxing 部署清单（add-facade-extraction 4.1）
+#
+# 切换 runbook 见 change design 与 deploy/README.md。镜像 tag 以 GitOps 落子时
+# 替换 IMAGE_TAG 占位。凭据一律显式 secretKeyRef（envFrom 静默跳破折号键前科）。
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fleet-observer-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-observer
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fleet-observer }
+  template:
+    metadata:
+      labels: { app: fleet-observer }
+    spec:
+      containers:
+        - name: observer
+          image: ccr.ccs.tencentyun.com/yizuo/fleet-observer:IMAGE_TAG
+          ports: [{ containerPort: 3200 }]
+          env:
+            - name: FLEET_PORT
+              value: "3200"
+            - name: FLEET_DATA_ROOT
+              value: /data
+            - name: FLEET_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef: { name: wanxing-fleet, key: ingest_token }
+            # 台账合成源：謙面 registry（借用契约）
+            - name: FLEET_REGISTRY_URL
+              valueFrom:
+                secretKeyRef: { name: wanxing-fleet, key: registry_url }
+            - name: FLEET_REGISTRY_TOKEN
+              valueFrom:
+                secretKeyRef: { name: wanxing-fleet, key: registry_token }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3200 }
+            initialDelaySeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: fleet-observer-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-observer
+spec:
+  selector: { app: fleet-observer }
+  ports: [{ port: 3200, targetPort: 3200 }]
