@@ -16,6 +16,13 @@ export function ConsoleView() {
   const [agent, setAgent] = useState("");
   const [timeline, setTimeline] = useState(null);
   const [tlErr, setTlErr] = useState(null);
+  // Management (⑤ increment 1): deployments + per-agent allowlist.
+  const [deps, setDeps] = useState(null);
+  const [depErr, setDepErr] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [callers, setCallers] = useState(null);
+  const [newEmail, setNewEmail] = useState("");
+  const [alNote, setAlNote] = useState("");
 
   useEffect(() => {
     if (!token) return;
@@ -53,6 +60,72 @@ export function ConsoleView() {
       live = false;
     };
   }, [token, agent]);
+
+  const loadDeps = () =>
+    fetch("/api/wanxing/v1/console/deployments", { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`deployments HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => (setDeps(d), setDepErr(null)))
+      .catch((e) => setDepErr(String(e?.message || e)));
+  useEffect(() => {
+    if (!token) return;
+    loadDeps();
+    const t = setInterval(loadDeps, 60_000);
+    return () => clearInterval(t);
+  }, [token]);
+
+  const manage = (slug, action) => {
+    setBusy(`${slug}:${action}`);
+    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/${action}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${action} HTTP ${r.status}`);
+        loadDeps();
+      })
+      .catch((e) => setDepErr(String(e?.message || e)))
+      .finally(() => setBusy(""));
+  };
+
+  const loadCallers = (slug) => {
+    setAlNote("");
+    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`callers HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => setCallers({ slug, list: d.callers ?? [] }))
+      .catch((e) => setAlNote(String(e?.message || e)));
+  };
+  const addCaller = (slug) => {
+    setAlNote("");
+    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: newEmail }),
+    })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+        setNewEmail("");
+        loadCallers(slug);
+      })
+      .catch((e) => setAlNote(String(e?.message || e)));
+  };
+  const removeCaller = (slug, userId) => {
+    setAlNote("");
+    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers?userId=${userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(() => loadCallers(slug))
+      .catch((e) => setAlNote(String(e?.message || e)));
+  };
 
   if (!token) {
     return (
@@ -188,6 +261,70 @@ export function ConsoleView() {
             ))}
           </div>
         )}
+      <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+        <h2 className="font-semibold">管理 · 部署</h2>
+        {depErr && <div className="text-sm text-amber-600 dark:text-amber-400">部署面读取失败（{depErr}）</div>}
+        {deps && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left border-b border-slate-200 dark:border-slate-800">
+                  <th className="py-2 px-3">agent</th><th className="px-3">名称</th><th className="px-3">可见</th><th className="px-3">状态</th><th className="px-3 text-right">动作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(deps.deployments ?? []).map((d) => (
+                  <tr key={d.slug} className="border-b border-slate-100 dark:border-slate-900">
+                    <td className="py-1.5 px-3 font-mono">{d.slug}</td>
+                    <td className="px-3">{d.name ?? "—"}</td>
+                    <td className="px-3">{d.visibility ?? "?"}</td>
+                    <td className="px-3">{d.paused ? <span className="text-amber-600 dark:text-amber-400">已暂停</span> : <span className="text-emerald-600 dark:text-emerald-400">运行中</span>}</td>
+                    <td className="px-3 text-right space-x-2 whitespace-nowrap">
+                      <button
+                        disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
+                        onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
+                        className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-40"
+                      >
+                        {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
+                      </button>
+                      <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">允许清单</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {callers && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
+            <div className="font-mono text-xs">允许清单 · {callers.slug}（私有 agent 的调用者）</div>
+            {callers.list.length === 0 && <div className="text-xs text-slate-500">空——私有 agent 目前无人可调</div>}
+            {callers.list.map((c) => (
+              <div key={c.userId} className="flex items-center gap-3 text-xs">
+                <span className="font-mono">{c.userId}</span>
+                <span>{c.email}</span>
+                <button onClick={() => removeCaller(callers.slug, c.userId)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">移除</button>
+              </div>
+            ))}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                addCaller(callers.slug);
+              }}
+              className="flex gap-2"
+            >
+              <input
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="调用者邮箱（须已在计费面板登录过一次）"
+                className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+              />
+              <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
+            </form>
+            {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
+          </div>
+        )}
+      </div>
       </div>
     </div>
   );
