@@ -12,5 +12,9 @@
   特性卡/工作原理/样例/footer 线页链接）、目录挪 `#/catalog` 且降级语义不变、
   文档视图样例单源等价渲染、控制台无回归（证据：gui-test-screenshots/t1-t3）；
   验证环境=本地 `vite preview`（无 facade，目录视图按 spec 显式降级，非缺陷）
-- [ ] 5. 部署验收：镜像滚动后探针——壳 title + 构建产物 JS 关键词断言
-  （定位句/四 tab 标签/线页链接）
+- [x] 5. 部署验收（2026-10-05）：commit `84fa8d1` → GHA images run
+  37228709932 绿 → tcr-relay 03:39:03 回灌 ccr（sha-84fa8d1）→ GitOps
+  `eca22fa` bump → ArgoCD hard refresh → rollout 成功 → 线上探针：
+  wanxing.finddatatech.cloud 壳 title 不变、新 bundle `index-Bu-Z6V7n.js`
+  含「Agent 服务的对外运行与服务平台/部署 · 驻留 · 门面 · 计费与机群观测/
+  浏览已上线的公开 Agent 服务」——介绍视图 LIVE
