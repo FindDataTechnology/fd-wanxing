@@ -58,7 +58,12 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
       if (payload.aud !== appId) return null;
       if (Number(payload.exp) * 1000 <= now()) return null;
       const email = String(payload.email ?? "").toLowerCase();
-      if (!email || !allowed.has(email)) return null;
+      if (!email || !allowed.has(email)) {
+        // Refusals carry what was seen — the operator must be able to tell a
+        // mis-allowlist from a claim-less token (live finding: admin-tenant
+        // sessions issue username-only tokens).
+        throw Object.assign(new Error(`identity refused: email=${email || "(none)"} sub=${payload.sub ?? "?"} allowlist=${[...allowed].join("|")}`), { status: 403, diag: { email: email || null, sub: payload.sub ?? null } });
+      }
       return { email, sub: payload.sub };
     } catch {
       return null;
