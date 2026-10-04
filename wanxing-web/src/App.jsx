@@ -1,11 +1,13 @@
-// Three hash-routed views (catalog / docs / console) — deliberately no router
-// dependency: the face is three pages, not an app tree.
+// Four hash-routed views (intro / catalog / docs / console) — deliberately no
+// router dependency: the face is four pages, not an app tree. The intro is
+// the default landing (`#/`); the catalog lives at `#/catalog`.
 import { useEffect, useState } from "react";
+import { IntroView } from "./views/IntroView.jsx";
 import { CatalogView } from "./views/CatalogView.jsx";
 import { DocsView } from "./views/DocsView.jsx";
 import { ConsoleView } from "./views/ConsoleView.jsx";
 
-const VIEWS = { "#/": CatalogView, "#/docs": DocsView, "#/console": ConsoleView };
+const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView };
 
 export function App() {
   const [hash, setHash] = useState(window.location.hash || "#/");
@@ -14,12 +16,12 @@ export function App() {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  const View = VIEWS[hash] ?? CatalogView;
+  const View = VIEWS[hash] ?? IntroView;
   const tab = (h, label) => (
     <a
       href={h}
       className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
-        (hash === h || (h === "#/" && !VIEWS[hash]))
+        (VIEWS[hash] ? hash === h : h === "#/")
           ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
           : "hover:bg-slate-200 dark:hover:bg-slate-800"
       }`}
@@ -34,7 +36,8 @@ export function App() {
           <a href="#/" className="text-lg font-semibold tracking-wide">萬星</a>
           <span className="text-sm text-slate-500">Agent 服务目录与运营台</span>
           <nav className="ml-auto flex gap-1">
-            {tab("#/", "目录")}
+            {tab("#/", "介绍")}
+            {tab("#/catalog", "目录")}
             {tab("#/docs", "文档")}
             {tab("#/console", "控制台")}
           </nav>
@@ -44,7 +47,7 @@ export function App() {
         <View />
       </main>
       <footer className="max-w-5xl mx-auto px-4 py-8 text-xs text-slate-400">
-        萬星 Wanxing · 寻数 constellation 线 · <a className="underline" href="https://finddatatech.cloud">寻数科技</a>
+        萬星 Wanxing · 寻数 constellation 线 · <a className="underline" href="https://www.finddatatech.cloud/zh/products/constellation/">寻数科技</a>
       </footer>
     </div>
   );

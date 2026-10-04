@@ -1,5 +1,7 @@
 // The integration one-pager, in-site (docs/wanxing-serving-api.md is the
 // source of truth; this page carries the caller essentials).
+import { A2aSample } from "../components/A2aSample.jsx";
+
 const ERRORS = [
   ["401", "INVALID_KEY / UNRESOLVED_KEY", "键形状错 / 键无法解析到账号"],
   ["402", "INSUFFICIENT_BALANCE", "键余额或消费窗不足"],
@@ -27,21 +29,10 @@ export function DocsView() {
 
       <section>
         <h2 className="font-semibold mb-2">调用示例</h2>
-        <pre className="overflow-x-auto rounded-lg bg-slate-900 text-slate-100 p-4 text-xs">{`curl -X POST "$BASE/api/wanxing/v1/a2a/<agentSlug>" \\
-  -H "Authorization: Bearer sk-xxxx" \\
-  -H "Idempotency-Key: my-ticket-001" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "jsonrpc": "2.0", "id": 1,
-    "method": "message/send",
-    "params": { "message": {
-      "role": "user",
-      "parts": [{ "kind": "text", "text": "SUBMIT my-task-001" }]
-    }}
-  }'`}</pre>
+        <A2aSample />
         <p className="mt-2 text-slate-500">
           <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">agentSlug</code> 取自
-          <a className="underline" href="#/">目录</a>；同步返回的是回执（如 queued），
+          <a className="underline" href="#/catalog">目录</a>；同步返回的是回执（如 queued），
           查询状态=再发一条 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">STATUS my-ticket-001</code>。
         </p>
       </section>
