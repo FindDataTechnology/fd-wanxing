@@ -27,7 +27,7 @@
 | ⓪ | scaffold 本仓（openspec/CONTEXT/ADR-0001/本文档） | fd-wanxing | — | ✅ 2026-10-04 |
 | ① | 热路径修复：目录 O(N) 全量拉取 → slug 索引+缓存+分页 | paas | — | 待 propose（bug 级快速通道；缓存兼职③的台账 diff 探测器） |
 | ② | L2 拆面：facade 独立部署 + L1 wanxing 域名 + facade 迁入本仓 | paas→fd-wanxing | ①宜先 | 待 |
-| ③ | 事件主干+rollup（fleet-observer 服务，本仓首个原生组件） | fd-wanxing | 可与②并行（facade 迁入前跨进程上报） | **本仓首个 change** |
+| ③ | 事件主干+rollup（fleet-observer 服务，本仓首个原生组件） | fd-wanxing | 可与②并行（facade 迁入前跨进程上报） | **代码完成 2026-10-04**（13/14；待 6.1 镜像部署+3.2 staging 真跑。切换点：②迁入后 facade 由 fleet-report.js 跨进程改同进程直写） |
 | ④ | ops-console fleet 板（改读③的观测 API） | paas | ③ | 待 |
 | ⑤ | wanxing-web：公共目录+部署者控制台+文档门面 | fd-wanxing | ③（数据）②（同域反代）；骨架可并行起 | 待 |
 
