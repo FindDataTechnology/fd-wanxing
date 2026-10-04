@@ -28,10 +28,24 @@ const jwk = publicKey.export({ format: "jwk" });
 jwk.kid = "k1";
 jwk.alg = "ES384";
 const b64u = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// Sign JWS-style: strip the DER wrapper node produces and emit raw R||S —
+// exactly what a real OP sends (the facade converts back for node's verify).
+const rawRS = (der) => {
+  const lenR = der[3];
+  const r = der.slice(4, 4 + lenR);
+  const lenS = der[5 + lenR];
+  const s = der.slice(6 + lenR, 6 + lenR + lenS);
+  const pad48 = (b) => {
+    let x = b;
+    while (x.length > 1 && x[0] === 0) x = x.slice(1); // DER leading zero
+    return Buffer.concat([Buffer.alloc(Math.max(0, 48 - x.length)), x]);
+  };
+  return Buffer.concat([pad48(r), pad48(s)]);
+};
 const sign = (payload) => {
   const h = b64u(JSON.stringify({ alg: "ES384", typ: "JWT", kid: "k1" }));
   const p = b64u(JSON.stringify(payload));
-  const sig = nodeSign("sha384", Buffer.from(`${h}.${p}`), privateKey);
+  const sig = rawRS(nodeSign("sha384", Buffer.from(`${h}.${p}`), privateKey));
   return `${h}.${p}.${b64u(sig)}`;
 };
 

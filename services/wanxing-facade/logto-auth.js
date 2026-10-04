@@ -51,7 +51,25 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
         return null;
       }
       const key = createPublicKey({ key: jwk, format: "jwk" });
-      const okSig = cryptoVerify("sha384", Buffer.from(`${h}.${p}`), key, b64u(s));
+      // JWS ECDSA signatures are raw R||S (96 bytes for P-384); node's verify
+      // wants DER. Convert before checking (live finding: node-signed test
+      // fixtures are DER and pass, real OP tokens never did).
+      const raw = b64u(s);
+      const der = (() => {
+        if (raw[0] === 0x30) return raw; // already DER
+        const n = raw.length / 2;
+        const trim = (b) => {
+          let i = 0;
+          while (i < b.length - 1 && b[i] === 0) i += 1;
+          const s2 = b.slice(i);
+          return s2[0] & 0x80 ? Buffer.concat([Buffer.from([0]), s2]) : s2;
+        };
+        const r = trim(raw.slice(0, n));
+        const s2 = trim(raw.slice(n));
+        const body = Buffer.concat([Buffer.from([0x02, r.length]), r, Buffer.from([0x02, s2.length]), s2]);
+        return Buffer.concat([Buffer.from([0x30, body.length]), body]);
+      })();
+      const okSig = cryptoVerify("sha384", Buffer.from(`${h}.${p}`), key, der);
       const iss = `${base}/oidc`;
       if (!okSig) return null;
       if (payload.iss !== iss) return null;
