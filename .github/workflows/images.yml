@@ -1,7 +1,8 @@
 # Container images — GitHub Actions → Tencent TCR (org convention, mirrors
-# paas image.yml). One workflow, two services:
-#   ccr.ccs.tencentyun.com/yizuo/wanxing-facade
-#   ccr.ccs.tencentyun.com/yizuo/fleet-observer
+# paas image.yml). One workflow, three images:
+#   ccr.ccs.tencentyun.com/yizuo/wanxing-facade   (repo root, SERVICE=facade)
+#   ccr.ccs.tencentyun.com/yizuo/fleet-observer   (repo root, SERVICE=observer)
+#   ccr.ccs.tencentyun.com/yizuo/wanxing-web      (wanxing-web/ context)
 #
 # Secrets (org-level — must be enabled for THIS repo before first run):
 #   TCR_USERNAME / TCR_PASSWORD.
@@ -25,8 +26,13 @@ jobs:
         include:
           - service: facade
             image: wanxing-facade
+            context: .
           - service: observer
             image: fleet-observer
+            context: .
+          - service: web
+            image: wanxing-web
+            context: wanxing-web
     permissions:
       contents: read
     steps:
@@ -46,7 +52,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
           build-args: |
             SERVICE=${{ matrix.service }}
           push: true

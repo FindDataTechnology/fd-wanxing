@@ -76,22 +76,3 @@ spec:
   selector: { app: wanxing-facade }
   ports: [{ port: 3080, targetPort: 3080 }]
 ---
-# L1：萬星自有域名（DNS 落子后生效；集群 Ingress controller 按 fd-prod 实情
-# 调整 class/注解——占位按通用 nginx 形态）。
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: wanxing-facade
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-spec:
-  rules:
-    - host: wanxing.finddatatech.cloud
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: wanxing-facade
-                port: { number: 3080 }

@@ -1,0 +1,50 @@
+# wanxing-web — L1 门面（add-wanxing-web 5）：静态脸 + 同域双反代（nginx.conf）。
+# Ingress 指向本服务；facade/observer 退到反代之后，不再直接对外。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wanxing-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: wanxing-web }
+  template:
+    metadata:
+      labels: { app: wanxing-web }
+    spec:
+      containers:
+        - name: web
+          image: ccr.ccs.tencentyun.com/yizuo/wanxing-web:IMAGE_TAG
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 2
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wanxing-web
+spec:
+  selector: { app: wanxing-web }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wanxing-web
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+spec:
+  rules:
+    - host: wanxing.finddatatech.cloud
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wanxing-web
+                port: { number: 80 }
