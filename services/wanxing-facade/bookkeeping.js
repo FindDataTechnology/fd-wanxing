@@ -103,8 +103,12 @@ export function createBookkeepingCache({
     stalenessMs() {
       return snap ? now() - snap.at : Infinity;
     },
+    // Hard-stale only applies AFTER a snapshot existed: a never-loaded cache
+    // must let requests through to the loader (which 503s on failure and
+    // retries next request) — gating on !snap deadlocks cold start behind
+    // the enumeration guard.
     hardStale() {
-      return !snap || now() - snap.at > hardStaleMs;
+      return snap != null && now() - snap.at > hardStaleMs;
     },
     diffDeployments,
   };

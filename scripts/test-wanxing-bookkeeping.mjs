@@ -128,6 +128,14 @@ test("cache: warm source failure serves stale; past the hard window hardStale() 
   assert.equal(cache.hardStale(), true);
 });
 
+test("cache: never-loaded is NOT hard-stale — cold start reaches the loader (fd-prod deadlock regression)", async () => {
+  const cache = createBookkeepingCache({ fetchRows: async () => [row("p1", "a1")], ttlMs: 1000 });
+  assert.equal(cache.hardStale(), false); // no snapshot yet: the loader must run
+  assert.equal((await cache.rows()).length, 1); // loads through
+  // and once loaded, staleness math resumes normally
+  assert.equal(cache.hardStale(), false);
+});
+
 test("cache: cold-start failure propagates (route layer's 503)", async () => {
   const cache = createBookkeepingCache({
     fetchRows: async () => {
