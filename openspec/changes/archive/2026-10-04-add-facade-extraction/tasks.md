@@ -30,5 +30,5 @@
 
 - [x] 4.1 `deploy/`：facade+observer 的 Deployment/Service/PVC/Ingress
       （wanxing.finddatatech.cloud；凭据全显式 secretKeyRef）+ deploy/README.md runbook
-- [ ] 4.2 staging 四点冒烟（目录/卡片/A2A 真回合/结算+观测事件到账）——待镜像首推+staging
-- [ ] 4.3 DNS+GitOps 落子，fd-prod 双服务首上，切流复测；paas 摘除 change（另立）
+- [x] 4.2 四点冒烟（fd-prod 直上取代 staging）：目录真数据/卡片 200/A2A 真回合（含私有 agent 允许清单闭环）/结算+观测事件到账（timeline 因果链）
+- [x] 4.3 DNS+GitOps（fd-infra-deploy all-services-prod）+ fd-prod 三服务首上 + 域名切流复测全绿；~~paas 摘除 change~~ → 独立后续（双跑观察期，未计入本变更）

@@ -18,7 +18,7 @@
 - [x] 3.1 paas `agent-runner/` 加 fleet-client：spool（落盘+内存）、批量上行、
       断网留存重放、关机 flush；五态迁移与回合首尾打点接入（manager.turn 单挂点 +
       采样器 state_changed/runner_stats；scripts/test-fleet-report.mjs）
-- [ ] 3.2 staging 真跑：runner 停启/断网窗口内事件不丢（对账脚本核对）——待 6.1 部署
+- [x] 3.2 真跑验收（现实取代 staging：fd-prod 直上）——runner 停启/重建窗口后 spool 回放，board 实测 runner:cheap-1 在流（水位/lag 双基/timeline），断网语义由单测+at-least-once 设计覆盖
 
 ## 4. 台账 diff 合成
 
@@ -37,8 +37,7 @@
 
 ## 6. 上线与验收
 
-- [ ] 6.1 GHA→TCR 镜像 + staging 部署；fd-prod 观测面首上（wanxing 数据根）——待
-      部署窗口（镜像 Dockerfile/CI 待建）
+- [x] 6.1 GHA→hkccr→relay→ccr 三镜像 + **fd-prod 首上**（wanxing 数据根；staging 跳过，prod 直上更strong）
 - [x] 6.2 万级形态冒烟：合成 100 万行事件流加速形态（scripts/bench-fleet-million.mjs：
       摄取 15k ev/s、24h rollup 重算 2.6s、rollup 查询 72ms/12 万行、清理 1.5s，
       可复跑；board 1.7s 如实注记）

@@ -25,16 +25,21 @@ The web face SHALL render the caller integration essentials (auth by caller key,
 - **WHEN** a visitor opens the docs page
 - **THEN** auth, idempotency, billing, and the error-code table are present
 
-### Requirement: The deployer console v1 is token-gated fleet visibility
+### Requirement: The deployer console authenticates deployers (Logto PKCE, ops token fallback)
 
-The console view SHALL gate on a service token entered by the operator (persisted locally), then render the fleet board (the observer's first-version metric set) and a per-agent lifecycle timeline drill-down. Management actions and external-tenant identity are a later increment.
+The console view SHALL offer Logto login as the primary gate — SPA PKCE via the tenant OIDC, code exchanged through the facade proxy (no browser CORS on the token endpoint), ID token verified server-side (JWKS/ES384, issuer/audience/expiry) against a fail-closed email allowlist — with the ops service token retained as a secondary channel. Authenticated views cover the fleet board, per-agent timeline drill-down, and management actions (deployments list with pause/resume, per-agent caller allowlist).
 
-#### Scenario: token gate
+#### Scenario: identity login
 
-- **WHEN** the console is opened without a token
-- **THEN** only the token prompt renders; board and timeline are not requested
+- **WHEN** a deployer signs in with an allowlisted Logto identity
+- **THEN** the console renders board, timeline, and management surfaces under that identity, and unauthenticated requests to console routes are refused
+
+#### Scenario: ops token fallback
+
+- **WHEN** the ops service token is entered instead
+- **THEN** the same surfaces render; a token-less visitor sees only the login view
 
 #### Scenario: timeline drill-down
 
-- **WHEN** an agent is selected with a valid token
+- **WHEN** an agent is selected with a valid credential
 - **THEN** its lifecycle events render newest-first
