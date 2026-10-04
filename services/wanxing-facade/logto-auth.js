@@ -65,7 +65,8 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
         throw Object.assign(new Error(`identity refused: email=${email || "(none)"} sub=${payload.sub ?? "?"} allowlist=${[...allowed].join("|")}`), { status: 403, diag: { email: email || null, sub: payload.sub ?? null } });
       }
       return { email, sub: payload.sub };
-    } catch {
+    } catch (e) {
+      if (e?.diag) throw e; // diagnostics escape; incidental failures stay silent-null
       return null;
     }
   }
