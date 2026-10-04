@@ -28,7 +28,7 @@
 | ① | 热路径修复：目录 O(N) 全量拉取 → slug 索引+缓存+分页 | paas | — | 待 propose（bug 级快速通道；缓存兼职③的台账 diff 探测器） |
 | ② | L2 拆面：facade 独立部署 + L1 wanxing 域名 + facade 迁入本仓 | paas→fd-wanxing | ①宜先 | **代码+镜像+清单就绪 2026-10-04**（change `add-facade-extraction`；spec fork 含①效果；44/44 测试绿；余 GHA 首跑/staging 四点/DNS+GitOps 部署窗口。**切换点修订**：facade 与 observer 保持各自独立部署，fleet-report 跨进程上报保留——observer 有状态 PVC、facade 可水平扩，并进程会耦死扩缩容） |
 | ③ | 事件主干+rollup（fleet-observer 服务，本仓首个原生组件） | fd-wanxing | 可与②并行（facade 迁入前跨进程上报） | **代码完成 2026-10-04**（13/14；镜像 workflow 已随②就绪，待 GHA 首跑+staging 首上；上报按②修订为跨进程长期形态） |
-| ④ | ops-console fleet 板（改读③的观测 API） | paas | ③ | 待 |
+| ④ | ops-console fleet 板（改读③的观测 API） | paas | ③ | **完成 2026-10-04**（paas add-fleet-board：fleetBoard 源+总览渲染，三态降级验证过；上线随 ops-console 下次滚动，env FLEET_BOARD_URL/TOKEN 指 observer） |
 | ⑤ | wanxing-web：公共目录+部署者控制台+文档门面 | fd-wanxing | ③（数据）②（同域反代）；骨架可并行起 | 待 |
 
 ## 硬依赖备忘
