@@ -9,10 +9,13 @@
 #   docker build --build-arg SERVICE=observer -t fleet-observer .
 
 ARG BASE_IMAGE=node:22-bookworm-slim
+# China-mirror opt-in (empty default: the GHA runner is US-based — see
+# docs/IMAGE-RELEASE.md Dockerfile rules; Jenkins passes APT_MIRROR on the
+# China build host).
 
 FROM ${BASE_IMAGE} AS builder
-# aliyun mirror for the China build host (paas Dockerfile convention).
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -22,7 +25,8 @@ RUN npm ci --no-fund --no-audit
 COPY services ./services
 
 FROM ${BASE_IMAGE} AS runtime
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

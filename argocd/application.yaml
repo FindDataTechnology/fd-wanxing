@@ -1,0 +1,44 @@
+# ── ArgoCD Application (one-time bootstrap) — 萬星平面 ─────────────────────────
+#
+# Apply once to register with ArgoCD (same shape as paas's argocd/application.yaml):
+#   kubectl apply -f argocd/application.yaml -n argocd
+#
+# Thereafter ArgoCD watches deploy/ of this repo and auto-syncs. Rolling a
+# service = bump its IMAGE_TAG in deploy/*.yaml and push (sha- tags are
+# immutable; ArgoCD's self-heal keeps the cluster on the committed tag).
+#
+# repoURL is HTTPS to reuse ArgoCD's configured GitHub credential — it must
+# cover THIS repo (FindDataTechnology/fd-wanxing, private). If the existing
+# credential is scoped to another org, add this repo once in ArgoCD settings
+# (deploy/README 前置清单).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: wanxing
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/FindDataTechnology/fd-wanxing.git
+    targetRevision: master
+    path: deploy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: wanxing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

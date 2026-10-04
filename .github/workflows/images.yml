@@ -1,11 +1,14 @@
-# Container images — GitHub Actions → Tencent TCR (org convention, mirrors
-# paas image.yml). One workflow, three images:
-#   ccr.ccs.tencentyun.com/yizuo/wanxing-facade   (repo root, SERVICE=facade)
-#   ccr.ccs.tencentyun.com/yizuo/fleet-observer   (repo root, SERVICE=observer)
-#   ccr.ccs.tencentyun.com/yizuo/wanxing-web      (wanxing-web/ context)
+# Container images — GitHub Actions → Tencent TCR, canonical pipeline
+# (docs/IMAGE-RELEASE.md): push hkccr (HK, fast leg), cheap-3 tcr-relay
+# replicates to ccr (≤5min). Cluster references use the ccr prefix after the
+# relay lands the tag.
 #
-# Secrets (org-level — must be enabled for THIS repo before first run):
-#   TCR_USERNAME / TCR_PASSWORD.
+#   hkccr.ccs.tencentyun.com/yizuo/{wanxing-facade,fleet-observer,wanxing-web}
+#   → ccr.ccs.tencentyun.com/yizuo/… (relay)
+#
+# Secrets (per-repo — org-level secrets do NOT apply to private repos):
+#   TCR_USERNAME / TCR_PASSWORD  (hk push credential)
+# cheap-3 /etc/tcr-relay/repos.conf must list each <namespace>/<repo>.
 name: images
 
 on:
@@ -14,12 +17,13 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ccr.ccs.tencentyun.com
+  REGISTRY: hkccr.ccs.tencentyun.com
   NAMESPACE: yizuo
 
 jobs:
   build-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +60,7 @@ jobs:
           build-args: |
             SERVICE=${{ matrix.service }}
           push: true
+          provenance: false
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:main
