@@ -62,7 +62,8 @@ test("logto: verifies a good ES384 ID token; refuses bad iss/aud/exp/allowlist",
   assert.equal(await a.verifyIdToken(sign(claims({ iss: "https://evil/" }))), null);
   assert.equal(await a.verifyIdToken(sign(claims({ aud: "other" }))), null);
   assert.equal(await a.verifyIdToken(sign(claims({ exp: 1 }))), null);
-  assert.equal(await a.verifyIdToken(sign(claims({ email: "nobody@x.test" }))), null);
+  // allowlist miss now throws with diagnostics (the operator must see who knocked)
+  await assert.rejects(() => a.verifyIdToken(sign(claims({ email: "nobody@x.test" }))), /identity refused/);
   assert.equal(await a.verifyIdToken("garbage"), null);
   // unconfigured / empty allowlist = identity gate fully closed
   assert.equal(make({ allowlist: "" }).configured, false);
@@ -106,7 +107,7 @@ test("logto: dual gate through the facade — ID token opens the console routes"
     const bad = await fetch(`${base}/api/wanxing/v1/console/deployments`, {
       headers: { Authorization: `Bearer ${sign(claims({ email: "nobody@x.test" }))}` },
     });
-    assert.equal(bad.status, 401);
+    assert.equal(bad.status, 401); // gate translates the diag throw into a plain 401
     // auth config surfaces for the static face
     const cfg = await (await fetch(`${base}/api/wanxing/v1/console/auth/config`)).json();
     assert.deepEqual(cfg, { configured: true, app_id: APP, endpoint: EP });

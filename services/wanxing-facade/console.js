@@ -55,7 +55,7 @@ export function registerConsoleRoutes(app, {
   const gate = async (req, res) => {
     if (requireToken(req)) return true;
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-    const ident = logtoAuth ? await logtoAuth.verifyIdToken(token) : null;
+    const ident = logtoAuth ? await logtoAuth.verifyIdToken(token).catch(() => null) : null;
     if (ident) {
       req.consoleIdentity = ident;
       return true;
