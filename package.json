@@ -1,0 +1,16 @@
+{
+  "name": "fd-wanxing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "萬星：Agent 服务的对外运行与服务平台（constellation 线）",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node services/fleet-observer/index.js",
+    "test": "node --test scripts/test-*.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2",
+    "express": "^4.19.2"
+  }
+}

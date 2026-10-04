@@ -10,17 +10,22 @@ GHA→TCR 轨道），数据根挂卷。
 
 ```
 event {
-  id: ULID                       // 幂等去重键，(source, id) 唯一索引
+  id: ULID                       // 幂等去重键（facade settled 用确定性 facade-<usageRowId>）
   source: runner:<id> | facade | bookkeeper
   agent: slug                    // packs-<packId>-<agentId>，与門面 slug 同构
   runner?: <id>                  // runner 来源必带；多 runner 零返工的保险
   kind: deployed|undeployed|paused|resumed|woken|reaped|budget_killed|
-        turn_started|turn_ended|settled|admitted|refused
+        turn_started|turn_ended|settled|admitted|refused|
+        state_changed|runner_stats
   ts: epoch_ms                   // 事件发生时刻（来源侧时钟），摄取时刻另记
   trace_id?: string              // turn 类事件引用 turn-tracing，不复制内容
   payload: json                  // 每种 kind 的窄字段（如 turn_ended 带 duration_ms/outcome）
 }
 ```
+
+`state_changed`（runner 采样器的五态迁移：warm/starting/serving/resident/draining/paused）
+与 `runner_stats`（采样器随行水位：children/queued/budget_mb/budget_mb_limit/agents）是
+实现中定案的两类补充——board 的五态分布与驻留水位由它们承载，粗粒度生命周期语义不变。
 
 与 turn-tracing 的边界：本流只记「回合边界与生命周期迁移」；回合内部事件（dsh 流）
 只在 turn-tracing，经 trace_id 跳转。粒度差三个数量级，存储策略不互相绑架。
@@ -44,12 +49,18 @@ per-concern SQLite `fleet-events.db`（萬星数据根，与将来迁入的 wanx
    flush。凭据复用 AGENT_SERVING_BACKEND_TOKEN 语义（新 env 指向 observer）。
 2. **facade 上报**：切片②前 facade（paas 侧）对 observer 走同一 `/ingest`（settled/
    admitted/refused）；迁入后改进程内直写库——语义同 at-least-once。
-3. **台账 diff（bookkeeper）**：observer 进程内轮询 packs internal API
-   `/api/packs/internal/deployments`（env 重指，S0/S1 模式），内存快照 diff 出
-   deployed/undeployed/paused/resumed。切片①的缓存实现共用同一份 diff 逻辑（①在
-   paas 修热路径，diff 函数在两仓间以最小复制共享，②完成收敛单点）。
+3. **台账 diff（bookkeeper）**：实现定案改用 **registry 代理清单**
+   `GET /api/agents?limit=500`（一次调用同时带 path 与 metadata.paused——部署/卸载/
+   升级/暂停四类事件一个源全覆盖；仍是借用契约，ADR-0015 线内）。首帧基线静默；
+   空响应防抖（非空快照后骤空 = 源故障，跳过该轮不误报 mass-undeployed）。切片①
+   的 diffDeployments 纯函数以最小复制共享（两仓注释互指），②完成收敛单点。
 
 ## 观测 API
+
+board 的计数面只查 rollup（24 个 hour key）+ 有界 kind 索引窗（state_changed/回合
+配对 2h、runner_stats 30min、settled/reaped 24h）——持续 1M 行/天形态下全量原始窗
+扫描实测 24s，修后 1.7s（bench-fleet-million 注记在案，settled payload 解析是下一
+优化点）。
 
 - `GET /api/fleet/v1/board`：五态分布、总数、水位（warm/预算 MB）、wake p50/p95、
   退温/驱逐、budget kill、摄取滞后（now − max(ts)）、结算 pending——rollup+实时合成。

@@ -1,0 +1,192 @@
+// ── Fleet event store (add-fleet-event-backbone 1.1) ─────────────────────────
+//
+// The append-only lifecycle event store: raw events (14-day retention) plus
+// the hour×agent rollup that is the ONLY query face for boards. Per-concern
+// SQLite at the Wanxing data root, same isolation rule as paas's wanxing.db.
+// Idempotency = the id PK (ULIDs globally unique; facade rows use their
+// deterministic usage-row ids) — INSERT OR IGNORE, counted.
+
+import Database from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+
+export const EVENT_KINDS = [
+  "deployed", "undeployed", "paused", "resumed",
+  "woken", "reaped", "budget_killed",
+  "turn_started", "turn_ended", "settled",
+  "admitted", "refused",
+  "state_changed", "runner_stats",
+];
+
+export function createEventStore({ file }) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const db = new Database(file);
+  db.pragma("journal_mode = WAL");
+
+  db.exec(`CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    runner TEXT,
+    kind TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    ingested_at INTEGER NOT NULL,
+    trace_id TEXT,
+    payload TEXT NOT NULL DEFAULT '{}'
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_events_agent_ts ON events(agent, ts)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events(kind, ts)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS rollup_agent_hour (
+    hour TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    turns INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    minutes_billed REAL NOT NULL DEFAULT 0,
+    usd REAL NOT NULL DEFAULT 0,
+    wake_p50_ms INTEGER,
+    wake_p95_ms INTEGER,
+    budget_kills INTEGER NOT NULL DEFAULT 0,
+    paused_minutes REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour, agent)
+  )`);
+
+  const insEvent = db.prepare(`INSERT OR IGNORE INTO events
+    (id, source, agent, runner, kind, ts, ingested_at, trace_id, payload)
+    VALUES (@id, @source, @agent, @runner, @kind, @ts, @ingested_at, @trace_id, @payload)`);
+
+  const rowToEvent = (r) => ({
+    id: r.id, source: r.source, agent: r.agent, runner: r.runner, kind: r.kind,
+    ts: r.ts, ingested_at: r.ingested_at, trace_id: r.trace_id,
+    payload: JSON.parse(r.payload || "{}"),
+  });
+
+  return {
+    close() { db.close(); },
+
+    // Batch insert; returns how many rows landed (dupes silently ignored —
+    // at-least-once upstream means id repeats are the norm, not the error).
+    insertMany(events, ingestedAt) {
+      const tx = db.transaction((rows) => {
+        let n = 0;
+        for (const e of rows) {
+          const res = insEvent.run({
+            id: String(e.id), source: String(e.source), agent: String(e.agent),
+            runner: e.runner ? String(e.runner) : null, kind: String(e.kind),
+            ts: Number(e.ts), ingested_at: Number(e.ingested_at ?? ingestedAt),
+            trace_id: e.trace_id ? String(e.trace_id) : null,
+            payload: JSON.stringify(e.payload ?? {}),
+          });
+          n += res.changes;
+        }
+        return n;
+      });
+      return tx(events);
+    },
+
+    // Raw rows in [since, now] — board synthesis and rollup input.
+    rawSince(sinceMs, kinds = null) {
+      const rows = kinds
+        ? db.prepare(`SELECT * FROM events WHERE ts >= ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY ts`).all(sinceMs, ...kinds)
+        : db.prepare(`SELECT * FROM events WHERE ts >= ? ORDER BY ts`).all(sinceMs);
+      return rows.map(rowToEvent);
+    },
+
+    // Kind-indexed window (idx_events_kind_ts): the board's live-synthesis
+    // queries ride this, never rawSince — at a sustained 1M events/day a
+    // full raw window scan is seconds; kind windows are its bounded slices.
+    kindSince(kinds, sinceMs) {
+      const rows = db.prepare(`SELECT * FROM events WHERE kind IN (${kinds.map(() => "?").join(",")}) AND ts >= ? ORDER BY ts`).all(...kinds, sinceMs);
+      return rows.map(rowToEvent);
+    },
+
+    timeline(agent, { since = 0, limit = 100 } = {}) {
+      const rows = db.prepare(`SELECT * FROM events WHERE agent = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(agent, since, limit);
+      return rows.map(rowToEvent);
+    },
+
+    // Retention: raw events older than the window go; rollups stay forever.
+    retain(nowMs, retentionMs) {
+      return db.prepare(`DELETE FROM events WHERE ts < ?`).run(nowMs - retentionMs).changes;
+    },
+
+    // ── Rollup (idempotent recompute per hour) ─────────────────────────────
+    rollupHour(hourKey, windowStartMs, windowEndMs) {
+      const rows = db.prepare(`SELECT agent, kind, ts, payload FROM events WHERE ts >= ? AND ts < ? ORDER BY ts`).all(windowStartMs, windowEndMs);
+      const acc = new Map(); // agent → accumulators
+      const wake = new Map(); // agent → [wake_ms…]
+      const pausedAt = new Map(); // agent → open paused ts (hour-clamped)
+      for (const r of rows) {
+        const a = acc.get(r.agent) ?? { turns: 0, errors: 0, minutes: 0, usd: 0, kills: 0, pausedMs: 0 };
+        const p = JSON.parse(r.payload || "{}");
+        switch (r.kind) {
+          case "turn_ended":
+            a.turns += 1;
+            if (p.outcome === "error") a.errors += 1;
+            break;
+          case "settled":
+            a.minutes += Number(p.minutes_billed) || 0;
+            a.usd += Number(p.usd) || 0;
+            break;
+          case "turn_started":
+            if (Number.isFinite(Number(p.wake_ms))) {
+              (wake.get(r.agent) ?? wake.set(r.agent, []).get(r.agent)).push(Number(p.wake_ms));
+            }
+            break;
+          case "budget_killed": a.kills += 1; break;
+          case "paused": pausedAt.set(r.agent, Math.max(r.ts, windowStartMs)); break;
+          case "resumed": {
+            const from = pausedAt.get(r.agent);
+            if (from != null) {
+              a.pausedMs += Math.min(r.ts, windowEndMs) - from;
+              pausedAt.delete(r.agent);
+            }
+            break;
+          }
+          default: break;
+        }
+        acc.set(r.agent, a);
+      }
+      const pct = (xs) => {
+        if (!xs || xs.length === 0) return null;
+        const s = xs.slice().sort((x, y) => x - y);
+        return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.5))]);
+      };
+      const pct95 = (xs) => {
+        if (!xs || xs.length === 0) return null;
+        const s = xs.slice().sort((x, y) => x - y);
+        return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]);
+      };
+      const put = db.prepare(`INSERT OR REPLACE INTO rollup_agent_hour
+        (hour, agent, turns, errors, minutes_billed, usd, wake_p50_ms, wake_p95_ms, budget_kills, paused_minutes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const tx = db.transaction(() => {
+        for (const [agent, a] of acc) {
+          put.run(hourKey, agent, a.turns, a.errors, a.minutes, a.usd,
+            pct(wake.get(agent)), pct95(wake.get(agent)), a.kills, a.pausedMs / 60_000);
+        }
+        // Hours with prior rollup rows but no raw events left (retention
+        // cleaned them, or the recompute window shifted) keep their values —
+        // rollups are append-only truth, never recomputed from nothing.
+      });
+      tx();
+      return acc.size;
+    },
+
+    rollupRows(hourKeys) {
+      if (!hourKeys.length) return [];
+      return db.prepare(`SELECT * FROM rollup_agent_hour WHERE hour IN (${hourKeys.map(() => "?").join(",")})`).all(...hourKeys);
+    },
+
+    // ── Board helpers ───────────────────────────────────────────────────────
+    ingestLag(nowMs, windowMs = 3_600_000) {
+      const rows = db.prepare(`SELECT source, MAX(ts) AS max_ts, MAX(ingested_at) AS max_ing FROM events WHERE ts > ? GROUP BY source`).all(nowMs - windowMs);
+      return rows.map((r) => ({
+        source: r.source,
+        event_age_ms: r.max_ts == null ? null : Math.max(0, nowMs - r.max_ts), // source-clock basis
+        arrival_age_ms: r.max_ing == null ? null : Math.max(0, nowMs - r.max_ing), // observer-clock basis
+      }));
+    },
+  };
+}

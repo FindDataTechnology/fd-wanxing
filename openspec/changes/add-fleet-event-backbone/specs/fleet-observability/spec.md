@@ -37,9 +37,9 @@ hour×agent rollup SHALL 长存且幂等可重算。板面查询 SHALL 只走 ro
 ### Requirement: 生命周期事件模型
 
 事件 SHALL 为粗粒度生命周期迁移（deployed/undeployed/paused/resumed/woken/reaped/
-budget_killed/turn_started/turn_ended/settled/admitted/refused），回合类事件 SHALL 以
-trace_id 引用 turn-tracing 而不复制回合内容；runner 来源事件 SHALL 携带 runner 身份，
-聚合查询 SHALL 不假设单一 runner。
+budget_killed/turn_started/turn_ended/settled/admitted/refused/state_changed/
+runner_stats），回合类事件 SHALL 以 trace_id 引用 turn-tracing 而不复制回合内容；
+runner 来源事件 SHALL 携带 runner 身份，聚合查询 SHALL 不假设单一 runner。
 
 #### Scenario: 回合事件引用不复制
 
@@ -50,6 +50,11 @@ trace_id 引用 turn-tracing 而不复制回合内容；runner 来源事件 SHAL
 
 - **WHEN** 两个 runner 各自上报其 agent 事件
 - **THEN** board 聚合按 runner 分列可见，总量正确
+
+#### Scenario: 五态迁移与水位由 runner 采样承载
+
+- **WHEN** 一个 runner 上的 agent 状态迁移且 runner 周期采样
+- **THEN** state_changed 事件记录迁移前后状态，同批 runner_stats 携带驻留水位（children/queued/budget/budget 上限），board 的五态分布与水位由此合成
 
 ### Requirement: 观测 API
 
