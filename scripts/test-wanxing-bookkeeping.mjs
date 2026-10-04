@@ -156,13 +156,14 @@ function startApp(face) {
   });
 }
 
-async function faceHarness({ deployments, entries, hardStale }) {
+async function faceHarness({ deployments, entries, hardStale, ensureFresh }) {
   const deps = deployments.map((d) => ({ slug: d.slug, agentPath: d.agentPath }));
   const face = createA2aFace({
     core: {}, // catalog/card need no core
     resolveDeployment: async (slug) => deployments.find((d) => d.slug === slug) ?? null,
     listDeployments: async () => deps,
     hardStale,
+    ensureFresh: ensureFresh ?? (async () => {}),
     forwardHeaders: () => ({}),
     registryFetch: async (p) => {
       const slug = deps.find((d) => p === `/api/agents${d.agentPath}`)?.slug;
@@ -206,6 +207,23 @@ test("face: catalog default keeps the legacy full shape; page/page_size paginate
     assert.equal(clamped.page_size, 200);
     const junk = await (await fetch(`${base}/api/wanxing/v1/agents?page_size=abc`)).json();
     assert.equal(junk.page_size, 50);
+  } finally {
+    srv.close();
+  }
+});
+
+test("face: idle-facade past the hard window recovers via the enumeration path (fd-prod finding #2)", async () => {
+  const d = { slug: "packs-p1-agent", agentPath: "/packs/p1/deployments/agent" };
+  let stale = true;
+  const { srv, base } = await faceHarness({
+    deployments: [d],
+    entries: { [d.slug]: { visibility: "public", name: "A", description: "d", version: "1" } },
+    hardStale: () => stale, // past-window BEFORE the refresh, fresh after
+    ensureFresh: async () => { stale = false; }, // the pre-guard refresh succeeds
+  });
+  try {
+    const r = await fetch(`${base}/api/wanxing/v1/agents`);
+    assert.equal(r.status, 200); // refreshed through the guard, not 503
   } finally {
     srv.close();
   }
