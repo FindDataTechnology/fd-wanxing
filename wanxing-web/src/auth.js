@@ -168,6 +168,28 @@ export async function teardownSession({ expired = false } = {}) {
   emit();
 }
 
+// Explicit sign-out (the header 退出 button's only caller): local teardown
+// first, then end the shared Logto SSO session and land on the site homepage.
+// The expiry paths deliberately keep calling teardownSession alone — a dead
+// session must not bounce the user off the page they are on.
+export async function signOut() {
+  await teardownSession();
+  try {
+    const cfg = await fetch("/api/wanxing/v1/console/auth/config").then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    });
+    const u = new URL(cfg.endpoint + "/oidc/session/end");
+    u.searchParams.set("client_id", cfg.app_id);
+    u.searchParams.set("post_logout_redirect_uri", window.location.origin + "/");
+    window.location.href = u.toString();
+  } catch (e) {
+    // The console is already signed out at this point (teardown ran); only
+    // the IdP hop failed — surface it the same way login errors do.
+    alert(String(e?.message || e));
+  }
+}
+
 // Renewal timer: fire five minutes before the id_token dies. Background-tab
 // throttling can delay the timer; the 401 path in authFetch is the backstop.
 let timer = null;

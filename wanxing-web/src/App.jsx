@@ -13,7 +13,7 @@ import { DocsView } from "./views/DocsView.jsx";
 import { ConsoleView } from "./views/ConsoleView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
-import { loginLogto, teardownSession, useAuth } from "./auth.js";
+import { loginLogto, signOut, useAuth } from "./auth.js";
 
 const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView };
 
@@ -165,7 +165,7 @@ export function App() {
               <span className="ml-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                 {auth.email && <span className="hidden sm:inline">{auth.email}</span>}
                 <button
-                  onClick={() => void teardownSession()}
+                  onClick={() => void signOut()}
                   className="underline hover:text-slate-900 dark:hover:text-slate-100"
                 >
                   退出
