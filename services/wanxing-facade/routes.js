@@ -136,6 +136,20 @@ export function registerWanxingRoutes(app, {
     store,
     sub2api,
     registryFetch: doFetch,
+    // Fleet-read forwarding (add-console-session-continuity): the browser face
+    // brings an identity, the facade swaps in the observer service credential.
+    observerFetch: (() => {
+      const observerUrl = () => (env.FLEET_OBSERVER_URL || "").replace(/\/+$/, "");
+      const observerToken = () => env.FLEET_OBSERVER_TOKEN || "";
+      return async (p) => {
+        const base = observerUrl();
+        const tok = observerToken();
+        if (!base || !tok) throw Object.assign(new Error("observer url/token not configured"), { status: 503 });
+        return (fetchImpl ?? fetch)(`${base}${p}`, {
+          headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+        });
+      };
+    })(),
     log: (m) => console.log(`[wanxing:console] ${m}`),
   });
 

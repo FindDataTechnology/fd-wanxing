@@ -89,6 +89,41 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
     }
   }
 
+  // Refresh-token grant, same server-side proxy discipline as the exchange:
+  // the SPA never talks to the tenant directly. Returns the raw token-endpoint
+  // document — rotation means the caller must persist whichever refresh_token
+  // comes back (absent = tenant did not rotate; keep the current one).
+  async function refreshGrant({ refreshToken }) {
+    if (!configured) throw Object.assign(new Error("logto not configured"), { status: 503 });
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: String(refreshToken ?? ""),
+      client_id: appId,
+    });
+    const r = await (fetchImpl ?? fetch)(`${base}/oidc/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const doc = await r.json().catch(() => ({}));
+    if (!r.ok || !doc.id_token) throw Object.assign(new Error(doc.error_description || `token endpoint ${r.status}`), { status: 502 });
+    return doc;
+  }
+
+  // RFC 7009 revocation, same proxy. The route treats this as best-effort
+  // cleanup (never a gate); throwing here only feeds diagnostics.
+  async function revokeToken(token) {
+    if (!configured) throw Object.assign(new Error("logto not configured"), { status: 503 });
+    const body = new URLSearchParams({ token: String(token ?? ""), client_id: appId });
+    const r = await (fetchImpl ?? fetch)(`${base}/oidc/token/revocation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!r.ok) throw Object.assign(new Error(`revocation endpoint ${r.status}`), { status: 502 });
+    return true;
+  }
+
   // PKCE exchange, proxied server-side (CORS-free for the static face).
   async function exchangeCode({ code, verifier, redirectUri }) {
     if (!configured) throw Object.assign(new Error("logto not configured"), { status: 503 });
@@ -118,12 +153,18 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
     allowlist: allowed,
     verifyIdToken,
     exchangeCode,
+    refreshGrant,
+    revokeToken,
     authorizeUrl: ({ redirectUri, state, challenge }) =>
       `${base}/oidc/auth?${new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: "openid email profile",
+        // offline_access + prompt=consent is what makes the tenant issue the
+        // rotating refresh token the silent renewal rides (the SPA's own
+        // login builder must keep exact lockstep).
+        scope: "openid email profile offline_access",
+        prompt: "consent",
         state,
         code_challenge: challenge,
         code_challenge_method: "S256",

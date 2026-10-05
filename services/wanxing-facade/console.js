@@ -19,6 +19,7 @@ export function registerConsoleRoutes(app, {
   store, // wanxing store (allowlist*)
   sub2api, // client or null
   registryFetch, // (path, init) → Response against the registry
+  observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
   log = null,
 }) {
   const say = log ?? (() => {});
@@ -81,6 +82,68 @@ export function registerConsoleRoutes(app, {
     app.get("/api/wanxing/v1/console/auth/config", (_req, res) => {
       res.json({ configured: true, app_id: logtoAuth.appId, endpoint: logtoAuth.endpoint });
     });
+  }
+  // Session endpoints are a stable surface: registered always, 503 when
+  // identity is not configured on this deployment.
+  const needIdentity = (res) => {
+    if (logtoAuth?.configured) return false;
+    res.status(503).json({ error: "identity not configured on this deployment" });
+    return true;
+  };
+  // Silent renewal: same fail-closed gate as login (the refreshed id_token
+  // is re-verified — a refresh grant never lowers the door). Rotation-aware
+  // response: whichever refresh_token the tenant issued is the one returned;
+  // absent means the tenant did not rotate and the client keeps its current.
+  app.post("/api/wanxing/v1/console/auth/refresh", express.json({ limit: "4kb" }), async (req, res) => {
+    if (needIdentity(res)) return;
+    const { refresh_token: refreshToken } = req.body ?? {};
+    if (!refreshToken) return res.status(400).json({ error: "refresh_token required" });
+    try {
+      const doc = await logtoAuth.refreshGrant({ refreshToken });
+      const ident = await logtoAuth.verifyIdToken(doc.id_token);
+      if (!ident) throw Object.assign(new Error("identity refused (allowlist or verification)"), { status: 403 });
+      res.json({ id_token: doc.id_token, refresh_token: doc.refresh_token ?? refreshToken, email: ident.email });
+    } catch (e) {
+      res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: String(e?.message || e) });
+    }
+  });
+  // Logout hygiene (RFC 7009): revocation is cleanup, never a gate — an
+  // unreachable tenant still lets the client clear local state.
+  app.post("/api/wanxing/v1/console/auth/revoke", express.json({ limit: "4kb" }), async (req, res) => {
+    if (needIdentity(res)) return;
+    const { token } = req.body ?? {};
+    if (!token) return res.status(400).json({ error: "token required" });
+    try {
+      await logtoAuth.revokeToken(token);
+    } catch { /* best-effort by contract */ }
+    res.json({ ok: true });
+  });
+
+  // ── Fleet reads under the console gate (add-console-session-continuity) ───
+  //
+  // The web face's nginx forwards /api/fleet/ here; the observer stays
+  // credential-only. Browser identity is verified, then swapped for the
+  // observer service credential. An upstream 401 must NOT leak (the SPA would
+  // misread the observer's credential challenge as "session expired"), so
+  // upstream failures become 502 diagnostics.
+  const fleetForward = (upstreamPathOf) => async (req, res) => {
+    if (!(await gate(req, res))) return;
+    let r;
+    try {
+      r = await observerFetch(upstreamPathOf(req));
+    } catch (e) {
+      const status = Number.isInteger(e?.status) ? e.status : 502;
+      return res.status(status === 503 ? 503 : 502).json({ error: `fleet observer unavailable: ${e?.message || e}` });
+    }
+    const body = Buffer.from(await r.arrayBuffer());
+    res.status(r.status).type(r.headers.get("content-type") || "application/json").send(body);
+  };
+  if (observerFetch) {
+    app.get("/api/fleet/v1/board", fleetForward(() => "/api/fleet/v1/board"));
+    app.get("/api/fleet/v1/agents/:slug/timeline", fleetForward((req) => {
+      const q = new URL(req.originalUrl, "http://local").search;
+      return `/api/fleet/v1/agents/${encodeURIComponent(req.params.slug)}/timeline${q}`;
+    }));
   }
 
   app.get("/api/wanxing/v1/console/deployments", async (req, res) => {

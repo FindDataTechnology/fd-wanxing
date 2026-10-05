@@ -1,15 +1,16 @@
 // Deployer console v1: token-gated fleet visibility (board + per-agent
-// timeline). Management actions and external-tenant identity (Logto) are the
-// next increment — this view is the operations dogfood vehicle.
+// timeline) plus management actions. All credential plumbing lives in the
+// shared auth module (add-console-session-continuity): this view renders —
+// login/exit controls belong to the site header now.
 import { useEffect, useState } from "react";
-
-const TOKEN_KEY = "wanxing-console-token";
+import { authFetch, loginLogto, setOpsToken, useAuth } from "../auth.js";
 
 const fmtMs = (ms) => (ms == null ? "n/a" : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
 const fmtAgo = (ms) => (ms == null ? "?" : ms >= 60_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 1000)}s`);
 
 export function ConsoleView() {
-  const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY) || "");
+  const auth = useAuth();
+  const token = auth.token;
   const [draft, setDraft] = useState("");
   const [board, setBoard] = useState(null);
   const [boardErr, setBoardErr] = useState(null);
@@ -28,7 +29,7 @@ export function ConsoleView() {
     if (!token) return;
     let live = true;
     const load = () =>
-      fetch("/api/fleet/v1/board", { headers: { Authorization: `Bearer ${token}` } })
+      authFetch("/api/fleet/v1/board")
         .then(async (r) => {
           if (!r.ok) throw new Error(`board HTTP ${r.status}`);
           return r.json();
@@ -47,9 +48,7 @@ export function ConsoleView() {
     if (!token || !agent) return;
     let live = true;
     setTlErr(null);
-    fetch(`/api/fleet/v1/agents/${encodeURIComponent(agent)}/timeline?limit=50`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    authFetch(`/api/fleet/v1/agents/${encodeURIComponent(agent)}/timeline?limit=50`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`timeline HTTP ${r.status}`);
         return r.json();
@@ -62,7 +61,7 @@ export function ConsoleView() {
   }, [token, agent]);
 
   const loadDeps = () =>
-    fetch("/api/wanxing/v1/console/deployments", { headers: { Authorization: `Bearer ${token}` } })
+    authFetch("/api/wanxing/v1/console/deployments")
       .then(async (r) => {
         if (!r.ok) throw new Error(`deployments HTTP ${r.status}`);
         return r.json();
@@ -78,10 +77,7 @@ export function ConsoleView() {
 
   const manage = (slug, action) => {
     setBusy(`${slug}:${action}`);
-    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/${action}`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/${action}`, { method: "POST" })
       .then(async (r) => {
         if (!r.ok) throw new Error(`${action} HTTP ${r.status}`);
         loadDeps();
@@ -92,9 +88,7 @@ export function ConsoleView() {
 
   const loadCallers = (slug) => {
     setAlNote("");
-    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`callers HTTP ${r.status}`);
         return r.json();
@@ -104,9 +98,9 @@ export function ConsoleView() {
   };
   const addCaller = (slug) => {
     setAlNote("");
-    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`, {
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: newEmail }),
     })
       .then(async (r) => {
@@ -119,50 +113,24 @@ export function ConsoleView() {
   };
   const removeCaller = (slug, userId) => {
     setAlNote("");
-    fetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers?userId=${userId}`, {
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers?userId=${userId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
     })
       .then(() => loadCallers(slug))
       .catch((e) => setAlNote(String(e?.message || e)));
   };
 
-  const loginLogto = () => {
-    fetch("/api/wanxing/v1/console/auth/config")
-      .then(async (r) => {
-        if (!r.ok) throw new Error("identity not configured on this deployment");
-        return r.json();
-      })
-      .then(({ endpoint, app_id }) => {
-        const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(48))))
-          .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-        sessionStorage.setItem("wx-pkce-verifier", verifier);
-        crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)).then((dig) => {
-          const challenge = btoa(String.fromCharCode(...new Uint8Array(dig)))
-            .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-          const state = String(Math.random()).slice(2, 10);
-          sessionStorage.setItem("wx-pkce-state", state);
-          const u = new URL(endpoint + "/oidc/auth");
-          u.searchParams.set("client_id", app_id);
-          u.searchParams.set("redirect_uri", window.location.origin + "/console-callback");
-          u.searchParams.set("response_type", "code");
-          u.searchParams.set("scope", "openid email profile");
-          u.searchParams.set("state", state);
-          u.searchParams.set("code_challenge", challenge);
-          u.searchParams.set("code_challenge_method", "S256");
-          window.location.href = u.toString();
-        });
-      })
-      .catch((e) => alert(String(e?.message || e)));
-  };
-  const email = localStorage.getItem("wanxing-console-email");
-
   if (!token) {
     return (
       <div className="max-w-sm mx-auto mt-16 space-y-4">
         <h1 className="text-xl font-semibold">部署者控制台</h1>
+        {auth.notice && (
+          <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
+            {auth.notice}
+          </div>
+        )}
         <button
-          onClick={loginLogto}
+          onClick={() => loginLogto().catch((e) => alert(String(e?.message || e)))}
           className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm"
         >
           使用寻数账号登录（Logto）
@@ -172,9 +140,8 @@ export function ConsoleView() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              localStorage.setItem(TOKEN_KEY, draft);
-              localStorage.removeItem("wanxing-console-email");
-              setToken(draft);
+              setOpsToken(draft);
+              setDraft("");
             }}
             className="space-y-3 pt-2"
           >
@@ -192,7 +159,6 @@ export function ConsoleView() {
     );
   }
 
-
   const states = board?.states ?? {};
   const runners = Object.entries(board?.runners ?? {});
   const lag = board?.ingest_lag ?? [];
@@ -203,18 +169,7 @@ export function ConsoleView() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-semibold">机群总览</h1>
-        <span className="text-xs text-slate-400">
-          {email ? `${email} · ` : ""}{board ? `${board.window ?? "24h"} 窗口 · 30s 自动刷新` : ""}
-        </span>
-        <button
-          onClick={() => {
-            localStorage.removeItem(TOKEN_KEY);
-            setToken("");
-          }}
-          className="ml-auto text-xs text-slate-400 underline"
-        >
-          退出
-        </button>
+        <span className="text-xs text-slate-400">{board ? `${board.window ?? "24h"} 窗口 · 30s 自动刷新` : ""}</span>
       </div>
 
       {boardErr ? (
