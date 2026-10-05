@@ -29,7 +29,7 @@
 
 - [x] 5.1 本地全量单测绿（node --test，含既有 test-wanxing-logto 回归）
 - [ ] 5.2 真登录彩排（对线上或 staging Logto）：登录 → board/timeline 以 id_token 出数（观测面身份贯通实证）→ 立刻手动调 refresh 两次：第二次返回 refresh_token ≠ 第一次（旋转实证）且旧 token 失效 → 退出后再 refresh 401/400（吊销实证）
-- [ ] 5.3 镜像与滚动：GitHub Actions 推 wanxing-facade + wanxing-web 双镜像（TCR）→ fd-infra-deploy 两份 yaml 回填新 sha（observer 清单不动）→ push 触发 ArgoCD（滚动顺序 facade 先、web 后，避开新 web × 旧 facade 混跑）
+- [x] 5.3 镜像与滚动：GitHub Actions 推 wanxing-facade + wanxing-web 双镜像（TCR）→ fd-infra-deploy 两份 yaml 回填新 sha（observer 清单不动）→ push 触发 ArgoCD（滚动顺序 facade 先、web 后，避开新 web × 旧 facade 混跑）
 - [ ] 5.4 线上五点探针：①`#/console` 无三栏页脚仅合规行 ②未登录导航见「登录」直跳 ③真登录后机群总览+时间线出数 ④静默续期（或 401 自愈）无感 ⑤退出后 board 401、refresh 失效
 
 ## 6. 收口
