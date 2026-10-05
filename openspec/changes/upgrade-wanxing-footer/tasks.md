@@ -25,6 +25,6 @@
 
 ## 3. 部署验收
 
-- [ ] 3.1 commit → GHA images 绿 → tcr-relay 回灌 ccr → GitOps bump → ArgoCD hard refresh
+- [x] 3.1 commit → GHA images 绿 → tcr-relay 回灌 ccr → GitOps bump → ArgoCD hard refresh
   → rollout 成功 → 线上探针：wanxing 域新 bundle 含阶梯字符（一/十/百/千/万 与
   壹座/识律/柏讯/谦面/萬星）、使命句与两条备案号，壳 title 不变；线页入口可达
