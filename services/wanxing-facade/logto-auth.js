@@ -143,7 +143,9 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
     if (!r.ok || !doc.id_token) throw Object.assign(new Error(doc.error_description || `token endpoint ${r.status}`), { status: 502 });
     const ident = await verifyIdToken(doc.id_token);
     if (!ident) throw Object.assign(new Error("identity refused (allowlist or verification)"), { status: 403 });
-    return { id_token: doc.id_token, ...ident };
+    // Pass the refresh token through (absent = tenant did not grant
+    // offline_access) — the silent-renewal loop is born here.
+    return { id_token: doc.id_token, refresh_token: doc.refresh_token ?? null, ...ident };
   }
 
   return {

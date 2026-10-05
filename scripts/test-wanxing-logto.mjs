@@ -145,6 +145,13 @@ const opFetch = async (url, init = {}) => {
   }
   if (u.endsWith("/oidc/token")) {
     const body = new URLSearchParams(init.body ?? "");
+    if (body.get("grant_type") === "authorization_code") {
+      if (body.get("code") === "dead-code") return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      return new Response(
+        JSON.stringify({ id_token: sign(claims()), refresh_token: "seed-1", token_type: "Bearer", expires_in: 3600 }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }
     if (body.get("grant_type") !== "refresh_token") return new Response("{}", { status: 404 });
     const rt = body.get("refresh_token");
     if (rt === "dead") return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
@@ -164,6 +171,12 @@ const opFetch = async (url, init = {}) => {
 
 test("logto: refreshGrant rotates and revokeToken posts client_id", async () => {
   const a = make({ fetchImpl: opFetch });
+  // exchangeCode passes the seed refresh token through (the 2026-10-06 live
+  // finding: it silently dropped doc.refresh_token and the console never
+  // gained a renewal credential).
+  const ex = await a.exchangeCode({ code: "good-code", verifier: "v", redirectUri: "https://wanxing.test/console-callback" });
+  assert.equal(ex.refresh_token, "seed-1");
+  assert.equal(ex.email, "ops@x.test");
   const doc = await a.refreshGrant({ refreshToken: "live" });
   assert.equal(doc.refresh_token, "rotated-2");
   assert.ok(doc.id_token.split(".").length === 3);
