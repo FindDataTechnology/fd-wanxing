@@ -8,7 +8,7 @@ import { authFetch, loginLogto, setOpsToken, useAuth } from "../auth.js";
 const fmtMs = (ms) => (ms == null ? "n/a" : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
 const fmtAgo = (ms) => (ms == null ? "?" : ms >= 60_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 1000)}s`);
 
-export function ConsoleView() {
+export function ConsoleView({ focusSlug } = {}) {
   const auth = useAuth();
   const token = auth.token;
   const [draft, setDraft] = useState("");
@@ -24,6 +24,17 @@ export function ConsoleView() {
   const [callers, setCallers] = useState(null);
   const [newEmail, setNewEmail] = useState("");
   const [alNote, setAlNote] = useState("");
+  // Service config (agent-service-config): per-deployment detail panel.
+  const [cfg, setCfg] = useState(null); // { slug, data } — loaded read view
+  const [cfgDraft, setCfgDraft] = useState({ rhythm: "", budget: "", model: "" });
+  const [cfgNote, setCfgNote] = useState("");
+  const [cfgBusy, setCfgBusy] = useState(false);
+  // Deep link (#/console/<slug>): open the config panel as soon as the
+  // session token is live — the 壹座 "去配置" path lands here.
+  useEffect(() => {
+    if (token && focusSlug) loadConfig(focusSlug);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, focusSlug]);
 
   useEffect(() => {
     if (!token) return;
@@ -118,6 +129,60 @@ export function ConsoleView() {
     })
       .then(() => loadCallers(slug))
       .catch((e) => setAlNote(String(e?.message || e)));
+  };
+
+  const loadConfig = (slug) => {
+    setCfgNote("");
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/config`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `config HTTP ${r.status}`);
+        setCfg({ slug, data: d });
+        const c = d.config ?? {};
+        setCfgDraft({
+          rhythm: c.rhythm?.effective ? JSON.stringify(c.rhythm.effective) : "",
+          budget: c.budgetMinutes?.effective != null ? String(c.budgetMinutes.effective) : "",
+          model: c.model?.effective ?? "",
+        });
+      })
+      .catch((e) => setCfgNote(String(e?.message || e)));
+  };
+  const saveConfig = (slug) => {
+    setCfgNote("");
+    setCfgBusy(true);
+    const body = {};
+    const rhythmText = cfgDraft.rhythm.trim();
+    if (rhythmText) {
+      try {
+        body.rhythm = JSON.parse(rhythmText);
+      } catch {
+        setCfgBusy(false);
+        return setCfgNote("节奏必须是 JSON 数组（如 [{\"every\":\"1h\"}]）；清空则回落声明默认");
+      }
+    } else {
+      body.rhythm = null;
+    }
+    body.budgetMinutes = cfgDraft.budget.trim() === "" ? null : Number(cfgDraft.budget);
+    body.model = cfgDraft.model.trim() === "" ? null : cfgDraft.model.trim();
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+        setCfgNote("已保存 · 节奏/预算五分钟窗内无感生效；模型变更排水重生");
+        loadConfig(slug);
+      })
+      .catch((e) => setCfgNote(String(e?.message || e)))
+      .finally(() => setCfgBusy(false));
+  };
+  const sourceBadge = (dim) => {
+    const s = dim?.source;
+    const label = s === "override" ? "已覆盖" : s === "declared" ? "跟随声明" : "默认";
+    const tone = s === "override" ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900" : "bg-slate-100 dark:bg-slate-800 text-slate-500";
+    return <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${tone}`}>{label}</span>;
   };
 
   if (!token) {
@@ -281,11 +346,70 @@ export function ConsoleView() {
                         {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
                       </button>
                       <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">允许清单</button>
+                      <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">配置</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {cfg && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+            <div className="font-mono text-xs">
+              服务配置 · {cfg.slug}（v{cfg.data.packVersion ?? "?"} · 只写本部署的覆盖，清空即回落声明）
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3 text-xs">
+              <label className="space-y-1">
+                <span className="text-slate-500">工作节奏（JSON 数组）{sourceBadge(cfg.data.config?.rhythm)}</span>
+                <textarea
+                  value={cfgDraft.rhythm}
+                  onChange={(e) => setCfgDraft((p) => ({ ...p, rhythm: e.target.value }))}
+                  rows={3}
+                  placeholder='[{"every":"1h","do":"巡检"}]'
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-500">回合预算（分钟）{sourceBadge(cfg.data.config?.budgetMinutes)}</span>
+                <input
+                  value={cfgDraft.budget}
+                  onChange={(e) => setCfgDraft((p) => ({ ...p, budget: e.target.value }))}
+                  inputMode="numeric"
+                  placeholder="如 20"
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-500">模型{sourceBadge(cfg.data.config?.model)}</span>
+                <input
+                  value={cfgDraft.model}
+                  onChange={(e) => setCfgDraft((p) => ({ ...p, model: e.target.value }))}
+                  list={`lanes-${cfg.slug}`}
+                  placeholder="留空 = runner 默认"
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                />
+                <datalist id={`lanes-${cfg.slug}`}>
+                  {(cfg.data.lanes ?? []).map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+                {(cfg.data.lanes ?? []).length > 0 && (
+                  <span className="block text-[10px] text-slate-400">部署键车道：{cfg.data.lanes.join(" · ")}</span>
+                )}
+              </label>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                disabled={cfgBusy}
+                onClick={() => saveConfig(cfg.slug)}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+              >
+                {cfgBusy ? "保存中…" : "保存"}
+              </button>
+              <button onClick={() => setCfg(null)} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+              {cfgNote && <span className="text-xs text-amber-600 dark:text-amber-400">{cfgNote}</span>}
+            </div>
           </div>
         )}
         {callers && (

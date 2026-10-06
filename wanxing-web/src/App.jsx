@@ -124,12 +124,19 @@ export function App() {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  const View = VIEWS[hash] ?? IntroView;
+  // Deep link (agent-service-config): `#/console/<slug>` lands on the console
+  // with that deployment's service-config panel already open (the 壹座 pack
+  // detail's "去配置" points here).
+  const [viewKey, focusSlug] = (() => {
+    const m = hash.match(/^(#\/(?:console|catalog|docs))(\/(.+))?$/);
+    return m ? [m[1], m[3] ? decodeURIComponent(m[3]) : null] : [hash, null];
+  })();
+  const View = VIEWS[viewKey] ?? IntroView;
   const tab = (h, label) => (
     <a
       href={h}
       className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
-        (VIEWS[hash] ? hash === h : h === "#/")
+        (VIEWS[viewKey] ? viewKey === h : h === "#/")
           ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
           : "hover:bg-slate-200 dark:hover:bg-slate-800"
       }`}
@@ -176,9 +183,9 @@ export function App() {
         </div>
       </header>
       <main className="max-w-5xl mx-auto px-4 py-6 w-full flex-1">
-        <View />
+        <View focusSlug={viewKey === "#/console" ? focusSlug : undefined} />
       </main>
-      {hash === "#/console" ? <ComplianceLine /> : <FamilyFooter />}
+      {viewKey === "#/console" ? <ComplianceLine /> : <FamilyFooter />}
     </div>
   );
 }

@@ -71,12 +71,15 @@ export function registerWanxingRoutes(app, {
   // the marketplace mounted in this same process.
   const packsInternalBase = () =>
     (env.PACKS_INTERNAL_BASE_URL || `http://127.0.0.1:${env.GATEWAY_PORT || 3080}`).replace(/\/+$/, "");
+  const packsInternalCall = (p, init = {}) =>
+    (fetchImpl ?? fetch)(`${packsInternalBase()}${p}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${registryToken()}`, ...(init.headers ?? {}) },
+    });
   const packsInternalFetch = async (p) => {
     let r;
     try {
-      r = await (fetchImpl ?? fetch)(`${packsInternalBase()}${p}`, {
-        headers: { Authorization: `Bearer ${registryToken()}` },
-      });
+      r = await packsInternalCall(p);
     } catch {
       throw Object.assign(new Error(`packs internal API unreachable (${p})`), { code: "PACKS_INTERNAL_UNAVAILABLE" });
     }
@@ -136,6 +139,10 @@ export function registerWanxingRoutes(app, {
     store,
     sub2api,
     registryFetch: doFetch,
+    // Service-config proxy (agent-service-config): raw pass-through so the
+    // packs surface's status codes (403/400 MODEL_LANE_REJECTED/503) reach
+    // the browser verbatim.
+    packsInternalFetch: packsInternalCall,
     // Fleet-read forwarding (add-console-session-continuity): the browser face
     // brings an identity, the facade swaps in the observer service credential.
     observerFetch: (() => {

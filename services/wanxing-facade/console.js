@@ -19,6 +19,7 @@ export function registerConsoleRoutes(app, {
   store, // wanxing store (allowlist*)
   sub2api, // client or null
   registryFetch, // (path, init) → Response against the registry
+  packsInternalFetch = null, // (path, init) → Response against the packs surface (config proxy)
   observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
   log = null,
 }) {
@@ -192,6 +193,51 @@ export function registerConsoleRoutes(app, {
   };
   app.post("/api/wanxing/v1/console/deployments/:slug/pause", pauseAction(true));
   app.post("/api/wanxing/v1/console/deployments/:slug/resume", pauseAction(false));
+
+  // ── Service config proxy (agent-service-config) ───────────────────────────
+  // The console is a thin door: it verifies the browser's identity, then calls
+  // the packs surface's INTERNAL twin with the acting user — deployer-or-admin
+  // enforcement, shape validation, and model lane checks all live there (the
+  // manifest is only readable on the packs side, so nothing is duplicated
+  // here). The ops service token has no actor: it may read, never write.
+  const configForward = (method) => async (req, res) => {
+    if (!(await gate(req, res))) return;
+    // Both methods need an actor: reads carry it for the deploys' deployer
+    // rule on the packs side, writes for the same rule plus audit. The ops
+    // service token has no actor — the config face is identity-only.
+    if (!req.consoleIdentity) {
+      return res.status(400).json({ error: "a verified identity is required for service config (the ops token carries no actor)" });
+    }
+    const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
+    if (!row) return res.status(404).json({ error: "deployment not found" });
+    let r;
+    try {
+      r = await packsInternalFetch(
+        `/api/packs/internal/deployments/${encodeURIComponent(row.packId)}/${encodeURIComponent(row.agentId)}/config`,
+        {
+          method,
+          headers: {
+            ...(req.consoleIdentity?.email ? { "x-acting-user": req.consoleIdentity.email } : {}),
+            // The tenant issues no groups claim today (username-only tokens,
+            // live finding); passed through the moment it does — until then
+            // the packs-side admin path needs an actor with groups.
+            ...(Array.isArray(req.consoleIdentity?.groups) ? { "x-acting-groups": req.consoleIdentity.groups.join(",") } : {}),
+            ...(method === "PUT" ? { "Content-Type": "application/json" } : {}),
+          },
+          ...(method === "PUT" ? { body: JSON.stringify(req.body ?? {}) } : {}),
+        },
+      );
+    } catch (e) {
+      return res.status(503).json({ error: `packs surface unavailable: ${String(e?.message || e)}` });
+    }
+    const body = await r.json().catch(() => ({}));
+    if (method === "PUT" && r.ok) say(`console: ${req.params.slug} config updated by ${req.consoleIdentity?.email} (${Object.keys(req.body ?? {}).join(", ") || "no-op"})`);
+    return res.status(r.status).json(body);
+  };
+  if (packsInternalFetch) {
+    app.get("/api/wanxing/v1/console/deployments/:slug/config", configForward("GET"));
+    app.put("/api/wanxing/v1/console/deployments/:slug/config", express.json({ limit: "64kb" }), configForward("PUT"));
+  }
 
   app.get("/api/wanxing/v1/console/deployments/:slug/callers", async (req, res) => {
     if (!(await gate(req, res))) return;
