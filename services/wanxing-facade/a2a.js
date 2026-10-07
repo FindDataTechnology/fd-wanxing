@@ -26,12 +26,31 @@ const jsonRpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, e
 // send without one gets a fresh external context derived from the idempotency
 // key (stable across replays — a replayed request resumes the same context),
 // a stream without one gets a one-shot context. All derived ids carry the
-// external prefix so the runner can reap them.
-export function contextIdFor(message, idemKey) {
+// external prefix so the runner can reap them. A caller's reap-window
+// preference (add-caller-preferences) rides IN the derived id as
+// `<minutes>x-` — the runner's reap pass resolves the per-session TTL from
+// the identifier itself (encodeReapWindow/parseReapWindow below, mirrored
+// runner-side; `x` cannot occur in the hex digest, so the segment is
+// unambiguous). No preference → no segment → the runner's platform default.
+export function encodeReapWindow(minutes) {
+  return Number.isInteger(minutes) && minutes > 0 && minutes <= 9_999_999 ? `${minutes}x` : null;
+}
+
+// Accepts a context id ("wx:…") or a runner session name ("srv-wx-…").
+// Returns minutes or null (null = the platform default).
+export function parseReapWindow(value) {
+  const body = String(value ?? "").replace(/^wx:/, "").replace(/^srv-wx-/, "");
+  const m = body.match(/^(\d{1,6})x(?:-|$)/);
+  return m ? Number(m[1]) : null;
+}
+
+export function contextIdFor(message, idemKey, reapMinutes = null) {
   const supplied = message?.context_id ?? message?.contextId ?? null;
   if (supplied) return String(supplied);
-  if (idemKey) return `${EXTERNAL_CONTEXT_PREFIX}${sha256(idemKey).slice(0, 16)}`;
-  return `${EXTERNAL_CONTEXT_PREFIX}${randomBytes(8).toString("hex")}`;
+  const seg = encodeReapWindow(reapMinutes);
+  const prefix = `${EXTERNAL_CONTEXT_PREFIX}${seg ? `${seg}-` : ""}`;
+  if (idemKey) return `${prefix}${sha256(idemKey).slice(0, 16)}`;
+  return `${prefix}${randomBytes(8).toString("hex")}`;
 }
 
 export function createA2aFace({
@@ -44,6 +63,8 @@ export function createA2aFace({
   forwardHeaders,    // () → the platform's internal dual-credential headers
   registryFetch,     // (path, init?) → fetch Response against the registry
   config,            // { agentUrlFor(agentPath) }
+  getReapWindow = null, // (caller, slug) → minutes | null (add-caller-preferences)
+  onTurnComplete = null, // ({caller, slug, idemKey, outcome, startedAt, endedAt, minutesBilled, traceId}) → void
   upstreamFetch = fetch, // injection seam for tests
 }) {
   const note = (kind, agent, payload = {}, id = null) => {
@@ -249,7 +270,7 @@ export function createA2aFace({
         holdsSlot = true;
       }
 
-      const contextId = contextIdFor(message, idemKey);
+      const contextId = contextIdFor(message, idemKey, getReapWindow ? getReapWindow(caller, slug) : null);
       const startedAt = Date.now();
       if (prior !== "done") note("admitted", slug, { caller: caller.email || caller.userId, idem_key: idemKey || "", transport: method });
 
@@ -259,6 +280,15 @@ export function createA2aFace({
       const finish = (outcome) => {
         core.releaseSlot(caller.userId, slug);
         const row = core.recordUsage({ caller, slug, idemKey, startedAt, endedAt: Date.now(), outcome });
+        // The caller's turn-completion callback (add-caller-preferences):
+        // fire-and-forget BESIDE settlement — notification only, settlement
+        // untouched. Traced by the usage-row id (the receiver deduplicates on it).
+        if (onTurnComplete) {
+          void onTurnComplete({
+            caller, slug, idemKey, outcome,
+            startedAt, endedAt: row.endedAt, minutesBilled: row.minutesBilled, traceId: row.id,
+          });
+        }
         // Deterministic event id (the usage row id): inline settle and the
         // pending sweep can both report this row — exactly once on the observer.
         if (row.settlementStatus === "waived") {

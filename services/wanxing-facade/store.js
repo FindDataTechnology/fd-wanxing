@@ -71,6 +71,23 @@ export function createWanxingStore({ file }) {
     updated_at INTEGER NOT NULL
   )`);
 
+  // Caller preferences (add-caller-preferences): per (caller, agent)
+  // personalization — the turn-completion callback (URL + HMAC secret) and
+  // the external-context reap window in minutes. The secret is stored RAW
+  // because the facade must SIGN with it (the deployment_keys discipline:
+  // platform-side store only, never echoed outward, never logged). NULL
+  // column = the dimension follows the platform default; a row with both
+  // NULL is deleted by prefsClear (no tombstones).
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_caller_prefs (
+    user_id INTEGER NOT NULL,
+    agent_slug TEXT NOT NULL,
+    callback_url TEXT,
+    callback_secret TEXT,
+    reap_minutes INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_slug)
+  )`);
+
   const now = () => Date.now();
 
   return {
@@ -147,6 +164,34 @@ export function createWanxingStore({ file }) {
     },
     clearCaller(userId) {
       db.prepare(`UPDATE wanxing_caller_state SET consecutive_failures = 0, suspended_reason = NULL, updated_at = ? WHERE user_id = ?`).run(now(), Number(userId));
+    },
+
+    // ── Caller preferences ──────────────────────────────────────────────────
+    prefsGet(userId, agentSlug) {
+      return db.prepare(`SELECT callback_url AS callbackUrl, callback_secret AS callbackSecret, reap_minutes AS reapMinutes, updated_at AS updatedAt
+        FROM wanxing_caller_prefs WHERE user_id = ? AND agent_slug = ?`).get(Number(userId), agentSlug) ?? null;
+    },
+    // Patch-style upsert: only the provided dimensions change (undefined =
+    // keep, null = explicit clear). The row is deleted when nothing is left —
+    // "no row" and "all-default row" mean the same thing.
+    prefsSet(userId, agentSlug, { callbackUrl, callbackSecret, reapMinutes } = {}) {
+      const cur = this.prefsGet(userId, agentSlug) ?? { callbackUrl: null, callbackSecret: null, reapMinutes: null };
+      const next = {
+        callbackUrl: callbackUrl === undefined ? cur.callbackUrl : callbackUrl,
+        callbackSecret: callbackSecret === undefined ? cur.callbackSecret : callbackSecret,
+        reapMinutes: reapMinutes === undefined ? cur.reapMinutes : reapMinutes,
+      };
+      if (next.callbackUrl == null && next.callbackSecret == null && next.reapMinutes == null) {
+        db.prepare(`DELETE FROM wanxing_caller_prefs WHERE user_id = ? AND agent_slug = ?`).run(Number(userId), agentSlug);
+        return null;
+      }
+      db.prepare(`INSERT INTO wanxing_caller_prefs (user_id, agent_slug, callback_url, callback_secret, reap_minutes, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (user_id, agent_slug) DO UPDATE SET
+          callback_url = excluded.callback_url, callback_secret = excluded.callback_secret,
+          reap_minutes = excluded.reap_minutes, updated_at = excluded.updated_at`)
+        .run(Number(userId), agentSlug, next.callbackUrl ?? null, next.callbackSecret ?? null, next.reapMinutes ?? null, now());
+      return next;
     },
   };
 }

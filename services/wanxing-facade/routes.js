@@ -18,6 +18,8 @@ import { createA2aFace } from "./a2a.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
+import { registerPrefsRoutes } from "./prefs.js";
+import { createCallbackDispatcher } from "./callbacks.js";
 import { createLogtoAuth } from "./logto-auth.js";
 import { createSub2apiClient } from "./lib/sub2api-admin.js";
 
@@ -160,6 +162,17 @@ export function registerWanxingRoutes(app, {
     log: (m) => console.log(`[wanxing:console] ${m}`),
   });
 
+  // Caller-preferences face (add-caller-preferences): caller-key authenticated
+  // (the same billing gate the A2A door runs), and the completion-callback
+  // dispatcher with its bounded retry ladder.
+  const callbacks = createCallbackDispatcher({
+    store,
+    ...(fetchImpl ? { fetchImpl } : {}),
+    log: (m) => console.log(`[wanxing:callbacks] ${m}`),
+    auditFile: path.join(dataRoot, "callback-audit.jsonl"),
+  });
+  registerPrefsRoutes(app, { core, store, log: (m) => console.log(`[wanxing:prefs] ${m}`) });
+
   const face = createA2aFace({
     core,
     resolveDeployment,
@@ -169,6 +182,11 @@ export function registerWanxingRoutes(app, {
     report: (ev) => fleetReporter.report(ev),
     forwardHeaders,
     registryFetch: doFetch,
+    // Caller preferences (add-caller-preferences): the derived external
+    // context carries the caller's reap window; a finished turn fires the
+    // caller's completion callback (fire-and-forget, beside settlement).
+    getReapWindow: (caller, slug) => store.prefsGet(caller.userId, slug)?.reapMinutes ?? null,
+    onTurnComplete: (turn) => callbacks.dispatch(turn),
     config: {
       // Runtime route through the registry proxy (ADR-0004's distribution
       // plane) — the facade never addresses runner origins directly.
