@@ -30,6 +30,6 @@
 
 ## 6. 部署与生产验收
 
-- [ ] 6.1 env 落位与镜像滚动：facade 五 env（`WANXING_CHAT_SUBSIDY_ENABLED` 默认 false/`WANXING_CHAT_SUBSIDY_DAILY_MINUTES`=10/`WANXING_CHAT_RPM`=6/`WANXING_SUBSIDY_KEY`/日界）；按迁移序滚 paas→facade→web，补贴保持关——部署后 /healthz+回归探针（catalog/a2a/console 全绿）
-- [ ] 6.2 生产全链验收（补贴关态）：deployer 配主人池 → 新注册访客登录 → chat 真回合（SSE 出字、host 结算落账）→ console 记录可见（脱敏）→ 耗尽态+自带键桥续聊 —— 探针脚本留档
-- [ ] 6.3 开补贴终验：显式开 `WANXING_CHAT_SUBSIDY_ENABLED` → 新访客首回合走 subsidy 结算 → 当日 10 分钟耗尽后瀑布落 host —— 账本三态（api/subsidy/host）各至少一行实证
+- [x] 6.1 env 落位与镜像滚动（org GHA 账单阻断期走 scs001 镜像线：platform-image-verify=sha-87b64e4 + fd-wanxing-images=三镜像；配额 limits.cpu 10→12 解滚动卡死；facet 同滚承载 packs internal 面；补贴关态滚完，探针全绿）：facade 五 env（`WANXING_CHAT_SUBSIDY_ENABLED` 默认 false/`WANXING_CHAT_SUBSIDY_DAILY_MINUTES`=10/`WANXING_CHAT_RPM`=6/`WANXING_SUBSIDY_KEY`/日界）；按迁移序滚 paas→facade→web，补贴保持关——部署后 /healthz+回归探针（catalog/a2a/console 全绿）
+- [x] 6.2 生产全链验收（补贴关态）：ops 配池 2 分钟→名单外真实身份 platform-test@findmail.com 经 chat 门登录（走查抓出并修复 exchange 名单缺口 ca10c70）→真回合×2 SSE 出字→host 实扣结算×2→console 记录脱敏聚合（p***@findmail.com 对话 2 回合/2 分钟）——探针/截图留档deployer 配主人池 → 新注册访客登录 → chat 真回合（SSE 出字、host 结算落账）→ console 记录可见（脱敏）→ 耗尽态+自带键桥续聊 —— 探针脚本留档
+- [x] 6.3 开补贴终验：补贴开（专用账户 id69，日额验证期 1 分钟）→subsidy 真回合实扣（69 余额 50→49.9）→耗尽 402 专态+自带键桥展开（走查抓出并修复前端误翻未开放 6dc1f9a/authFetch 续期 7a2f826）→池回补 10 分钟瀑布落 host（8→7）→账本三态 api 23/21·host 3/3·subsidy 1/1；日额终值调回 10——截图 chatlane-402-exhausted-ownkey-bridge.png / chatlane-final-subsidy-9min.png显式开 `WANXING_CHAT_SUBSIDY_ENABLED` → 新访客首回合走 subsidy 结算 → 当日 10 分钟耗尽后瀑布落 host —— 账本三态（api/subsidy/host）各至少一行实证
