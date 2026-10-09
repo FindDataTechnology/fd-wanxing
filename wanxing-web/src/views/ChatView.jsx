@@ -6,7 +6,7 @@
 // lane answers allowance-exhausted the view offers the own-key bridge: a
 // pasted sk- key turns subsequent turns into ordinary API-lane calls.
 import { useEffect, useRef, useState } from "react";
-import { loginLogto, useAuth } from "../auth.js";
+import { authFetch, loginLogto, useAuth } from "../auth.js";
 
 const histKey = (slug) => `wx-chat-history:${slug}`;
 const ctxKey = (slug) => `wx-chat-ctx:${slug}`;
@@ -78,8 +78,10 @@ export function ChatView({ focusSlug } = {}) {
   const refreshStatus = () => {
     if (!slug) return;
     setStatusErr(null);
-    const opts = auth.token ? { headers: { Authorization: `Bearer ${auth.token}` } } : {};
-    fetch(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/status`, opts)
+    // authFetch: an expired id_token renews once transparently — a visitor
+    // chatting past the token's lifetime must not see the anonymous shape
+    // (its missing fields would render as zeros).
+    authFetch(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/status`)
       .then(async (r) => {
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
@@ -134,21 +136,27 @@ export function ChatView({ focusSlug } = {}) {
     saveHist(slug, next);
     setSending(true);
     const url = useKey ? `/api/wanxing/v1/a2a/${encodeURIComponent(slug)}` : `/api/wanxing/v1/chat/${encodeURIComponent(slug)}`;
+    const rpcBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "message/stream",
+      params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: ctxFor(slug) } },
+    });
     try {
-      const r = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": crypto.randomUUID(),
-          Authorization: `Bearer ${useKey ? ownKey : auth.token}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "message/stream",
-          params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: ctxFor(slug) } },
-        }),
-      });
+      // The own-key bridge rides the API lane with the pasted key verbatim
+      // (raw fetch — authFetch would overwrite the bearer with the console
+      // token); visitor turns go through authFetch for silent renewal.
+      const r = useKey
+        ? await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID(), Authorization: `Bearer ${ownKey}` },
+            body: rpcBody,
+          })
+        : await authFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+            body: rpcBody,
+          });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         const code = d?.error?.code ?? `HTTP ${r.status}`;
