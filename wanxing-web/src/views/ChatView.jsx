@@ -239,7 +239,11 @@ export function ChatView({ focusSlug } = {}) {
         <div className="max-w-sm mx-auto mt-10 space-y-3 text-center">
           <p className="text-sm text-slate-500">登录后即可与 agent 对话（每日有免费额度）。</p>
           <button
-            onClick={() => loginLogto().catch((e) => alert(String(e?.message || e)))}
+            onClick={() =>
+              loginLogto({ gate: "chat", returnTo: `#/chat/${encodeURIComponent(slug)}` }).catch((e) =>
+                alert(String(e?.message || e)),
+              )
+            }
             className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm"
           >
             使用寻数账号登录（Logto）

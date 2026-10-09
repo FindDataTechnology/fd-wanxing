@@ -138,6 +138,7 @@ test("logto: dual gate through the facade — ID token opens the console routes"
 // revocation endpoints. `dead` is an invalid grant; every other refresh token
 // rotates to `rotated-2` with a fresh allowlisted id_token. `refuse` rotates
 // to a token the allowlist must reject.
+const codeClaims = {};
 const opFetch = async (url, init = {}) => {
   const u = String(url);
   if (u.endsWith("/oidc/jwks")) {
@@ -147,8 +148,9 @@ const opFetch = async (url, init = {}) => {
     const body = new URLSearchParams(init.body ?? "");
     if (body.get("grant_type") === "authorization_code") {
       if (body.get("code") === "dead-code") return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      const special = codeClaims[body.get("code")];
       return new Response(
-        JSON.stringify({ id_token: sign(claims()), refresh_token: "seed-1", token_type: "Bearer", expires_in: 3600 }),
+        JSON.stringify({ id_token: sign(claims(special)), refresh_token: "seed-1", token_type: "Bearer", expires_in: 3600 }),
         { headers: { "Content-Type": "application/json" } },
       );
     }
@@ -438,4 +440,18 @@ test("chat-lane console: usage records masked per owner, host allowance deployer
     await new Promise((r) => srv.close(r));
     await new Promise((r) => packsSrv.close(r));
   }
+});
+
+// ── add-agent-chat-lane: the chat-gated exchange (visitor login funnel) ──────
+
+test("exchange gate: chat logins admit off-allowlist identities; console keeps refusing", async () => {
+  const a = make({ fetchImpl: opFetch });
+  // A stranger's authorization code (the OP stub signs whoever we ask):
+  // the console gate refuses the exchange, the chat gate admits it.
+  codeClaims["code-stranger"] = { email: "stranger@x.test", sub: "v-9" };
+  const stranger = { code: "code-stranger", email: "stranger@x.test", sub: "v-9" };
+  const consoleTry = await a.exchangeCode({ code: stranger.code, verifier: "v", redirectUri: "https://web/console-callback" }).catch((e) => e.status);
+  assert.equal(consoleTry, 403);
+  const chatTry = await a.exchangeCode({ code: stranger.code, verifier: "v", redirectUri: "https://web/console-callback", allowlist: false }).catch((e) => e.status);
+  assert.notEqual(chatTry, 403);
 });

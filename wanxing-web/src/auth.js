@@ -11,6 +11,8 @@ const REFRESH_KEY = "wanxing-console-refresh";
 const EMAIL_KEY = "wanxing-console-email";
 const VERIFIER_KEY = "wx-pkce-verifier";
 const STATE_KEY = "wx-pkce-state";
+const GATE_KEY = "wx-login-gate"; // "console" (default) | "chat" — the exchange's allowlist mode
+const RETURN_KEY = "wx-login-return"; // hash to land on after the callback
 const LOCK_NAME = "wanxing-auth-refresh"; // serializes rotation across tabs
 const EXPIRED_NOTICE = "登录已过期，请重新登录";
 
@@ -48,14 +50,18 @@ const b64u = (buf) => btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").repl
 // Start the PKCE redirect. The SPA builds the authorize URL itself (the face
 // is static); keep scope/prompt in exact lockstep with logto-auth's
 // authorizeUrl — offline_access + prompt=consent is what makes the tenant
-// issue the rotating refresh token.
-export async function loginLogto() {
+// issue the rotating refresh token. Options: gate "chat" exchanges the code
+// WITHOUT the console allowlist (the chat lane admits any tenant identity);
+// returnTo lands the callback back on that hash instead of the console.
+export async function loginLogto({ gate = "console", returnTo = null } = {}) {
   const cfg = await fetch("/api/wanxing/v1/console/auth/config").then(async (r) => {
     if (!r.ok) throw new Error("identity not configured on this deployment");
     return r.json();
   });
   const verifier = b64u(crypto.getRandomValues(new Uint8Array(48)));
   sessionStorage.setItem(VERIFIER_KEY, verifier);
+  sessionStorage.setItem(GATE_KEY, gate === "chat" ? "chat" : "console");
+  sessionStorage.setItem(RETURN_KEY, returnTo ?? "#/console");
   const challenge = b64u(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const state = String(Math.random()).slice(2, 10);
   sessionStorage.setItem(STATE_KEY, state);
@@ -72,19 +78,25 @@ export async function loginLogto() {
 }
 
 // /console-callback landing: exchange through the facade proxy, keep the
-// token pair, land on the console. State is now checked (it never was).
+// token pair, land where the login asked for (default: the console). State
+// is now checked (it never was).
 export async function handleConsoleCallback() {
   const q = new URLSearchParams(window.location.search);
   const code = q.get("code");
   const verifier = sessionStorage.getItem(VERIFIER_KEY);
   const state = sessionStorage.getItem(STATE_KEY);
+  const gate = sessionStorage.getItem(GATE_KEY) === "chat" ? "chat" : "console";
+  const returnTo = sessionStorage.getItem(RETURN_KEY) || "#/console";
   sessionStorage.removeItem(VERIFIER_KEY);
   sessionStorage.removeItem(STATE_KEY);
+  sessionStorage.removeItem(GATE_KEY);
+  sessionStorage.removeItem(RETURN_KEY);
+  window.wxLoginReturnTo = returnTo; // main.jsx lands there after this settles
   if (!code || !verifier || !state || q.get("state") !== state) return;
   const r = await fetch("/api/wanxing/v1/console/auth/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, verifier, redirect_uri: window.location.origin + "/console-callback" }),
+    body: JSON.stringify({ code, verifier, redirect_uri: window.location.origin + "/console-callback", gate }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
   const d = await r.json();

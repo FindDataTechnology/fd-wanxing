@@ -68,13 +68,23 @@ export function registerConsoleRoutes(app, {
 
   // PKCE exchange proxy: the static face cannot call the tenant token
   // endpoint cross-origin; the facade exchanges and returns the verified
-  // identity bound to the ID token.
+  // identity bound to the ID token. Body gate: absent/"console" (default)
+  // keeps the fail-closed email allowlist; "chat" verifies without it — the
+  // chat lane's visitors are any tenant identity, and every console-surface
+  // gate re-verifies with the allowlist on each call anyway, so the chat
+  // session cannot ride into console routes.
   if (logtoAuth?.configured) {
     app.post("/api/wanxing/v1/console/auth/exchange", express.json({ limit: "4kb" }), async (req, res) => {
-      const { code, verifier, redirect_uri: redirectUri } = req.body ?? {};
+      const { code, verifier, redirect_uri: redirectUri, gate } = req.body ?? {};
       if (!code || !verifier || !redirectUri) return res.status(400).json({ error: "code, verifier, redirect_uri required" });
+      if (gate !== undefined && gate !== "console" && gate !== "chat") return res.status(400).json({ error: "gate must be console or chat" });
       try {
-        const out = await logtoAuth.exchangeCode({ code, verifier, redirectUri });
+        const out = await logtoAuth.exchangeCode({
+          code,
+          verifier,
+          redirectUri,
+          ...(gate === "chat" ? { allowlist: false } : {}),
+        });
         res.json(out);
       } catch (e) {
         res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: String(e?.message || e) });

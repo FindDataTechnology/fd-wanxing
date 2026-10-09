@@ -131,12 +131,15 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
   }
 
   // PKCE exchange, proxied server-side (CORS-free for the static face).
-  async function exchangeCode({ code, verifier, redirectUri }) {
+  // allowlist: false (the chat lane's gate) verifies the token without the
+  // console allowlist — any tenant identity exchanges; the console surfaces
+  // re-verify with the allowlist per call, so this never widens them.
+  async function exchangeCode({ code, verifier, redirectUri, allowlist = true }) {
     if (!configured) throw Object.assign(new Error("logto not configured"), { status: 503 });
     const body = new URLSearchParams({
       grant_type: "authorization_code",
-      code: String(code),
-      code_verifier: String(verifier),
+      code: String(code ?? ""),
+      code_verifier: String(verifier ?? ""),
       client_id: appId,
       redirect_uri: redirectUri,
     });
@@ -147,7 +150,7 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
     });
     const doc = await r.json().catch(() => ({}));
     if (!r.ok || !doc.id_token) throw Object.assign(new Error(doc.error_description || `token endpoint ${r.status}`), { status: 502 });
-    const ident = await verifyIdToken(doc.id_token);
+    const ident = await verifyIdToken(doc.id_token, { allowlist });
     if (!ident) throw Object.assign(new Error("identity refused (allowlist or verification)"), { status: 403 });
     // Pass the refresh token through (absent = tenant did not grant
     // offline_access) — the silent-renewal loop is born here.
