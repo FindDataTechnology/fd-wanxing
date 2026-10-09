@@ -272,4 +272,79 @@ export function registerConsoleRoutes(app, {
     store.allowlistRemove(req.params.slug, userId);
     return ok(res, { ok: true });
   });
+
+  // ── Invocation records + host allowance (add-agent-chat-lane 4.1/4.2) ──────
+  //
+  // Owner scoping: the deployment row's deployer (by email) or the ops
+  // service token. Any other verified console identity gets 403 — records
+  // and the allowance cap belong to the agent's owner, not the console at
+  // large. Visitor emails are masked for everyone (ops may pass
+  // ?unmasked=1); API callers' key-holder emails are not secrets to the
+  // owner (the allowlist relationship is already theirs).
+  const maskEmail = (email) => {
+    const s = String(email || "");
+    const at = s.indexOf("@");
+    if (at <= 0) return s ? "…" : s;
+    return `${s.slice(0, 1)}***${s.slice(at)}`;
+  };
+  const ownerGate = async (req, res) => {
+    if (!(await gate(req, res))) return null;
+    const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
+    if (!row) {
+      res.status(404).json({ error: "deployment not found" });
+      return null;
+    }
+    const isOps = !req.consoleIdentity; // the token path carries no actor
+    if (!isOps && String(row.deployedBy || "").toLowerCase() !== String(req.consoleIdentity.email || "").toLowerCase()) {
+      res.status(403).json({ error: "only this deployment's deployer (or the ops credential) may read or change it" });
+      return null;
+    }
+    return { row, isOps };
+  };
+
+  app.get("/api/wanxing/v1/console/deployments/:slug/usage", async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+    const sinceMs = Date.now() - days * 86_400_000;
+    const unmasked = who.isOps && req.query.unmasked === "1";
+    const mask = (r) => (r.channel === "chat" && !unmasked ? { ...r, email: maskEmail(r.email) } : r);
+    return ok(res, {
+      byCaller: store.usageByCaller(req.params.slug, sinceMs).map(mask),
+      activity: store.usageActivity(req.params.slug, 50).map(mask),
+    });
+  });
+
+  app.get("/api/wanxing/v1/console/deployments/:slug/host-allowance", async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const cap = store.hostAllowanceGet(req.params.slug);
+    const used = store.hostAllowanceUsed(req.params.slug);
+    return ok(res, {
+      limitMinutes: cap?.limitMinutes ?? 0,
+      remainingMinutes: cap ? Math.max(0, cap.limitMinutes - used) : 0,
+      updatedBy: cap?.updatedBy ?? null,
+      updatedAt: cap?.updatedAt ?? null,
+    });
+  });
+
+  app.put("/api/wanxing/v1/console/deployments/:slug/host-allowance", express.json({ limit: "2kb" }), async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const limit = Number(req.body?.limitMinutes);
+    if (!Number.isInteger(limit) || limit < 0 || limit > 1_000_000) {
+      return res.status(400).json({ error: "limitMinutes must be an integer in [0, 1000000]" });
+    }
+    const by = who.isOps ? "ops" : req.consoleIdentity.email;
+    store.hostAllowanceSet(req.params.slug, limit, by);
+    say(`console: ${req.params.slug} host allowance set to ${limit} min by ${by}`);
+    const cap = store.hostAllowanceGet(req.params.slug);
+    const used = store.hostAllowanceUsed(req.params.slug);
+    return ok(res, {
+      limitMinutes: cap.limitMinutes,
+      remainingMinutes: Math.max(0, cap.limitMinutes - used),
+      updatedBy: cap.updatedBy,
+      updatedAt: cap.updatedAt,
+    });
+  });
 }

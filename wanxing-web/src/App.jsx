@@ -11,11 +11,12 @@ import { IntroView } from "./views/IntroView.jsx";
 import { CatalogView } from "./views/CatalogView.jsx";
 import { DocsView } from "./views/DocsView.jsx";
 import { ConsoleView } from "./views/ConsoleView.jsx";
+import { ChatView } from "./views/ChatView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
 import { loginLogto, signOut, useAuth } from "./auth.js";
 
-const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView };
+const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView };
 
 const CONTACT_EMAIL = "1253774197@qq.com";
 const CONTACT_PHONE = "17753221425";
@@ -124,11 +125,12 @@ export function App() {
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
-  // Deep link (agent-service-config): `#/console/<slug>` lands on the console
-  // with that deployment's service-config panel already open (the 壹座 pack
-  // detail's "去配置" points here).
+  // Deep link (agent-service-config / add-agent-chat-lane): `#/console/<slug>`
+  // lands on the console with that deployment's service-config panel open
+  // (the 壹座 pack detail's "去配置" points here); `#/chat/<slug>` is the
+  // visitor conversation page.
   const [viewKey, focusSlug] = (() => {
-    const m = hash.match(/^(#\/(?:console|catalog|docs))(\/(.+))?$/);
+    const m = hash.match(/^(#\/(?:console|catalog|docs|chat))(\/(.+))?$/);
     return m ? [m[1], m[3] ? decodeURIComponent(m[3]) : null] : [hash, null];
   })();
   const View = VIEWS[viewKey] ?? IntroView;
@@ -183,7 +185,7 @@ export function App() {
         </div>
       </header>
       <main className="max-w-5xl mx-auto px-4 py-6 w-full flex-1">
-        <View focusSlug={viewKey === "#/console" ? focusSlug : undefined} />
+        <View focusSlug={viewKey === "#/console" || viewKey === "#/chat" ? focusSlug : undefined} />
       </main>
       {viewKey === "#/console" ? <ComplianceLine /> : <FamilyFooter />}
     </div>

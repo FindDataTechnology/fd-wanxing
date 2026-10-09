@@ -61,6 +61,25 @@ export function createWanxingStore({ file }) {
     settlement_status TEXT NOT NULL,
     settled_at INTEGER
   )`);
+  // Chat-lane dimensions (add-agent-chat-lane D3): the lane a turn arrived
+  // on (api | chat) and, for chat rows, who pays (subsidy | host) plus the
+  // visitor's tenant subject — the per-visitor daily subsidy is derived from
+  // these columns, never from a separate counter. API rows keep the defaults
+  // (channel api, settler NULL = the caller themself).
+  const usageCols = new Set(db.prepare(`PRAGMA table_info(wanxing_usage)`).all().map((c) => c.name));
+  if (!usageCols.has("channel")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN channel TEXT NOT NULL DEFAULT 'api'`);
+  if (!usageCols.has("settler")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN settler TEXT`);
+  if (!usageCols.has("visitor_sub")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN visitor_sub TEXT`);
+
+  // Host allowance (D6): one one-time minute cap per agent, set and adjusted
+  // by that deployment's deployer (or ops). Used minutes derive from the
+  // ledger (settler='host' rows for the agent) — this table is the cap only.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_host_allowance (
+    agent_slug TEXT PRIMARY KEY,
+    limit_minutes INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
 
   // Caller debt state: consecutive settlement failures; a non-null
   // suspended_reason refuses admission until the billing gate passes again.
@@ -129,9 +148,9 @@ export function createWanxingStore({ file }) {
 
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
-      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus);
+      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null);
     },
     usageMarkSettled(id) {
       db.prepare(`UPDATE wanxing_usage SET settlement_status = 'settled', settled_at = ? WHERE id = ?`).run(now(), id);
@@ -139,12 +158,49 @@ export function createWanxingStore({ file }) {
     usagePending() {
       return db.prepare(`SELECT * FROM wanxing_usage WHERE settlement_status = 'pending' ORDER BY started_at`).all();
     },
+    // Chat-lane allowance derivation (D3): no counters, the ledger IS the
+    // source. Subsidy per visitor per day window [fromMs, toMs); host usage
+    // is all-time for the agent (the cap is one-time).
+    chatSubsidyUsed(visitorSub, fromMs, toMs) {
+      const r = db.prepare(`SELECT COALESCE(SUM(minutes_billed), 0) AS m FROM wanxing_usage
+        WHERE channel = 'chat' AND settler = 'subsidy' AND visitor_sub = ? AND started_at >= ? AND started_at < ?`)
+        .get(visitorSub, fromMs, toMs);
+      return r.m;
+    },
+    hostAllowanceUsed(agentSlug) {
+      const r = db.prepare(`SELECT COALESCE(SUM(minutes_billed), 0) AS m FROM wanxing_usage
+        WHERE channel = 'chat' AND settler = 'host' AND agent_slug = ?`).get(agentSlug);
+      return r.m;
+    },
+    // Owner-facing aggregates (D8): by caller × channel over the window.
+    // caller_email carries the visitor's email on chat rows (masked at the
+    // READ side for deployers, never at rest) and the key holder on api rows.
+    usageByCaller(agentSlug, sinceMs) {
+      return db.prepare(`SELECT channel, caller_email AS email, COUNT(*) AS turns, SUM(minutes_billed) AS minutes,
+        MAX(ended_at) AS lastAt FROM wanxing_usage WHERE agent_slug = ? AND started_at >= ?
+        GROUP BY channel, caller_email ORDER BY lastAt DESC`).all(agentSlug, sinceMs);
+    },
+    usageActivity(agentSlug, limit = 50) {
+      return db.prepare(`SELECT started_at AS at, channel, outcome, minutes_billed AS minutes, caller_email AS email
+        FROM wanxing_usage WHERE agent_slug = ? ORDER BY started_at DESC LIMIT ?`).all(agentSlug, Math.max(1, Math.min(Number(limit) || 50, 200)));
+    },
     usageBoard() {
       const byCaller = db.prepare(`SELECT caller_id AS callerId, caller_email AS email, COUNT(*) AS turns, SUM(minutes_billed) AS minutes, SUM(CASE WHEN settlement_status != 'waived' THEN minutes_billed * rate_usd ELSE 0 END) AS usd,
         SUM(CASE WHEN settlement_status = 'pending' THEN 1 ELSE 0 END) AS pending FROM wanxing_usage GROUP BY caller_id ORDER BY usd DESC`).all();
       const byAgent = db.prepare(`SELECT agent_slug AS agent, COUNT(*) AS turns, SUM(minutes_billed) AS minutes, SUM(CASE WHEN settlement_status != 'waived' THEN minutes_billed * rate_usd ELSE 0 END) AS usd,
         SUM(CASE WHEN settlement_status = 'pending' THEN 1 ELSE 0 END) AS pending FROM wanxing_usage GROUP BY agent_slug ORDER BY usd DESC`).all();
       return { byCaller, byAgent };
+    },
+
+    // ── Host allowance (D6) ─────────────────────────────────────────────────
+    hostAllowanceGet(agentSlug) {
+      const r = db.prepare(`SELECT limit_minutes, updated_by, updated_at FROM wanxing_host_allowance WHERE agent_slug = ?`).get(agentSlug);
+      return r ? { limitMinutes: r.limit_minutes, updatedBy: r.updated_by, updatedAt: r.updated_at } : null;
+    },
+    hostAllowanceSet(agentSlug, limitMinutes, updatedBy) {
+      db.prepare(`INSERT INTO wanxing_host_allowance (agent_slug, limit_minutes, updated_by, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(agent_slug) DO UPDATE SET limit_minutes = excluded.limit_minutes, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+        .run(agentSlug, Number(limitMinutes), String(updatedBy || ""), now());
     },
 
     // ── Caller debt state ───────────────────────────────────────────────────

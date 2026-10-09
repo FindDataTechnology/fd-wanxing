@@ -23,6 +23,7 @@ test.after(() => rmSync(tmp, { recursive: true, force: true }));
 const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
 const { createWanxingCore, slugFor, maskKey } = await import("../services/wanxing-facade/core.js");
 const { createA2aFace, contextIdFor } = await import("../services/wanxing-facade/a2a.js");
+const { createChatFace } = await import("../services/wanxing-facade/chat.js");
 
 // A stub sub2api client with call counters — every behavior is programmable
 // per test by mutating these fields.
@@ -703,4 +704,384 @@ test("regression: concurrent same-key duplicates join the flight through the rou
   } finally {
     await new Promise((r) => server.close(r));
   }
+});
+
+// ── add-agent-chat-lane 2.1: channel/settler/visitor columns + derivation ────
+
+test("2.1 chat columns: ledger rows carry the lane; allowance derives from the ledger", () => {
+  const s = freshStore();
+  const ins = (o) => s.usageInsert({
+    id: o.id, callerId: o.callerId ?? 7, callerEmail: o.email ?? "c@x", agentSlug: o.slug ?? "a",
+    idemKey: o.idemKey ?? "", startedAt: o.at, endedAt: o.at + 1000, durationMs: 1000,
+    outcome: o.outcome ?? "ok", minutesBilled: o.minutes ?? 1, rateUsd: 0.1,
+    settlementStatus: o.status ?? "pending", channel: o.channel, settler: o.settler, visitorSub: o.visitorSub,
+  });
+  ins({ id: "u-api", at: 1 }); // an API-lane row keeps its default lane
+  ins({ id: "u-c1", at: 10, email: "visitor@x", callerId: 0, channel: "chat", settler: "subsidy", visitorSub: "v1", minutes: 1 });
+  ins({ id: "u-c2", at: 20, email: "visitor@x", callerId: 0, channel: "chat", settler: "subsidy", visitorSub: "v1", minutes: 2 });
+  ins({ id: "u-c3", at: 30, email: "visitor2@x", callerId: 0, channel: "chat", settler: "host", visitorSub: "v2", minutes: 5, slug: "a" });
+  ins({ id: "u-c4", at: 40, email: "visitor3@x", callerId: 0, channel: "chat", settler: "subsidy", visitorSub: "v3", minutes: 4, slug: "other" });
+
+  // Subsidy per visitor, windowed — v1 used 3 minutes total, 1 before t=15.
+  assert.equal(s.chatSubsidyUsed("v1", 0, 15), 1);
+  assert.equal(s.chatSubsidyUsed("v1", 0, 1000), 3);
+  assert.equal(s.chatSubsidyUsed("v2", 0, 1000), 0, "host minutes never count as subsidy");
+  // Host usage is all-time per agent (v2's 5 on a; other-agent host rows don't leak).
+  assert.equal(s.hostAllowanceUsed("a"), 5);
+  assert.equal(s.hostAllowanceUsed("other"), 0);
+
+  // Owner aggregates: by caller × channel, both lanes labeled by email.
+  const byCaller = s.usageByCaller("a", 0);
+  assert.equal(byCaller.length, 3);
+  const apiRow = byCaller.find((r) => r.channel === "api");
+  assert.deepEqual({ email: apiRow.email, turns: apiRow.turns, minutes: apiRow.minutes }, { email: "c@x", turns: 1, minutes: 1 });
+  const chatVisitor = byCaller.find((r) => r.channel === "chat" && r.email === "visitor@x");
+  assert.equal(chatVisitor.turns, 2);
+  // Activity stream: newest first, both lanes visible.
+  const act = s.usageActivity("a", 10);
+  assert.equal(act[0].id ?? act[0].email, act[0].email); // shape sanity
+  assert.deepEqual(act.map((r) => r.channel), ["chat", "chat", "chat", "api"]);
+
+  // Host allowance cap roundtrip + adjust.
+  assert.equal(s.hostAllowanceGet("a"), null);
+  s.hostAllowanceSet("a", 600, "deployer@x");
+  assert.equal(s.hostAllowanceGet("a").limitMinutes, 600);
+  s.hostAllowanceSet("a", 300, "deployer@x");
+  assert.equal(s.hostAllowanceGet("a").limitMinutes, 300);
+  s.close();
+});
+
+test("2.1 migration: a pre-chat-era ledger file gains the columns in place", async () => {
+  const { default: Database } = await import("better-sqlite3");
+  const file = path.join(mkdtempSync(path.join(tmp, "mig-")), "wanxing.db");
+  const raw = new Database(file);
+  raw.exec(`CREATE TABLE wanxing_usage (
+    id TEXT PRIMARY KEY, caller_id INTEGER NOT NULL, caller_email TEXT NOT NULL DEFAULT '',
+    agent_slug TEXT NOT NULL, idem_key TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, outcome TEXT NOT NULL,
+    minutes_billed INTEGER NOT NULL, rate_usd REAL NOT NULL, settlement_status TEXT NOT NULL, settled_at INTEGER)`);
+  raw.prepare(`INSERT INTO wanxing_usage (id, caller_id, agent_slug, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status)
+    VALUES ('old1', 7, 'a', 1, 2, 1, 'ok', 3, 0.1, 'settled')`).run();
+  raw.close();
+  const s = createWanxingStore({ file });
+  const byCaller = s.usageByCaller("a", 0);
+  assert.equal(byCaller.length, 1);
+  assert.equal(byCaller[0].channel, "api", "old rows default to the api lane");
+  s.usageInsert({ id: "new-chat", callerId: 0, callerEmail: "v@x", agentSlug: "a", idemKey: "", startedAt: 5, endedAt: 6, durationMs: 1, outcome: "ok", minutesBilled: 1, rateUsd: 0.1, settlementStatus: "pending", channel: "chat", settler: "host", visitorSub: "v9" });
+  assert.equal(s.hostAllowanceUsed("a"), 1);
+  s.close();
+});
+
+// ── add-agent-chat-lane 3.x: the chat lane face ──────────────────────────────
+//
+// The five admission states (subsidy / host / exhausted / not-open / rate),
+// the status endpoint's two shapes, ledger rows carrying channel+settler,
+// both settlement paths, and the catalog chatability marker. Visitor tokens
+// are stubbed at the logto seam (real ES384 verification is covered by
+// test-wanxing-logto); the platform-sub2api stub is the file-top one.
+
+function chatHarness({
+  entry,
+  upstream,
+  sub = stubSub2api(),
+  store = freshStore(),
+  chat = {},
+  hostSettleImpl = null,
+} = {}) {
+  const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1, rpmMax: 1000 } });
+  const upstreamCalls = [];
+  const defaultEntry = {
+    name: "ChatBot", description: "chatty", version: "1", visibility: "public",
+    capabilities: { streaming: true }, skills: [], tags: [], metadata: {},
+  };
+  const e = { ...defaultEntry, ...(entry ?? {}) };
+  const logtoStub = {
+    configured: true,
+    async verifyIdToken(token, { allowlist } = {}) {
+      if (allowlist === false && typeof token === "string" && token.startsWith("tok-")) {
+        const name = token.slice(4);
+        return { email: `${name}@visitor.test`, sub: `sub-${name}` };
+      }
+      return null;
+    },
+  };
+  const hostSettleCalls = [];
+  const chatFaceRef = { current: null };
+  const face = createA2aFace({
+    core,
+    resolveDeployment: (slug) => (slug === "packs-p1-chat" ? { agentPath: "/packs/p1/chat", packId: "p1", agentId: "chat-agent" } : null),
+    listDeployments: () => [{ slug: "packs-p1-chat", agentPath: "/packs/p1/chat" }],
+    forwardHeaders: () => ({ "X-Authorization": "Bearer svc", Authorization: "Bearer backend" }),
+    registryFetch: async () => new Response(JSON.stringify(e), { headers: { "Content-Type": "application/json" } }),
+    chatability: (state) => (chatFaceRef.current ? chatFaceRef.current.chatable(state) : false),
+    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+    upstreamFetch: async (url, init) => {
+      upstreamCalls.push({ url, init });
+      return upstream(init);
+    },
+  });
+  const hostSettle = hostSettleImpl ?? (async (args) => {
+    hostSettleCalls.push(args);
+    return { settled: true, duplicate: false, amountUsd: args.minutes * 0.1 };
+  });
+  const chatFace = createChatFace({
+    core,
+    store,
+    logto: logtoStub,
+    agentState: (slug) => face.agentState(slug),
+    resolveDeployment: async (slug) => (slug === "packs-p1-chat" ? { packId: "p1", agentId: "chat-agent", agentPath: "/packs/p1/chat" } : null),
+    forwardHeaders: () => ({}),
+    hostSettle,
+    sub2api: sub,
+    subsidyKey: chat.subsidyKey ?? "",
+    chat,
+    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+    upstreamFetch: async (url, init) => {
+      upstreamCalls.push({ url, init });
+      return upstream(init);
+    },
+  });
+  chatFaceRef.current = chatFace;
+  const app = express();
+  face.register(app);
+  chatFace.register(app);
+  const server = http.createServer(app).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const waitFor = async (fn, ms = 1500) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() > deadline) return fn();
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  };
+  return {
+    core, store, chatFace, upstreamCalls, hostSettleCalls, base, sub, waitFor,
+    close: () => new Promise((r) => server.close(r)),
+    call: (p, opts = {}) => fetch(base + p, opts).then(async (r) => ({ status: r.status, headers: r.headers, body: await r.json().catch(() => null) })),
+  };
+}
+
+const chatSend = (text, { token = "tok-alice", idem, contextId } = {}) => ({
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(idem ? { "Idempotency-Key": idem } : {}),
+  },
+  body: JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "message/send",
+    params: { message: { role: "user", parts: [{ kind: "text", text }], ...(contextId ? { context_id: contextId } : {}) } },
+  }),
+});
+const CHAT_URL = "/api/wanxing/v1/chat/packs-p1-chat";
+const chatRows = (store) => store.usageByCaller("packs-p1-chat", 0);
+
+test("3.1 chat five states: subsidy → exhausted → host → settle both paths", async () => {
+  const h = chatHarness({
+    chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 1, rpmMax: 50 },
+    upstream: () => jsonReply(),
+  });
+  try {
+    // State 1: subsidy settles the first (1-minute) turn.
+    const r1 = await h.call(CHAT_URL, chatSend("hello", { idem: "c1" }));
+    assert.equal(r1.status, 200, JSON.stringify(r1.body));
+    assert.equal(r1.body.result.message.parts[0].text, "queued");
+    const subsidyRow = await h.waitFor(() => h.store.usagePending().length === 0 && chatRows(h.store).find((r) => r.channel === "chat"));
+    assert.ok(subsidyRow, "chat ledger row landed");
+    assert.ok(h.sub.adjustCalls.some((a) => a.operation === "subtract"), "platform key deducted");
+
+    // State 2: daily subsidy exhausted, no host pool → 402 with the own-key hint.
+    const r2 = await h.call(CHAT_URL, chatSend("again", { idem: "c2" }));
+    assert.equal(r2.status, 402);
+    assert.equal(r2.body.error.code, "CHAT_ALLOWANCE_EXHAUSTED");
+    assert.match(r2.body.error.hint, /\/api\/wanxing\/v1\/a2a\//);
+
+    // State 3: a funded host pool catches the same exhausted visitor.
+    h.store.hostAllowanceSet("packs-p1-chat", 30, "deployer@x");
+    const r3 = await h.call(CHAT_URL, chatSend("third", { idem: "c3", token: "tok-alice" }));
+    assert.equal(r3.status, 200, JSON.stringify(r3.body));
+    await h.waitFor(() => h.hostSettleCalls.length === 1);
+    assert.deepEqual(
+      { packId: h.hostSettleCalls[0].packId, agentId: h.hostSettleCalls[0].agentId },
+      { packId: "p1", agentId: "chat-agent" },
+    );
+    await h.waitFor(() => h.store.usagePending().length === 0);
+
+    // The ledger now carries both chat turns for the visitor (one caller
+    // group, two turns across both settlers).
+    const chatTurns = chatRows(h.store).reduce((n, r) => n + (r.channel === "chat" ? r.turns : 0), 0);
+    assert.equal(chatTurns, 2);
+  } finally {
+    await h.close();
+  }
+});
+
+test("3.1 chat: anonymous 401, private 404, paused 423, not-open 403, rate 429", async () => {
+  const noSub = { subsidyEnabled: false, rpmMax: 1 };
+  const h = chatHarness({ chat: noSub, upstream: () => jsonReply() });
+  try {
+    // No credential → structured 401.
+    assert.equal((await h.call(CHAT_URL, chatSend("hi", { token: null }))).status, 401);
+    // Subsidy off and no pool → not-open (403), before any settler talk.
+    h.store.hostAllowanceSet("packs-p1-chat", 0 + 5, "deployer@x"); // pool 5 → open
+    assert.equal((await h.call(CHAT_URL, chatSend("hi", { token: "tok-alice" }))).status, 200);
+    // Rate bound of 1/min: the very next visitor turn is throttled.
+    const throttled = await h.call(CHAT_URL, chatSend("again", { token: "tok-alice" }));
+    assert.equal(throttled.status, 429);
+    assert.equal(throttled.body.error.code, "RATE_LIMITED");
+  } finally {
+    await h.close();
+  }
+  const paused = chatHarness({ chat: noSub, entry: { metadata: { paused: true } }, upstream: () => jsonReply() });
+  try {
+    paused.store.hostAllowanceSet("packs-p1-chat", 5, "deployer@x");
+    const r = await paused.call(CHAT_URL, chatSend("hi"));
+    assert.equal(r.status, 423);
+    assert.equal(r.body.error.code, "AGENT_PAUSED");
+  } finally {
+    await paused.close();
+  }
+  const priv = chatHarness({ chat: noSub, entry: { visibility: "private" }, upstream: () => jsonReply() });
+  try {
+    priv.store.hostAllowanceSet("packs-p1-chat", 5, "deployer@x");
+    assert.equal((await priv.call(CHAT_URL, chatSend("hi"))).status, 404);
+  } finally {
+    await priv.close();
+  }
+  const closed = chatHarness({ chat: noSub, upstream: () => jsonReply() });
+  try {
+    const r = await closed.call(CHAT_URL, chatSend("hi"));
+    assert.equal(r.status, 403);
+    assert.equal(r.body.error.code, "CHAT_NOT_OPEN");
+  } finally {
+    await closed.close();
+  }
+});
+
+test("3.3 chat status: anonymous vs visitor shape; subsidy-off is explicit", async () => {
+  const h = chatHarness({
+    chat: { subsidyEnabled: false, rpmMax: 50 },
+    upstream: () => jsonReply(),
+  });
+  try {
+    // Closed agent: anonymous sees chatAble false + reason, subsidy explicitly off.
+    const closed = await h.call(`${CHAT_URL}/status`);
+    assert.equal(closed.status, 200);
+    assert.equal(closed.body.chatAble, false);
+    assert.equal(closed.body.reason, "chat_not_open");
+    assert.equal(closed.body.subsidy, "off");
+
+    // Open via host pool: visitor shape carries remaining pools.
+    h.store.hostAllowanceSet("packs-p1-chat", 30, "deployer@x");
+    h.store.usageInsert({ id: "u-host-used", callerId: 0, callerEmail: "v@x", agentSlug: "packs-p1-chat", idemKey: "", startedAt: 1, endedAt: 2, durationMs: 1, outcome: "ok", minutesBilled: 10, rateUsd: 0.1, settlementStatus: "settled", channel: "chat", settler: "host", visitorSub: "other" });
+    const anon = await h.call(`${CHAT_URL}/status`);
+    assert.equal(anon.body.chatAble, true);
+    assert.equal(anon.body.subsidyRemainingToday, undefined, "anonymous sees no personal allowance");
+    const vis = await h.call(`${CHAT_URL}/status`, { headers: { Authorization: "Bearer tok-alice" } });
+    assert.equal(vis.body.chatAble, true);
+    assert.equal(vis.body.hostPoolRemaining, 20, "30 cap minus 10 host-used");
+    assert.equal(vis.body.subsidyRemainingToday, 0, "subsidy off → 0, not absence");
+    assert.equal(vis.body.agent.name, "ChatBot");
+
+    // Private agent: status answers the card route's not-found.
+    await h.close();
+  } finally {
+    try { await h.close(); } catch { /* already closed once */ }
+  }
+});
+
+test("3.4 catalog/card carry the chatability marker only when chatable", async () => {
+  const h = chatHarness({ chat: { subsidyEnabled: false, rpmMax: 50 }, upstream: () => jsonReply() });
+  try {
+    const before = await h.call("/api/wanxing/v1/agents");
+    assert.equal(before.body.agents[0].chatable, undefined);
+    const cardBefore = await h.call("/api/wanxing/v1/a2a/packs-p1-chat/.well-known/agent-card.json");
+    assert.equal(cardBefore.body.chatable, undefined);
+
+    h.store.hostAllowanceSet("packs-p1-chat", 10, "deployer@x");
+    const after = await h.call("/api/wanxing/v1/agents");
+    assert.equal(after.body.agents[0].chatable, true);
+    const cardAfter = await h.call("/api/wanxing/v1/a2a/packs-p1-chat/.well-known/agent-card.json");
+    assert.equal(cardAfter.body.chatable, true);
+    // The marker leaks nothing beyond the boolean.
+    assert.equal(cardAfter.body.hostPoolRemaining, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("3.2 settlePending: chat rows route to their settler; api rows untouched; retries are safe", async () => {
+  const store = freshStore();
+  const sub = stubSub2api();
+  const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1 } });
+  const hostCalls = [];
+  let fail = true;
+  const chatFace = createChatFace({
+    core, store,
+    logto: { configured: false },
+    agentState: async () => ({ exists: false }),
+    resolveDeployment: async (slug) => ({ packId: "p1", agentId: "chat-agent", agentSlug: slug }),
+    forwardHeaders: () => ({}),
+    hostSettle: async (args) => {
+      hostCalls.push(args);
+      if (fail) throw new Error("packs unreachable");
+      return { settled: true, duplicate: false };
+    },
+    sub2api: sub,
+    subsidyKey: "sk-platform",
+    chat: { subsidyEnabled: true, subsidyDailyMinutes: 10, rpmMax: 50 },
+    config: { agentUrlFor: () => "" },
+  });
+  // A pending host row and a pending subsidy row, plus a pending api row.
+  store.usageInsert({ id: "wu_host_1", callerId: 0, callerEmail: "v@x", agentSlug: "a", idemKey: "", startedAt: 1, endedAt: 61_000, durationMs: 60_000, outcome: "ok", minutesBilled: 2, rateUsd: 0.1, settlementStatus: "pending", channel: "chat", settler: "host", visitorSub: "v1" });
+  store.usageInsert({ id: "wu_sub_1", callerId: 0, callerEmail: "v2@x", agentSlug: "a", idemKey: "", startedAt: 2, endedAt: 62_000, durationMs: 60_000, outcome: "ok", minutesBilled: 1, rateUsd: 0.1, settlementStatus: "pending", channel: "chat", settler: "subsidy", visitorSub: "v2" });
+  const apiRow = core.recordUsage({ caller: { userId: 7, email: "k@x" }, slug: "a", idemKey: "i1", startedAt: 3_000, endedAt: 63_000, outcome: "ok" });
+
+  // First sweep: the api row settles on the caller's key; the host row's
+  // failed deduction leaves it pending; the subsidy row settles.
+  await core.settlePending((row) => chatFace.settleChatRow(row));
+  assert.equal(store.usagePending().map((r) => r.id).join(","), "wu_host_1");
+  assert.deepEqual(sub.adjustCalls.at(-1), { userId: 7, amountUsd: 0.1, operation: "subtract", idempotencyKey: apiRow.id });
+  assert.ok(sub.adjustCalls.some((c) => c.idempotencyKey === "wu_sub_1"), "subsidy row deducted against the platform holder");
+
+  // Second sweep after the packs plane returns: the host row settles exactly
+  // once (the row id is the usage id the endpoint dedupes on).
+  fail = false;
+  await core.settlePending((row) => chatFace.settleChatRow(row));
+  assert.equal(store.usagePending().length, 0);
+  // Both attempts (the failed one included) addressed the same usage id —
+  // the packs endpoint dedupes on it, so the retry is safe by construction.
+  assert.ok(hostCalls.every((c) => c.usageId === "wu_host_1" && c.packId === "p1"));
+  assert.equal(hostCalls.length, 2, "one failed attempt, one settling retry");
+  store.close();
+});
+
+test("3.2 subsidy via dedicated account id: no key, no holder resolution, direct deduction", async () => {
+  const store = freshStore();
+  const sub = stubSub2api();
+  const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1 } });
+  const chatFace = createChatFace({
+    core, store,
+    logto: { configured: false },
+    agentState: async () => ({ exists: false }),
+    resolveDeployment: async () => null,
+    forwardHeaders: () => ({}),
+    hostSettle: async () => ({ settled: true }),
+    sub2api: sub,
+    subsidyUserId: 9001,
+    chat: { subsidyEnabled: true, subsidyDailyMinutes: 10, rpmMax: 50 },
+    config: { agentUrlFor: () => "" },
+  });
+  assert.equal(chatFace.subsidyOpen(), true);
+  store.usageInsert({ id: "wu_sub_ded", callerId: 0, callerEmail: "v@x", agentSlug: "a", idemKey: "", startedAt: 1, endedAt: 61_000, durationMs: 60_000, outcome: "ok", minutesBilled: 3, rateUsd: 0.1, settlementStatus: "pending", channel: "chat", settler: "subsidy", visitorSub: "v1" });
+  await core.settlePending((row) => chatFace.settleChatRow(row));
+  assert.equal(store.usagePending().length, 0, "settled");
+  assert.deepEqual(
+    { ...sub.adjustCalls.at(-1), idempotencyKey: "deducted" },
+    { userId: 9001, amountUsd: 0.3, operation: "subtract", idempotencyKey: "deducted" },
+  );
+  assert.equal(sub.resolveCalls, 0, "the dedicated id path never resolves a key holder");
+  store.close();
 });

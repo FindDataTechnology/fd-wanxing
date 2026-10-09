@@ -29,6 +29,14 @@ export function ConsoleView({ focusSlug } = {}) {
   const [cfgDraft, setCfgDraft] = useState({ rhythm: "", budget: "", model: "" });
   const [cfgNote, setCfgNote] = useState("");
   const [cfgBusy, setCfgBusy] = useState(false);
+  // Invocation records + host allowance (add-agent-chat-lane 5.3): the
+  // owner's "who called my agent" panel and the chat allowance cap editor.
+  const [usage, setUsage] = useState(null); // { slug, doc }
+  const [usageErr, setUsageErr] = useState("");
+  const [allowance, setAllowance] = useState(null); // { slug, doc }
+  const [alwDraft, setAlwDraft] = useState("");
+  const [alwNote, setAlwNote] = useState("");
+  const [alwBusy, setAlwBusy] = useState(false);
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
@@ -178,6 +186,48 @@ export function ConsoleView({ focusSlug } = {}) {
       .catch((e) => setCfgNote(String(e?.message || e)))
       .finally(() => setCfgBusy(false));
   };
+  const loadUsage = (slug) => {
+    setUsageErr("");
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/usage?days=30`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `usage HTTP ${r.status}`);
+        setUsage({ slug, doc: d });
+      })
+      .catch((e) => setUsageErr(String(e?.message || e)));
+  };
+  const loadAllowance = (slug) => {
+    setAlwNote("");
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/host-allowance`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `allowance HTTP ${r.status}`);
+        setAllowance({ slug, doc: d });
+        setAlwDraft(String(d.limitMinutes ?? 0));
+      })
+      .catch((e) => setAlwNote(String(e?.message || e)));
+  };
+  const saveAllowance = (slug) => {
+    setAlwNote("");
+    const limit = alwDraft.trim() === "" ? 0 : Number(alwDraft);
+    if (!Number.isInteger(limit) || limit < 0) return setAlwNote("额度必须是 ≥0 的整数（分钟）");
+    setAlwBusy(true);
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/host-allowance`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limitMinutes: limit }),
+    })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+        setAllowance({ slug, doc: d });
+        setAlwNote("已保存——下一回合起生效");
+      })
+      .catch((e) => setAlwNote(String(e?.message || e)))
+      .finally(() => setAlwBusy(false));
+  };
+  const channelLabel = (c) => (c === "chat" ? "对话" : c === "api" ? "API" : c ?? "?");
+
   const sourceBadge = (dim) => {
     const s = dim?.source;
     const label = s === "override" ? "已覆盖" : s === "declared" ? "跟随声明" : "默认";
@@ -347,6 +397,8 @@ export function ConsoleView({ focusSlug } = {}) {
                       </button>
                       <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">允许清单</button>
                       <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">配置</button>
+                      <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">记录</button>
+                      <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">额度</button>
                     </td>
                   </tr>
                 ))}
@@ -439,6 +491,86 @@ export function ConsoleView({ focusSlug } = {}) {
               <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
             </form>
             {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
+          </div>
+        )}
+        {usageErr && (
+          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
+            调用记录读取失败（{usageErr}）——这不是「没有调用」，请稍后再试。
+          </div>
+        )}
+        {usage && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`usage-panel-${usage.slug}`}>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs">调用记录 · {usage.slug}（近 30 天）</span>
+              <button onClick={() => setUsage(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+            </div>
+            {(usage.doc.byCaller ?? []).length === 0 ? (
+              <div className="text-xs text-slate-500">暂无调用。</div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left border-b border-slate-200 dark:border-slate-800">
+                    <th className="py-1.5 px-2">调用者</th><th className="px-2">渠道</th><th className="px-2 text-right">回合</th><th className="px-2 text-right">分钟</th><th className="px-2 text-right">最近</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usage.doc.byCaller.map((r, i) => (
+                    <tr key={`${r.channel}-${r.email}-${i}`} className="border-b border-slate-100 dark:border-slate-900">
+                      <td className="py-1.5 px-2 font-mono">{r.email || "（匿名/无邮箱）"}</td>
+                      <td className="px-2">{channelLabel(r.channel)}</td>
+                      <td className="px-2 text-right">{r.turns}</td>
+                      <td className="px-2 text-right">{r.minutes}</td>
+                      <td className="px-2 text-right text-slate-500">{r.lastAt ? new Date(r.lastAt).toLocaleString("zh-CN", { hour12: false }) : "?"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="text-xs text-slate-500 space-y-1">
+              <div className="font-semibold text-slate-600 dark:text-slate-300">最近活动</div>
+              {(usage.doc.activity ?? []).length === 0 && <div>无。</div>}
+              {(usage.doc.activity ?? []).map((a, i) => (
+                <div key={i} className="flex gap-3">
+                  <span className="text-slate-400 w-36 shrink-0 font-mono">{new Date(a.at).toLocaleString("zh-CN", { hour12: false })}</span>
+                  <span className="px-1.5 rounded bg-slate-100 dark:bg-slate-800">{channelLabel(a.channel)}</span>
+                  <span>{a.outcome}</span>
+                  <span>{a.minutes ? `${a.minutes} 分钟` : ""}</span>
+                  <span className="text-slate-400 font-mono ml-auto">{a.email || ""}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {allowance && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`allowance-panel-${allowance.slug}`}>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs">对话额度（主人池） · {allowance.slug}</span>
+              <button onClick={() => setAllowance(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+            </div>
+            <div className="text-xs text-slate-500">
+              当前上限 <b>{allowance.doc.limitMinutes ?? 0}</b> 分钟 · 剩余 <b>{allowance.doc.remainingMinutes ?? 0}</b> 分钟
+              {allowance.doc.updatedBy ? ` · 上次由 ${allowance.doc.updatedBy} 设置` : ""}
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveAllowance(allowance.slug);
+              }}
+              className="flex gap-2 items-center"
+            >
+              <input
+                value={alwDraft}
+                onChange={(e) => setAlwDraft(e.target.value)}
+                inputMode="numeric"
+                placeholder="新上限（分钟，0=关闭）"
+                className="w-48 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+              />
+              <button disabled={alwBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+                {alwBusy ? "保存中…" : "保存"}
+              </button>
+              {alwNote && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote}</span>}
+            </form>
+            <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
           </div>
         )}
       </div>

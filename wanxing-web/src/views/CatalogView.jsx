@@ -77,6 +77,15 @@ export function CatalogView() {
                 ))}
               </div>
               <code className="text-xs text-slate-400 truncate" title={a.slug}>{a.slug}</code>
+              {a.chatable && (
+                <a
+                  href={`#/chat/${encodeURIComponent(a.slug)}`}
+                  data-testid={`chat-cta-${a.slug}`}
+                  className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs"
+                >
+                  对话
+                </a>
+              )}
             </div>
           ))}
         </div>

@@ -65,6 +65,7 @@ export function createA2aFace({
   config,            // { agentUrlFor(agentPath) }
   getReapWindow = null, // (caller, slug) → minutes | null (add-caller-preferences)
   onTurnComplete = null, // ({caller, slug, idemKey, outcome, startedAt, endedAt, minutesBilled, traceId}) → void
+  chatability = null, // (state) → boolean (add-agent-chat-lane 3.4): catalog and card summaries carry the marker when true; null = never
   upstreamFetch = fetch, // injection seam for tests
 }) {
   const note = (kind, agent, payload = {}, id = null) => {
@@ -170,6 +171,9 @@ export function createA2aFace({
           tags: entry.tags ?? [],
           capabilities: entry.capabilities ?? { streaming: true },
           skills: entry.skills ?? [],
+          ...(chatability?.({ exists: true, slug: dep.slug, visibility: "public", paused: false, entry })
+            ? { chatable: true }
+            : {}),
         });
       }
       // Pagination (add-wanxing-deployments-cache): explicit page/page_size
@@ -205,7 +209,10 @@ export function createA2aFace({
       if (!state.exists || state.visibility === "private") {
         return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
       }
-      res.json(publicCard(req.params.agentSlug, state.entry, req));
+      res.json({
+        ...publicCard(req.params.agentSlug, state.entry, req),
+        ...(chatability?.(state) ? { chatable: true } : {}),
+      });
     });
 
     // ── The A2A turn surface. Order is the kernel's admission pipeline:

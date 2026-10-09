@@ -178,7 +178,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
   // Minutes round UP — a 5-second turn bills one minute unit (the rate table
   // is per started minute). outcome=error rows are recorded but waived: the
   // caller is never charged for a turn that produced nothing.
-  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome }) {
+  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null }) {
     const durationMs = Math.max(0, endedAt - startedAt);
     const billable = outcome === "ok";
     const minutesBilled = billable ? Math.max(1, Math.ceil(durationMs / 60_000)) : 0;
@@ -195,6 +195,10 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
       minutesBilled,
       rateUsd: cfg.ratePerMin,
       settlementStatus: billable ? "pending" : "waived",
+      // Chat-lane dimensions (add-agent-chat-lane D3); api rows keep nulls.
+      ...(channel ? { channel } : {}),
+      ...(settler ? { settler } : {}),
+      ...(visitorSub ? { visitorSub } : {}),
     };
     store.usageInsert(row);
     return row;
@@ -232,13 +236,20 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
   // Boot/timer sweep: retry everything still pending. The row id's
   // Idempotency-Key makes retries safe — a deduction that already landed is
   // refused upstream as a duplicate, which adjustBalance surfaces as an
-  // error; treat idempotent-duplicate replies as settled.
-  async function settlePending() {
+  // error; treat idempotent-duplicate replies as settled. Chat-lane pending
+  // rows (channel=chat) settle against their settler, not the caller's key:
+  // onChatRow owns them (add-agent-chat-lane 3.2); without the hook they
+  // stay pending for a later sweep that has one.
+  async function settlePending(onChatRow = null) {
     for (const raw of store.usagePending()) {
       const row = { ...raw, callerId: raw.caller_id, minutesBilled: raw.minutes_billed, rateUsd: raw.rate_usd };
       try {
-        await trySettle(row);
-      } catch { /* logged by the failure counter */ }
+        if (row.channel === "chat" && onChatRow) {
+          await onChatRow(row);
+        } else if (row.channel !== "chat") {
+          await trySettle(row);
+        }
+      } catch { /* logged by the failure counter / chat settle hook */ }
     }
   }
 

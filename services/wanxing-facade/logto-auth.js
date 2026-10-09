@@ -35,8 +35,12 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
   }
 
   // Verify a Logto ID token; returns { email, sub } or null (never throws —
-  // an unverifiable token is just not this gate's credential).
-  async function verifyIdToken(token) {
+  // an unverifiable token is just not this gate's credential). The email
+  // allowlist applies by default (the console gate); the chat lane calls
+  // with { allowlist: false } — any verified tenant identity may chat, sub
+  // is the identity, and an absent email claim degrades to "" (the visitor
+  // is still fully identified by sub).
+  async function verifyIdToken(token, { allowlist = true } = {}) {
     if (!configured || typeof token !== "string") return null;
     try {
       const [h, p, s] = token.split(".");
@@ -76,13 +80,15 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
       if (payload.aud !== appId) return null;
       if (Number(payload.exp) * 1000 <= now()) return null;
       const email = String(payload.email ?? "").toLowerCase();
-      if (!email || !allowed.has(email)) {
+      const sub = String(payload.sub ?? "");
+      if (!sub) return null; // subject-less tokens identify nobody on either lane
+      if (allowlist && (!email || !allowed.has(email))) {
         // Refusals carry what was seen — the operator must be able to tell a
         // mis-allowlist from a claim-less token (live finding: admin-tenant
         // sessions issue username-only tokens).
-        throw Object.assign(new Error(`identity refused: email=${email || "(none)"} sub=${payload.sub ?? "?"} allowlist=${[...allowed].join("|")}`), { status: 403, diag: { email: email || null, sub: payload.sub ?? null } });
+        throw Object.assign(new Error(`identity refused: email=${email || "(none)"} sub=${sub} allowlist=${[...allowed].join("|")}`), { status: 403, diag: { email: email || null, sub } });
       }
-      return { email, sub: payload.sub };
+      return { email, sub };
     } catch (e) {
       if (e?.diag) throw e; // diagnostics escape; incidental failures stay silent-null
       return null;

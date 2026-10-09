@@ -15,6 +15,7 @@ import path from "node:path";
 import { createWanxingStore } from "./store.js";
 import { createWanxingCore, slugFor } from "./core.js";
 import { createA2aFace } from "./a2a.js";
+import { createChatFace } from "./chat.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
@@ -173,6 +174,11 @@ export function registerWanxingRoutes(app, {
   });
   registerPrefsRoutes(app, { core, store, log: (m) => console.log(`[wanxing:prefs] ${m}`) });
 
+  // Chat lane (add-agent-chat-lane): the a2a face owns agentState (registry
+  // entry cache) and the chat face needs it, while the a2a face's catalog
+  // marker needs the chat face's chatability — the late-bound ref breaks the
+  // cycle without changing either face's shape.
+  let chatFaceRef = null;
   const face = createA2aFace({
     core,
     resolveDeployment,
@@ -187,6 +193,7 @@ export function registerWanxingRoutes(app, {
     // caller's completion callback (fire-and-forget, beside settlement).
     getReapWindow: (caller, slug) => store.prefsGet(caller.userId, slug)?.reapMinutes ?? null,
     onTurnComplete: (turn) => callbacks.dispatch(turn),
+    chatability: (state) => (chatFaceRef ? chatFaceRef.chatable(state) : false),
     config: {
       // Runtime route through the registry proxy (ADR-0004's distribution
       // plane) — the facade never addresses runner origins directly.
@@ -195,6 +202,46 @@ export function registerWanxingRoutes(app, {
     ...(fetchImpl ? { upstreamFetch: fetchImpl } : {}),
   });
   face.register(app);
+
+  const chatFace = createChatFace({
+    core,
+    store,
+    logto: logtoAuth,
+    agentState: (slug) => face.agentState(slug),
+    resolveDeployment,
+    forwardHeaders,
+    hostSettle: async ({ packId, agentId, usageId, minutes, rateUsdPerMin }) => {
+      const r = await packsInternalCall(
+        `/api/packs/internal/deployments/${encodeURIComponent(packId)}/${encodeURIComponent(agentId)}/host-settle`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ usage_id: usageId, minutes, rate_usd_per_min: rateUsdPerMin }),
+        },
+      );
+      const doc = await r.json().catch(() => null);
+      if (!r.ok) throw Object.assign(new Error(doc?.error || `host-settle ${r.status}`), { status: r.status });
+      return doc;
+    },
+    sub2api,
+    subsidyKey: env.WANXING_SUBSIDY_KEY || "",
+    // Dedicated subsidy account (deploy decision 2026-10-09): the account
+    // id configured directly — no key credential exists for it (upstream has
+    // no admin-side key minting) and none is needed; wins over the key.
+    subsidyUserId: Number(env.WANXING_SUBSIDY_USER_ID) || null,
+    chat: {
+      subsidyEnabled: /^(1|true|yes)$/i.test(String(env.WANXING_CHAT_SUBSIDY_ENABLED || "")),
+      subsidyDailyMinutes: Number(env.WANXING_CHAT_SUBSIDY_DAILY_MINUTES || 10),
+      rpmMax: Number(env.WANXING_CHAT_RPM || 6),
+    },
+    report: (ev) => fleetReporter.report(ev),
+    config: {
+      agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
+    },
+    ...(fetchImpl ? { upstreamFetch: fetchImpl } : {}),
+  });
+  chatFaceRef = chatFace;
+  chatFace.register(app);
 
   // ── Ops usage view (spec: the ops board shows both dimensions) ────────────
   // The extracted unit has no login session: the service credential (the
@@ -216,7 +263,7 @@ export function registerWanxingRoutes(app, {
   // event id the inline path used — at most one lands either way.
   const sweepOnce = async () => {
     const before = store.usagePending(); // { id, agent_slug, minutes_billed, rate_usd, … }
-    await core.settlePending();
+    await core.settlePending((row) => chatFace.settleChatRow(row));
     const stillPending = new Set(store.usagePending().map((r) => r.id));
     for (const row of before) {
       if (stillPending.has(row.id)) continue;
@@ -228,6 +275,7 @@ export function registerWanxingRoutes(app, {
           usd: Number((row.minutes_billed * row.rate_usd).toFixed(4)),
           settlement_status: "settled",
           swept: true,
+          ...(row.channel === "chat" ? { channel: "chat", settler: row.settler } : {}),
         },
         id: `facade-${row.id}`,
       });
@@ -235,12 +283,13 @@ export function registerWanxingRoutes(app, {
   };
   const sweep = setInterval(() => void sweepOnce().catch(() => {}), 60_000);
   sweep.unref?.();
-  void core.settlePending().catch(() => {});
+  void core.settlePending((row) => chatFace.settleChatRow(row)).catch(() => {});
 
   return {
     core,
     store,
     face,
+    chatFace,
     bookkeeping,
     diffDeployments,
     close() {

@@ -323,3 +323,119 @@ test("fleet reads ride the console gate: identity or service token in, observer 
     await new Promise((r) => packsSrv.close(r));
   }
 });
+
+// ── add-agent-chat-lane 2.2: allowlist-off verification (chat lane) ──────────
+
+test("logto: allowlist-off mode admits any tenant identity; the console gate is unchanged", async () => {
+  const a = make();
+  // A stranger token: refused by the default (console) gate…
+  const stranger = sign(claims({ email: "stranger@x.test", sub: "v-42" }));
+  await assert.rejects(() => a.verifyIdToken(stranger), /identity refused/);
+  // …and admitted by the chat lane's no-allowlist verification.
+  assert.deepEqual(await a.verifyIdToken(stranger, { allowlist: false }), { email: "stranger@x.test", sub: "v-42" });
+  // An email-less token still identifies a visitor by sub on the chat lane;
+  // the console gate keeps refusing it.
+  const noEmail = sign(claims({ email: undefined, sub: "v-43" }));
+  await assert.rejects(() => a.verifyIdToken(noEmail), /identity refused/);
+  assert.deepEqual(await a.verifyIdToken(noEmail, { allowlist: false }), { email: "", sub: "v-43" });
+  // Subject-less tokens identify nobody on either lane.
+  assert.equal(await a.verifyIdToken(sign(claims({ sub: "" })), { allowlist: false }), null);
+  assert.equal(await a.verifyIdToken(sign(claims({ sub: "" }))), null);
+  // An allowlisted identity passes both modes identically.
+  assert.deepEqual(await a.verifyIdToken(sign(claims()), { allowlist: false }), { email: "ops@x.test", sub: "u1" });
+});
+
+// ── add-agent-chat-lane 4.1/4.2: owner-scoped records + host allowance ───────
+
+test("chat-lane console: usage records masked per owner, host allowance deployer-gated", async () => {
+  const depRows = [{
+    packId: "Pk1", agentId: "agent", version: 1,
+    agentPath: "/packs/Pk1/deployments/agent", deployedBy: "ops@x.test",
+  }];
+  const packsApp = express();
+  packsApp.get("/api/packs/internal/deployments", (_q, r) => r.json({ deployments: depRows }));
+  const packsSrv = http.createServer(packsApp).listen(0);
+  await new Promise((r) => packsSrv.once("listening", r));
+  const env = {
+    PACKS_INTERNAL_BASE_URL: `http://127.0.0.1:${packsSrv.address().port}`,
+    AGENT_SERVING_REGISTRY_URL: "https://reg.internal",
+    AGENT_SERVING_REGISTRY_TOKEN: "svc",
+    FLEET_OBSERVER_TOKEN: "svc-tok",
+    WANXING_LOGTO_ENDPOINT: EP,
+    WANXING_LOGTO_APP_ID: APP,
+    WANXING_CONSOLE_ALLOWLIST: "ops@x.test,dev@x.test",
+  };
+  const app = express();
+  const wired = registerWanxingRoutes(app, {
+    dataRoot: path.join(tmp, `d-${Math.random().toString(36).slice(2)}`),
+    env,
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).startsWith("http://127.0.0.1:")) return fetch(url, init);
+      if (String(url).endsWith("/oidc/jwks")) {
+        return new Response(JSON.stringify({ keys: [jwk] }), { headers: { "Content-Type": "application/json" } });
+      }
+      if (String(url).startsWith("https://reg.internal/api/agents/")) {
+        return new Response(JSON.stringify({ name: "S", visibility: "public", metadata: {} }), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("{}", { status: 404 });
+    },
+  });
+  const srv = http.createServer(app).listen(0);
+  await new Promise((r) => srv.once("listening", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const ownerTok = { Authorization: `Bearer ${sign(claims())}` }; // ops@x.test = the deployer
+  const otherTok = { Authorization: `Bearer ${sign(claims({ email: "dev@x.test", sub: "dev1" }))}` };
+  const opsTok = { Authorization: "Bearer svc-tok" };
+  const slug = "packs-pk1-deployments-agent";
+  try {
+    // Seed the ledger: one chat visitor turn + one API caller turn.
+    const store = wired.store;
+    store.usageInsert({ id: "u1", callerId: 0, callerEmail: "visitor@x.test", agentSlug: slug, idemKey: "", startedAt: Date.now() - 1000, endedAt: Date.now(), durationMs: 60_000, outcome: "ok", minutesBilled: 1, rateUsd: 0.1, settlementStatus: "settled", channel: "chat", settler: "host", visitorSub: "s1" });
+    store.usageInsert({ id: "u2", callerId: 7, callerEmail: "keyholder@x.test", agentSlug: slug, idemKey: "k", startedAt: Date.now() - 500, endedAt: Date.now(), durationMs: 60_000, outcome: "ok", minutesBilled: 1, rateUsd: 0.1, settlementStatus: "settled" });
+
+    // Anonymous → 401; allowlisted non-owner → 403.
+    assert.equal((await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage`)).status, 401);
+    assert.equal((await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage`, { headers: otherTok })).status, 403);
+    assert.equal((await fetch(`${base}/api/wanxing/v1/console/deployments/nope/usage`, { headers: ownerTok })).status, 404);
+
+    // The deployer reads aggregates: visitor masked, API key holder not.
+    const doc = await (await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage`, { headers: ownerTok })).json();
+    assert.equal(doc.byCaller.find((r) => r.channel === "chat").email, "v***@x.test");
+    assert.equal(doc.byCaller.find((r) => r.channel === "api").email, "keyholder@x.test");
+    assert.equal(doc.activity.length, 2);
+
+    // Ops: masked by default, unmasked only with the explicit opt-in.
+    const opsMasked = await (await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage`, { headers: opsTok })).json();
+    assert.equal(opsMasked.byCaller.find((r) => r.channel === "chat").email, "v***@x.test");
+    const opsOpen = await (await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage?unmasked=1`, { headers: opsTok })).json();
+    assert.equal(opsOpen.byCaller.find((r) => r.channel === "chat").email, "visitor@x.test");
+    const ownerOpen = await (await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/usage?unmasked=1`, { headers: ownerTok })).json();
+    assert.equal(ownerOpen.byCaller.find((r) => r.channel === "chat").email, "v***@x.test", "unmasked is ops-only");
+
+    // Host allowance: owner sets and adjusts; non-owner refused; ops fallback.
+    const put = await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/host-allowance`, {
+      method: "PUT", headers: { ...ownerTok, "Content-Type": "application/json" }, body: JSON.stringify({ limitMinutes: 600 }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal((await put.json()).remainingMinutes, 599);
+    assert.equal((await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/host-allowance`, {
+      method: "PUT", headers: { ...otherTok, "Content-Type": "application/json" }, body: JSON.stringify({ limitMinutes: 1 }),
+    })).status, 403);
+    assert.equal((await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/host-allowance`, {
+      method: "PUT", headers: { ...ownerTok, "Content-Type": "application/json" }, body: JSON.stringify({ limitMinutes: -3 }),
+    })).status, 400);
+    const opsPut = await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/host-allowance`, {
+      method: "PUT", headers: { ...opsTok, "Content-Type": "application/json" }, body: JSON.stringify({ limitMinutes: 5 }),
+    });
+    assert.equal(opsPut.status, 200);
+    const readBack = await (await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/host-allowance`, { headers: ownerTok })).json();
+    assert.deepEqual(
+      { limitMinutes: readBack.limitMinutes, remainingMinutes: readBack.remainingMinutes, updatedBy: readBack.updatedBy },
+      { limitMinutes: 5, remainingMinutes: 4, updatedBy: "ops" },
+    );
+  } finally {
+    wired.close();
+    await new Promise((r) => srv.close(r));
+    await new Promise((r) => packsSrv.close(r));
+  }
+});
