@@ -3,7 +3,7 @@
 ## 1. paas 借用契约端（先上、向后兼容）
 
 - [x] 1.1 packs internal 部署级结算端点：`POST /api/packs/internal/deployments/:agentPath/host-settle`（body `{minutes, usage_id}`，内部令牌门禁，按 `usage_id` 幂等；取该部署 `deployment_keys.key_value` 经 sub2api 扣款；无键/无部署/扣款失败各回结构错）——单测覆盖幂等重扣一次、三种错误路径（实际路由形如 `:packId/:agentId/host-settle`，循 config 内部孪生约定；test-platform-billing.mjs 10/10 绿）
-- [ ] 1.2 部署级结算端点集成验证：对 staging 真 sub2api 跑一次真扣款+重放（同 `usage_id` 第二次不扣）——curl 探针脚本留 `scripts/`
+- [x] 1.2 部署级结算端点集成验证：对生产真 sub2api 跑真扣款+重放（首扣 $0.1、同 `usage_id` 重放 duplicate 不二扣，PROBE PASS）；探针脚本 `scripts/probe-host-settle.mjs`
 
 ## 2. facade 基座：账本扩展与验签拆分
 
