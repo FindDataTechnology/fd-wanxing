@@ -63,6 +63,10 @@ export function ChatView({ focusSlug } = {}) {
   const [ownKey, setOwnKey] = useState(() => (slug ? localStorage.getItem(ownKeyKey(slug)) ?? "" : ""));
   const [keyDraft, setKeyDraft] = useState("");
   const [ownKeyMode, setOwnKeyMode] = useState(false);
+  // 402 exhaustion is its own state — the agent stays OPEN (subsidy on), the
+  // visitor is simply out of free allowance; rendering it as "not open"
+  // would misname the situation and unmount the own-key bridge.
+  const [exhausted, setExhausted] = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -83,7 +87,11 @@ export function ChatView({ focusSlug } = {}) {
         }
         return r.json();
       })
-      .then(setStatus)
+      .then((d) => {
+        setStatus(d);
+        // A refilled lane (host pool added, new subsidy day) lifts exhaustion.
+        if ((d.subsidyRemainingToday ?? 0) + (d.hostPoolRemaining ?? 0) > 0) setExhausted(false);
+      })
       .catch((e) => setStatusErr(String(e?.message || e)));
   };
   useEffect(() => {
@@ -110,7 +118,10 @@ export function ChatView({ focusSlug } = {}) {
   const agentName = status?.agent?.name ?? slug;
   const chatAble = status?.chatAble === true;
   const paused = status?.reason === "agent_paused";
-  const blocked = !chatAble && !paused;
+  // Not-open = the agent itself has no lane for this visitor (subsidy off and
+  // no pool). Exhausted = lanes exist but this visitor's allowance is spent —
+  // the conversation stays mounted with the own-key bridge at hand.
+  const blocked = !chatAble && !paused && !exhausted;
 
   const send = async () => {
     const text = input.trim();
@@ -142,10 +153,11 @@ export function ChatView({ focusSlug } = {}) {
         const d = await r.json().catch(() => ({}));
         const code = d?.error?.code ?? `HTTP ${r.status}`;
         if (code === "CHAT_ALLOWANCE_EXHAUSTED") {
+          setExhausted(true);
           const exhausted = [...next, { role: "system", text: "免费额度已用完——可粘贴自己的调用键继续对话。", at: Date.now() }];
           setMessages(exhausted);
           saveHist(slug, exhausted);
-          setStatus((s) => (s ? { ...s, chatAble: false } : s));
+          refreshStatus();
         } else {
           const failed = [...next, { role: "error", text: d?.error?.message || code, at: Date.now() }];
           setMessages(failed);
@@ -326,8 +338,8 @@ export function ChatView({ focusSlug } = {}) {
           {notice && <div className="text-xs text-amber-600 dark:text-amber-400">{notice}</div>}
 
           {!ownKey && (
-            <details className="text-xs text-slate-500">
-              <summary className="cursor-pointer select-none">额度用完了？粘贴自己的调用键继续</summary>
+            <details className="text-xs text-slate-500" open={exhausted || undefined}>
+              <summary className="cursor-pointer select-none">{exhausted ? "额度用完了——粘贴自己的调用键继续" : "额度用完了？粘贴自己的调用键继续"}</summary>
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
