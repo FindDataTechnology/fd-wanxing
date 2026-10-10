@@ -216,7 +216,7 @@ export function createA2aFace({
     });
 
     // ── The A2A turn surface. Order is the kernel's admission pipeline:
-    // key gate → protocol shape → agent admission → rate → slot → idempotency.
+    // key gate → protocol shape → agent admission → plan → rate → slot.
     app.post("/api/wanxing/v1/a2a/:agentSlug", express.json({ limit: "1mb" }), async (req, res) => {
       const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
       const auth = await core.authenticate(bearer);
@@ -249,6 +249,14 @@ export function createA2aFace({
       if (!admitted.ok) {
         note("refused", slug, { stage: "admission", code: admitted.code, caller: caller.email || caller.userId });
         return res.status(admitted.status).json({ error: { code: admitted.code, message: admitted.message } });
+      }
+
+      // Serving-plan solvency (add-serving-plans D3): only callers WITH an
+      // active plan are bounded by it; a planless caller passes untouched.
+      const planGate = core.checkPlan(caller);
+      if (!planGate.ok) {
+        note("refused", slug, { stage: "plan", code: planGate.code, caller: caller.email || caller.userId });
+        return res.status(planGate.status).json({ error: { code: planGate.code, message: planGate.message } });
       }
 
       if (!core.checkRpm(caller.userId)) {

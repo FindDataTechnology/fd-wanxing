@@ -357,4 +357,80 @@ export function registerConsoleRoutes(app, {
       updatedAt: cap.updatedAt,
     });
   });
+
+  // ── Serving plans (add-serving-plans 3.1) — ops credential only ───────────
+  // Plans are caller-side money policy on the API lane: issued and adjusted
+  // by the ops credential alone; any verified console identity (deployer or
+  // otherwise) is refused per the spec's ops gate. Email-first like allowlist
+  // add — the caller must already hold a sub2api account.
+  const opsOnly = (req, res) => {
+    if (requireToken(req)) return true;
+    res.status(403).json({ error: "serving plans are managed by the ops credential only" });
+    return false;
+  };
+
+  app.get("/api/wanxing/v1/console/plans", async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    return ok(res, { plans: store.planList() });
+  });
+
+  app.put("/api/wanxing/v1/console/plans", express.json({ limit: "4kb" }), async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const limitMinutes = Number(req.body?.limitMinutes);
+    const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 200) : "";
+    if (!email || !/^[^@\s]+@[^@\s]+$/.test(email)) return res.status(400).json({ error: "email required" });
+    if (!Number.isInteger(limitMinutes) || limitMinutes < 0 || limitMinutes > 1_000_000) {
+      return res.status(400).json({ error: "limitMinutes must be an integer in [0, 1000000]" });
+    }
+    if (!sub2api || sub2api.degraded()) return res.status(503).json({ error: "billing plane not configured — plans are inactive" });
+    let account;
+    try {
+      account = await sub2api.findUserByEmail(email);
+    } catch (e) {
+      return res.status(502).json({ error: `billing account lookup failed: ${e.message}` });
+    }
+    if (!account) {
+      return res.status(404).json({
+        error: "no sub2api account for that email yet — the caller signs in once at the billing panel (Logto) to create it",
+        code: "NO_SUB2API_ACCOUNT",
+      });
+    }
+    const plan = store.planSet(account.userId, limitMinutes, "ops", note, email);
+    say(`console: serving plan for ${email} set to ${limitMinutes} min (ref ${plan.planRef})`);
+    const used = store.planUsed(account.userId);
+    return ok(res, { plan: { ...plan, usedMinutes: used, remainingMinutes: Math.max(0, plan.limitMinutes - used) } });
+  });
+
+  // ── Caller self-statement (add-serving-plans 4.1) ──────────────────────────
+  // A verified console identity reads ONLY their own statement — the caller is
+  // resolved from the identity's email, and this surface has no other-caller
+  // parameter at all. The ops token carries no identity: it gets pointed at
+  // the plans list. No key material exists on this surface by construction.
+  app.get("/api/wanxing/v1/console/my/statement", async (req, res) => {
+    if (!(await gate(req, res))) return;
+    const email = String(req.consoleIdentity?.email || "").toLowerCase();
+    if (!email) return res.status(403).json({ error: "the ops token has no identity — use the plans list" });
+    if (!sub2api || sub2api.degraded()) return res.status(503).json({ error: "billing plane not configured" });
+    let account = null;
+    try {
+      account = await sub2api.findUserByEmail(email);
+    } catch { /* an unresolvable identity reads as planless with zero usage */ }
+    if (!account) {
+      return ok(res, { email, plan: null, usage: { planMinutes: 0, planTurns: 0, legacyMinutes: 0, legacyTurns: 0 } });
+    }
+    const plan = store.planGet(account.userId);
+    const usage = store.callerUsageSummary(account.userId);
+    return ok(res, {
+      email,
+      plan: plan ? {
+        planRef: plan.planRef,
+        limitMinutes: plan.limitMinutes,
+        usedMinutes: usage.planMinutes,
+        remainingMinutes: Math.max(0, plan.limitMinutes - usage.planMinutes),
+        updatedAt: plan.updatedAt,
+      } : null,
+      usage,
+    });
+  });
 }

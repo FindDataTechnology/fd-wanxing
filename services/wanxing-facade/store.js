@@ -9,6 +9,7 @@
 // probe verdicts in memory (see core.js).
 
 import Database from "better-sqlite3";
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
@@ -70,6 +71,11 @@ export function createWanxingStore({ file }) {
   if (!usageCols.has("channel")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN channel TEXT NOT NULL DEFAULT 'api'`);
   if (!usageCols.has("settler")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN settler TEXT`);
   if (!usageCols.has("visitor_sub")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN visitor_sub TEXT`);
+  // Serving-plan audit reference (add-serving-plans D5): which plan a
+  // plan-settled row was recorded under. Derivation keys on caller identity
+  // (settler='plan' AND caller_id), so this column is the audit trail, not
+  // the aggregation key — a cap rewrite never strands historical rows.
+  if (!usageCols.has("plan_ref")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN plan_ref TEXT`);
 
   // Host allowance (D6): one one-time minute cap per agent, set and adjusted
   // by that deployment's deployer (or ops). Used minutes derive from the
@@ -78,6 +84,22 @@ export function createWanxingStore({ file }) {
     agent_slug TEXT PRIMARY KEY,
     limit_minutes INTEGER NOT NULL,
     updated_by TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+
+  // Serving plans (add-serving-plans D1): one active plan per caller — the
+  // row IS the prepaid bundle (a minute cap; adjusting the cap is the top-up,
+  // exactly the host-allowance shape, but caller-keyed). Plan-settled minutes
+  // derive from the ledger, never a counter. plan_ref is minted once per
+  // caller and stays stable across cap rewrites for the usage rows' audit.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_plans (
+    user_id INTEGER PRIMARY KEY,
+    plan_ref TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL DEFAULT '',
+    limit_minutes INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`);
 
@@ -148,9 +170,9 @@ export function createWanxingStore({ file }) {
 
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
-      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null);
+      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, plan_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.planRef ?? null);
     },
     usageMarkSettled(id) {
       db.prepare(`UPDATE wanxing_usage SET settlement_status = 'settled', settled_at = ? WHERE id = ?`).run(now(), id);
@@ -201,6 +223,52 @@ export function createWanxingStore({ file }) {
       db.prepare(`INSERT INTO wanxing_host_allowance (agent_slug, limit_minutes, updated_by, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(agent_slug) DO UPDATE SET limit_minutes = excluded.limit_minutes, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
         .run(agentSlug, Number(limitMinutes), String(updatedBy || ""), now());
+    },
+
+    // ── Serving plans (add-serving-plans D1/D5) ─────────────────────────────
+    planGet(userId) {
+      const r = db.prepare(`SELECT plan_ref, email, limit_minutes, note, updated_by, created_at, updated_at FROM wanxing_plans WHERE user_id = ?`).get(Number(userId));
+      return r ? { planRef: r.plan_ref, email: r.email, limitMinutes: r.limit_minutes, note: r.note, updatedBy: r.updated_by, createdAt: r.created_at, updatedAt: r.updated_at } : null;
+    },
+    // Upsert the caller's plan; the plan_ref is minted on first issue and
+    // survives cap rewrites (usage rows keep pointing at the same reference).
+    // email rides along for the ops list — a caller with no turns yet still
+    // reads human.
+    planSet(userId, limitMinutes, updatedBy, note = "", email = "") {
+      const existing = db.prepare(`SELECT plan_ref FROM wanxing_plans WHERE user_id = ?`).get(Number(userId));
+      const planRef = existing?.plan_ref ?? `wp_${randomBytes(6).toString("hex")}`;
+      db.prepare(`INSERT INTO wanxing_plans (user_id, plan_ref, email, limit_minutes, note, updated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET email = excluded.email, limit_minutes = excluded.limit_minutes, note = excluded.note,
+          updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+        .run(Number(userId), planRef, String(email || ""), Number(limitMinutes), String(note || ""), String(updatedBy || ""), now(), now());
+      return this.planGet(userId);
+    },
+    planUsed(userId) {
+      const r = db.prepare(`SELECT COALESCE(SUM(minutes_billed), 0) AS m FROM wanxing_usage
+        WHERE settler = 'plan' AND caller_id = ?`).get(Number(userId));
+      return r.m;
+    },
+    planList() {
+      const rows = db.prepare(`SELECT p.user_id AS userId, p.plan_ref AS planRef, p.email, p.limit_minutes AS limitMinutes, p.note, p.updated_by AS updatedBy, p.updated_at AS updatedAt,
+        COALESCE((SELECT SUM(minutes_billed) FROM wanxing_usage WHERE settler = 'plan' AND caller_id = p.user_id), 0) AS usedMinutes
+        FROM wanxing_plans p ORDER BY p.updated_at DESC`).all();
+      return rows.map((r) => ({ ...r, remainingMinutes: Math.max(0, r.limitMinutes - r.usedMinutes) }));
+    },
+    // Caller statement (add-serving-plans 4.1): plan minutes derive from the
+    // ledger; legacy = API-lane rows the caller themself paid for by key
+    // balance (settler NULL). Chat-lane visitor rows can never collide with a
+    // sub2api caller id (visitor ids are hashed 48-bit, far outside sub2api's
+    // small-integer space) but are excluded by the settler/channel guards
+    // anyway.
+    callerUsageSummary(userId) {
+      const r = db.prepare(`SELECT
+        COALESCE(SUM(CASE WHEN settler = 'plan' THEN minutes_billed ELSE 0 END), 0) AS planMinutes,
+        COALESCE(SUM(CASE WHEN settler = 'plan' THEN 1 ELSE 0 END), 0) AS planTurns,
+        COALESCE(SUM(CASE WHEN channel = 'api' AND settler IS NULL THEN minutes_billed ELSE 0 END), 0) AS legacyMinutes,
+        COALESCE(SUM(CASE WHEN channel = 'api' AND settler IS NULL THEN 1 ELSE 0 END), 0) AS legacyTurns
+        FROM wanxing_usage WHERE caller_id = ?`).get(Number(userId));
+      return r;
     },
 
     // ── Caller debt state ───────────────────────────────────────────────────

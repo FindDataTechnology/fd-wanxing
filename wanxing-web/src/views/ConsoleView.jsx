@@ -37,12 +37,74 @@ export function ConsoleView({ focusSlug } = {}) {
   const [alwDraft, setAlwDraft] = useState("");
   const [alwNote, setAlwNote] = useState("");
   const [alwBusy, setAlwBusy] = useState(false);
+  // Serving plans (add-serving-plans): the caller's own statement + the
+  // ops-only plan manager.
+  const [stmt, setStmt] = useState(null);
+  const [stmtErr, setStmtErr] = useState("");
+  const [plans, setPlans] = useState(null);
+  const [planErr, setPlanErr] = useState("");
+  const [planDraft, setPlanDraft] = useState({ email: "", limit: "", note: "" });
+  const [planBusy, setPlanBusy] = useState(false);
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
     if (token && focusSlug) loadConfig(focusSlug);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, focusSlug]);
+
+  // My serving-plan statement (add-serving-plans 4.1): identity-scoped on the
+  // server — this fetch can only ever read the signed-in caller's own rows.
+  useEffect(() => {
+    if (!token) return;
+    let live = true;
+    authFetch("/api/wanxing/v1/console/my/statement")
+      .then(async (r) => {
+        if (r.status === 403) throw new Error("ops 令牌没有身份——套餐对账请用登录身份查看");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => live && (setStmt(d), setStmtErr("")))
+      .catch((e) => live && setStmtErr(String(e?.message || e)));
+    return () => {
+      live = false;
+    };
+  }, [token]);
+
+  const loadPlans = () =>
+    authFetch("/api/wanxing/v1/console/plans")
+      .then(async (r) => {
+        if (r.status === 403) throw new Error("套餐管理需要 ops 服务令牌（登录身份不可管理）");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => (setPlans(d), setPlanErr("")))
+      .catch((e) => setPlanErr(String(e?.message || e)));
+
+  useEffect(() => {
+    if (token) loadPlans();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const savePlan = async (e) => {
+    e.preventDefault();
+    setPlanBusy(true);
+    try {
+      const limit = Number(planDraft.limit);
+      const r = await authFetch("/api/wanxing/v1/console/plans", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: planDraft.email, limitMinutes: limit, note: planDraft.note }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setPlanDraft({ email: "", limit: "", note: "" });
+      loadPlans();
+    } catch (err) {
+      setPlanErr(String(err?.message || err));
+    } finally {
+      setPlanBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -573,6 +635,69 @@ export function ConsoleView({ focusSlug } = {}) {
             <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
           </div>
         )}
+
+        {/* Serving plans (add-serving-plans 4.1): my statement + ops manager */}
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="my-statement-panel">
+          <h3 className="font-semibold">我的套餐</h3>
+          {stmtErr && <div className="text-xs text-amber-600 dark:text-amber-400">{stmtErr}</div>}
+          {stmt && (
+            <div className="text-xs text-slate-500 space-y-1" data-testid="my-statement-body">
+              {stmt.plan ? (
+                <div>
+                  套餐上限 <b>{stmt.plan.limitMinutes}</b> 分钟 · 已用 <b>{stmt.plan.usedMinutes}</b> · 剩余 <b className="text-slate-900 dark:text-slate-100">{stmt.plan.remainingMinutes}</b>
+                </div>
+              ) : (
+                <div>暂无套餐——API 调用按调用键余额计费。</div>
+              )}
+              <div>
+                套餐结算 <b>{stmt.usage.planMinutes}</b> 分钟（{stmt.usage.planTurns} 回合） · 余额路径 <b>{stmt.usage.legacyMinutes}</b> 分钟（{stmt.usage.legacyTurns} 回合）
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plans-panel">
+          <h3 className="font-semibold">套餐管理 · ops</h3>
+          {planErr && <div className="text-xs text-amber-600 dark:text-amber-400">{planErr}</div>}
+          <form onSubmit={savePlan} className="flex gap-2 items-center flex-wrap">
+            <input
+              value={planDraft.email}
+              onChange={(e) => setPlanDraft({ ...planDraft, email: e.target.value })}
+              placeholder="调用者邮箱（sub2api 账户）"
+              className="w-56 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+            />
+            <input
+              value={planDraft.limit}
+              onChange={(e) => setPlanDraft({ ...planDraft, limit: e.target.value })}
+              inputMode="numeric"
+              placeholder="分钟上限"
+              className="w-28 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+            />
+            <input
+              value={planDraft.note}
+              onChange={(e) => setPlanDraft({ ...planDraft, note: e.target.value })}
+              placeholder="备注（可选）"
+              className="w-40 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+            />
+            <button disabled={planBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+              {planBusy ? "保存中…" : "发放/调整"}
+            </button>
+          </form>
+          {plans && plans.plans.length > 0 && (
+            <div className="text-xs space-y-1" data-testid="plans-list">
+              {plans.plans.map((p) => (
+                <div key={p.planRef} className="flex gap-3">
+                  <span className="font-mono text-slate-400 w-8">{p.userId}</span>
+                  <span className="w-56 truncate">{p.email || "—"}</span>
+                  <span>上限 {p.limitMinutes} · 已用 {p.usedMinutes} · 剩余 <b>{p.remainingMinutes}</b></span>
+                  {p.note ? <span className="text-slate-400">「{p.note}」</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+          {plans && plans.plans.length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
+          <div className="text-[10px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
+        </div>
       </div>
       </div>
     </div>

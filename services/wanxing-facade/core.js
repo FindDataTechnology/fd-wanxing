@@ -182,6 +182,18 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     const durationMs = Math.max(0, endedAt - startedAt);
     const billable = outcome === "ok";
     const minutesBilled = billable ? Math.max(1, Math.ceil(durationMs / 60_000)) : 0;
+    // Serving-plan election (add-serving-plans D2): an API-lane turn by a
+    // caller with an active plan settles against the plan — stamped at record
+    // time, the same discipline as the chat lane stamps its settler. Chat rows
+    // arrive with their settler already resolved and are never re-elected.
+    let planRef = null;
+    if (!channel && !settler) {
+      const plan = store.planGet(caller.userId);
+      if (plan) {
+        settler = "plan";
+        planRef = plan.planRef;
+      }
+    }
     const row = {
       id: `wu_${randomBytes(12).toString("hex")}`,
       callerId: caller.userId,
@@ -199,12 +211,21 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
       ...(channel ? { channel } : {}),
       ...(settler ? { settler } : {}),
       ...(visitorSub ? { visitorSub } : {}),
+      planRef,
     };
     store.usageInsert(row);
     return row;
   }
 
   async function trySettle(row) {
+    // Plan-backed rows settle locally (add-serving-plans D2): the drawdown IS
+    // the ledger row — remaining minutes derive from it, so settlement is just
+    // the mark. No external call and no failure ladder; a repeated mark (inline
+    // settle + sweep racing) is a no-op UPDATE.
+    if (row.settler === "plan") {
+      store.usageMarkSettled(row.id);
+      return true;
+    }
     const amount = Number((row.minutesBilled * row.rateUsd).toFixed(4));
     try {
       await sub2api.adjustBalance({
@@ -253,6 +274,26 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     }
   }
 
+  // ── Serving-plan admission + state (add-serving-plans D3) ────────────────
+  // Remaining minutes derive from the ledger (cap − plan-settled minutes for
+  // the caller) — no counter, so a cap adjustment is effective on the very
+  // next admission and there is nothing to unsuspend.
+  function planStateFor(callerId) {
+    const plan = store.planGet(callerId);
+    if (!plan) return null;
+    const used = store.planUsed(callerId);
+    return { plan, used, remaining: Math.max(0, plan.limitMinutes - used) };
+  }
+
+  function checkPlan(caller) {
+    const st = planStateFor(caller.userId);
+    if (!st) return { ok: true };
+    if (st.remaining <= 0) {
+      return authError(402, "PLAN_EXHAUSTED", "the caller's serving plan has no minutes left — ask the operator to adjust the plan");
+    }
+    return { ok: true, plan: { planRef: st.plan.planRef, remainingMinutes: st.remaining } };
+  }
+
   return {
     config: cfg,
     authenticate,
@@ -265,5 +306,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     recordUsage,
     trySettle,
     settlePending,
+    planStateFor,
+    checkPlan,
   };
 }
