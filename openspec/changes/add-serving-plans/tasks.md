@@ -23,8 +23,8 @@
 ## 5. 上游契约与文档
 
 - [x] 5.1 sub2api 虚拟用量镜像契约成文（D6：endpoint/幂等键/admin 鉴权/body 形状）落 docs/，标记非阻塞，验证：文档评审过（含幂等与鉴权两节）
-- [ ] 5.2 上游 issue 递交 Wei-Shaw/sub2api（可选时机），验证：issue 链接入册
+- [x] 5.2 上游 issue 递交 Wei-Shaw/sub2api（可选时机），验证：issue 链接入册（Wei-Shaw/sub2api#8007）
 
 ## 6. 上线
 
-- [ ] 6.1 fd-wanxing 发布线（GHA→镜像→deploy 清单）滚 facade+web，生产冒烟：发放→真回合→账面对读，验证：board/账本/对账面三处一致
+- [x] 6.1 fd-wanxing 发布线（GHA→镜像→deploy 清单）滚 facade+web，生产冒烟：发放→真回合→账面对读，验证：board/账本/对账面三处一致
