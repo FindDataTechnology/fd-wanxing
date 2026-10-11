@@ -1085,3 +1085,26 @@ test("3.2 subsidy via dedicated account id: no key, no holder resolution, direct
   assert.equal(sub.resolveCalls, 0, "the dedicated id path never resolves a key holder");
   store.close();
 });
+
+// ── add-catalog-discovery: example prompts ride the card and catalog ────────
+
+test("3.2 declared examples ride the card and catalog verbatim; undeclared keeps the shape", async () => {
+  const withEx = faceHarness({ entry: { visibility: "public", examples: ["帮我修这只爬虫", "看看今天的工单"] } });
+  try {
+    const cat = await withEx.call("/api/wanxing/v1/agents");
+    assert.deepEqual(cat.body.agents[0].examples, ["帮我修这只爬虫", "看看今天的工单"]);
+    const card = await withEx.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json");
+    assert.deepEqual(card.body.examples, ["帮我修这只爬虫", "看看今天的工单"]);
+  } finally {
+    await withEx.close();
+  }
+  const bare = faceHarness({ entry: { visibility: "public" } });
+  try {
+    const cat = await bare.call("/api/wanxing/v1/agents");
+    assert.equal("examples" in cat.body.agents[0], false);
+    const card = await bare.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json");
+    assert.equal("examples" in card.body, false);
+  } finally {
+    await bare.close();
+  }
+});

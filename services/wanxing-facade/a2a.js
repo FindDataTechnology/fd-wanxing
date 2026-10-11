@@ -137,6 +137,9 @@ export function createA2aFace({
       capabilities: entry.capabilities ?? { streaming: true },
       skills: entry.skills ?? [],
       tags: entry.tags ?? [],
+      // Sample prompts (add-catalog-discovery): ride verbatim when the
+      // composed registry card declares them; absent keeps the shape.
+      ...(Array.isArray(entry.examples) && entry.examples.length > 0 ? { examples: entry.examples } : {}),
       default_input_modes: entry.default_input_modes ?? ["text"],
       default_output_modes: entry.default_output_modes ?? ["text"],
       preferred_transport: entry.preferred_transport ?? "jsonrpc",
@@ -171,6 +174,7 @@ export function createA2aFace({
           tags: entry.tags ?? [],
           capabilities: entry.capabilities ?? { streaming: true },
           skills: entry.skills ?? [],
+          ...(Array.isArray(entry.examples) && entry.examples.length > 0 ? { examples: entry.examples } : {}),
           ...(chatability?.({ exists: true, slug: dep.slug, visibility: "public", paused: false, entry })
             ? { chatable: true }
             : {}),

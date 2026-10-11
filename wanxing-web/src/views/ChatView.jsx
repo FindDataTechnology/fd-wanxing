@@ -58,6 +58,13 @@ export function ChatView({ focusSlug } = {}) {
   const [statusErr, setStatusErr] = useState(null);
   const [messages, setMessages] = useState(() => (slug ? loadHist(slug) : []));
   const [input, setInput] = useState("");
+  // Deep-link prefill (add-catalog-discovery): ?q= fills the composer once —
+  // a catalog example lands as a ready-to-send draft, never auto-sent.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.hash.split("?")[1] || "").get("q");
+    if (q) setInput((cur) => cur || q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
   const [ownKey, setOwnKey] = useState(() => (slug ? localStorage.getItem(ownKeyKey(slug)) ?? "" : ""));

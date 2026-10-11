@@ -65,18 +65,41 @@ export function CatalogView() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {agents.map((a) => (
-            <div key={a.slug} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
+            <div key={a.slug} data-testid={`agent-card-${a.slug}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold">{a.name ?? a.slug}</span>
                 <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
+                {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-400 flex-1">{a.description ?? "—"}</p>
+              {(a.examples ?? []).length > 0 && (
+                <div className="flex flex-col gap-1" data-testid={`examples-${a.slug}`}>
+                  {(a.examples ?? []).slice(0, 3).map((ex, i) => (
+                    <a
+                      key={i}
+                      href={a.chatable ? `#/chat/${encodeURIComponent(a.slug)}?q=${encodeURIComponent(ex)}` : undefined}
+                      className={`text-left text-xs px-2 py-1 rounded-lg border ${a.chatable ? "border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" : "border-slate-200 dark:border-slate-800 text-slate-400 cursor-default"}`}
+                      title={a.chatable ? "点击开始这段对话" : "该 agent 暂未开放访客对话"}
+                    >
+                      试问 · {ex}
+                    </a>
+                  ))}
+                </div>
+              )}
               <div className="flex flex-wrap gap-1">
                 {(a.tags ?? []).map((t) => (
                   <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{t}</span>
                 ))}
               </div>
-              <code className="text-xs text-slate-400 truncate" title={a.slug}>{a.slug}</code>
+              <details className="text-xs text-slate-500">
+                <summary className="cursor-pointer select-none">技能与 slug</summary>
+                <ul className="mt-1 list-disc pl-4">
+                  {(a.skills ?? []).length > 0 ? (a.skills ?? []).map((sk, i) => (
+                    <li key={i}>{typeof sk === "string" ? sk : sk?.name ?? sk?.id}</li>
+                  )) : <li>（未声明）</li>}
+                </ul>
+                <code className="block mt-1 text-slate-400 truncate" title={a.slug}>{a.slug}</code>
+              </details>
               {a.chatable && (
                 <a
                   href={`#/chat/${encodeURIComponent(a.slug)}`}
