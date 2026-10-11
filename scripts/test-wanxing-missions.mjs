@@ -446,10 +446,19 @@ test("5.1 approve only clears the human gate; abort is always available", async 
   await h.close();
 });
 
-test("5.1 creation needs a verified identity with an account; ops token cannot create", async () => {
+test("5.1 creation needs an identity or an ownerEmail; ops creates on behalf", async () => {
   const h = appHarness();
-  const opsCreate = await h.ops("/api/wanxing/v1/console/missions", { method: "POST", body: JSON.stringify(fourTuple()) });
-  assert.equal(opsCreate.status, 403);
+  const opsBare = await h.ops("/api/wanxing/v1/console/missions", { method: "POST", body: JSON.stringify(fourTuple()) });
+  assert.equal(opsBare.status, 400); // ops without ownerEmail names no owner
+  const opsUnknown = await h.ops("/api/wanxing/v1/console/missions", { method: "POST", body: JSON.stringify({ ...fourTuple(), ownerEmail: "nobody@x.y" }) });
+  assert.equal(opsUnknown.status, 404);
+  assert.equal(opsUnknown.body.code, "NO_SUB2API_ACCOUNT");
+  const opsFor = await h.ops("/api/wanxing/v1/console/missions", { method: "POST", body: JSON.stringify({ ...fourTuple(), ownerEmail: OWNER.email }) });
+  assert.equal(opsFor.status, 201);
+  // The owner sees the ops-created mission as their own.
+  const mine = await h.owner("/api/wanxing/v1/console/missions");
+  assert.equal(mine.body.missions.length, 1);
+  assert.equal(mine.body.missions[0].id, opsFor.body.mission.id);
   const bad = await h.owner("/api/wanxing/v1/console/missions", { method: "POST", body: JSON.stringify(fourTuple({ costCapMinutes: 0 })) });
   assert.equal(bad.status, 400);
   await h.close();
@@ -481,4 +490,34 @@ test("6.1 every transition lands one fleet event; a broken channel never blocks"
   boom = false;
   assert.deepEqual(events.map((e) => e.kind), ["mission.submitted"]);
   assert.ok(MISSION_TERMINAL.has("reported"));
+});
+
+// ── 3.3 the planner's read lane (human-approval poll) ───────────────────────
+
+test("3.3 the planner polls mission state over the epoch token; approve unblocks", async () => {
+  const h = appHarness();
+  const { id, token, wb } = await drive(h, { to: "planning" });
+  const plan = await wb("plan", { steps: [{ id: "s1", prompt: "a" }] }, "k-p", token);
+  assert.equal(plan.body.status, "awaiting_approval");
+
+  const read = (t) => h.json(`/api/wanxing/v1/missions/${id}/writeback`, { headers: { "X-Mission-Token": t } });
+  const before = await read(token);
+  assert.equal(before.body.status, "awaiting_approval");
+  assert.equal(before.body.approval, "human");
+  assert.equal("dispatchToken" in before.body, false); // the token never echoes
+
+  const wrong = await read("mt_wrong");
+  assert.equal(wrong.status, 401);
+
+  await h.owner(`/api/wanxing/v1/console/missions/${id}/approve`, { method: "POST" });
+  const after = await read(token);
+  assert.equal(after.body.status, "scheduled");
+  assert.equal(after.body.plan.steps.length, 1);
+
+  // Terminal stays readable with the matching token (the final poll).
+  await wb("step", { stepId: "s1", status: "running" }, "k-s", token);
+  await wb("report", { summary: "done" }, "k-r", token);
+  const terminal = await read(token);
+  assert.equal(terminal.body.status, "reported");
+  await h.close();
 });

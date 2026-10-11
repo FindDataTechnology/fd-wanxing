@@ -304,13 +304,31 @@ export function createMissionsFace({
       if (!(await gateConsole(req, res, { requireToken, logtoAuth }))) return;
       const who = await resolveOwner(req, res);
       if (!who) return;
-      if (who.ops || !who.userId) {
-        return res.status(403).json({ error: "missions are created by a verified identity with a billing account (the ops token carries no identity)" });
+      let ownerId = who.userId, ownerEmail = who.email;
+      if (who.ops) {
+        // Ops-on-behalf creation (运营商代建): the ops token carries no
+        // identity, so the owner arrives as an explicit ownerEmail that must
+        // resolve to a billing account — the mission lands as the owner's own.
+        const email = typeof req.body?.ownerEmail === "string" ? req.body.ownerEmail.trim().toLowerCase() : "";
+        if (!email || !/^[^@\s]+@[^@\s]+$/.test(email)) {
+          return res.status(400).json({ error: "ownerEmail is required when creating with the ops credential" });
+        }
+        let account = null;
+        try {
+          account = await sub2api.findUserByEmail(email);
+        } catch { /* unresolvable reads below as not-found */ }
+        if (!account) {
+          return res.status(404).json({ error: "no sub2api account for that ownerEmail yet — the owner signs in once at the billing panel to create it", code: "NO_SUB2API_ACCOUNT" });
+        }
+        ownerId = account.userId;
+        ownerEmail = email;
+      } else if (!who.userId) {
+        return res.status(403).json({ error: "missions are created by a verified identity with a billing account (the ops token needs ownerEmail)" });
       }
       const v = validateInput(req.body ?? {});
       if (v.errors.length) return res.status(400).json({ error: v.errors.join("; ") });
-      const mission = store.missionCreate({ ownerId: who.userId, ownerEmail: who.email, ...v.values });
-      log(`missions: ${mission.id} created by ${who.email} (cap ${v.values.costCapMinutes}m)`);
+      const mission = store.missionCreate({ ownerId, ownerEmail, ...v.values });
+      log(`missions: ${mission.id} created for ${ownerEmail}${who.ops ? " (ops)" : ""} (cap ${v.values.costCapMinutes}m)`);
       res.status(201).json({ mission: { ...mission, dispatchToken: undefined } });
     });
 
@@ -347,6 +365,26 @@ export function createMissionsFace({
     app.post("/api/wanxing/v1/console/missions/:id/abort", action("aborted", "owner"));
 
     // ── The planner's writeback lane (epoch token; no console session) ──────
+    // The read sibling first: the planner polls this between rhythm turns —
+    // the human-approval mode's "go" signal is the state leaving
+    // awaiting_approval, observable only here. Terminal missions stay
+    // readable to a matching token (the final poll must see its own report).
+    app.get("/api/wanxing/v1/missions/:id/writeback", async (req, res) => {
+      const m = store.missionGet(req.params.id);
+      if (!m) return res.status(404).json({ error: { code: "MISSION_NOT_FOUND", message: "no such mission" } });
+      const token = String(req.headers["x-mission-token"] || "");
+      if (!token || token !== m.dispatchToken) {
+        return res.status(401).json({ error: { code: "WRITEBACK_TOKEN_INVALID", message: "the writeback token is absent or superseded" } });
+      }
+      res.json({
+        id: m.id, status: m.status, approval: m.approval,
+        goal: m.goal, model: m.model, windowStart: m.windowStart, windowEnd: m.windowEnd,
+        costCapMinutes: m.costCapMinutes,
+        plan: m.plan, report: m.report,
+        history: m.history.map((x) => ({ to: x.to, at: x.at })),
+      });
+    });
+
     app.post("/api/wanxing/v1/missions/:id/writeback", express.json({ limit: "64kb" }), async (req, res) => {
       const m = store.missionGet(req.params.id);
       if (!m) return res.status(404).json({ error: { code: "MISSION_NOT_FOUND", message: "no such mission" } });

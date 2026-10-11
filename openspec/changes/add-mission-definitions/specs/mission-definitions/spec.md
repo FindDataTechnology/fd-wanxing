@@ -106,6 +106,11 @@ console SHALL 提供「我的任务」面：owner 浏览自己的 mission 列表
 - **WHEN** ops 查看任务面
 - **THEN** 全部 mission 可见，abort 可用，owner 私有字段不出现在他人视图
 
+#### Scenario: Ops may create on behalf of an owner
+
+- **WHEN** ops 凭据携 ownerEmail 创建 mission 且该邮箱能解析到计费账户
+- **THEN** mission 落在该账户名下（owner 在自己的列表里看到并可控）；邮箱不可解析则以账户不存在错误拒绝，不落行
+
 #### Scenario: Unconfigured planner degrades visibly
 
 - **WHEN** 未配置 MISSION_PLANNER_SLUG 时 owner submit
