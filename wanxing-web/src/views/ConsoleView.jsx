@@ -52,6 +52,13 @@ export function ConsoleView({ focusSlug } = {}) {
   const [mDraft, setMDraft] = useState({ goal: "", model: "", hours: "24", cap: "30", approval: "human" });
   const [mBusy, setMBusy] = useState(false);
   const [mDetail, setMDetail] = useState(null);
+  // Deployer self-service (add-deployer-self-service, M3 ①): my packs →
+  // deploy form → share card.
+  const [myPacks, setMyPacks] = useState(null);
+  const [myPacksErr, setMyPacksErr] = useState("");
+  const [depDraft, setDepDraft] = useState({ packId: "", version: "", billingKey: "", notifyChannel: "" });
+  const [depBusy, setDepBusy] = useState(false);
+  const [shareCard, setShareCard] = useState(null);
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
@@ -171,6 +178,49 @@ export function ConsoleView({ focusSlug } = {}) {
     const r = await authFetch(`/api/wanxing/v1/console/missions/${id}`);
     const d = await r.json().catch(() => ({}));
     if (r.ok) setMDetail({ id, doc: d.mission });
+  };
+
+  const loadMyPacks = () =>
+    authFetch("/api/wanxing/v1/console/my/packs")
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => (setMyPacks(d), setMyPacksErr("")))
+      .catch((e) => setMyPacksErr(String(e?.message || e)));
+
+  useEffect(() => {
+    if (token) loadMyPacks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const deployMyPack = async (e) => {
+    e.preventDefault();
+    setDepBusy(true);
+    try {
+      const r = await authFetch(`/api/wanxing/v1/console/my/packs/${encodeURIComponent(depDraft.packId)}/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(depDraft.version ? { version: Number(depDraft.version) } : {}),
+          billingKey: depDraft.billingKey,
+          ...(depDraft.notifyChannel ? { notifyChannel: depDraft.notifyChannel } : {}),
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error?.message || d.error || `HTTP ${r.status}`);
+      setDepDraft({ packId: "", version: "", billingKey: "", notifyChannel: "" });
+      const slug = d.deployed?.[0]?.slug;
+      if (slug) {
+        const sc = await authFetch(`/api/wanxing/v1/console/my/deployments/${encodeURIComponent(slug)}/share`);
+        setShareCard(sc.ok ? await sc.json() : { slug, chatUrl: `#/chat/${slug}`, chatable: null });
+      }
+      loadMyPacks();
+    } catch (err) {
+      setMyPacksErr(String(err?.message || err));
+    } finally {
+      setDepBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -730,6 +780,76 @@ export function ConsoleView({ focusSlug } = {}) {
               <div>
                 套餐结算 <b>{stmt.usage.planMinutes}</b> 分钟（{stmt.usage.planTurns} 回合） · 余额路径 <b>{stmt.usage.legacyMinutes}</b> 分钟（{stmt.usage.legacyTurns} 回合）
               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="deploy-panel">
+          <h3 className="font-semibold">部署我的 agent</h3>
+          {myPacksErr && <div className="text-xs text-amber-600 dark:text-amber-400">{myPacksErr}</div>}
+          {myPacks && myPacks.packs.length === 0 && (
+            <div className="text-xs text-slate-500">名下暂无已发布的 pack——先在壹座「设置 → 功能集」发布（含 serving 契约的 agent 才可部署）。</div>
+          )}
+          {myPacks && myPacks.packs.length > 0 && (
+            <div className="text-xs space-y-1" data-testid="my-packs-list">
+              {myPacks.packs.map((p) => (
+                <div key={p.id} className="flex gap-2 items-center flex-wrap">
+                  <span className={`px-1.5 py-0.5 rounded font-mono ${p.deployable ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`}>{p.deployable ? "可部署" : "无契约"}</span>
+                  <button
+                    onClick={() => setDepDraft({ ...depDraft, packId: p.id, version: String(p.version) })}
+                    className="w-52 truncate text-left hover:underline"
+                  >
+                    {p.name}（v{p.version}{p.visibility === "private" ? " · 私有" : ""}）
+                  </button>
+                  <span className="text-slate-400">{(p.deployableAgents ?? []).map((a) => a.name ?? a.id).join("、") || "—"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <form onSubmit={deployMyPack} className="space-y-2">
+            <div className="flex gap-2 items-center flex-wrap">
+              <input
+                value={depDraft.packId}
+                onChange={(e) => setDepDraft({ ...depDraft, packId: e.target.value })}
+                placeholder="pack id（点上方列表填入）"
+                className="w-56 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+              />
+              <input
+                value={depDraft.version}
+                onChange={(e) => setDepDraft({ ...depDraft, version: e.target.value })}
+                inputMode="numeric"
+                placeholder="版本（空=最新）"
+                className="w-28 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+              />
+              <input
+                value={depDraft.billingKey}
+                onChange={(e) => setDepDraft({ ...depDraft, billingKey: e.target.value })}
+                type="password"
+                placeholder="计费键（你的 sub2api sk-…）"
+                className="w-56 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+              />
+              <input
+                value={depDraft.notifyChannel}
+                onChange={(e) => setDepDraft({ ...depDraft, notifyChannel: e.target.value })}
+                placeholder="通知通道（可空）"
+                className="w-40 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+              />
+              <button disabled={depBusy || !depDraft.packId || !depDraft.billingKey} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+                {depBusy ? "部署中…" : "部署为服务"}
+              </button>
+            </div>
+          </form>
+          {shareCard && (
+            <div className="text-xs border-t border-slate-200 dark:border-slate-800 pt-2 space-y-1" data-testid="share-card">
+              <div className="font-semibold">分享卡</div>
+              <div className="flex gap-2 items-center">
+                <span className={`px-1.5 py-0.5 rounded font-mono ${shareCard.chatable ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"}`}>{shareCard.chatable === null ? "未知" : shareCard.chatable ? "可对话" : "未开放"}</span>
+                <code className="truncate flex-1">{shareCard.chatUrl}</code>
+                <button onClick={() => navigator.clipboard?.writeText(shareCard.chatUrl)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">复制</button>
+                <a href={shareCard.chatUrl} target="_blank" rel="noreferrer" className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">打开</a>
+              </div>
+              <div className="text-slate-500">{shareCard.chatableReason}</div>
+              {shareCard.allowance && <div className="text-slate-500">部署者额度：余 {shareCard.allowance.remainingMinutes}/{shareCard.allowance.limitMinutes} 分钟</div>}
             </div>
           )}
         </div>

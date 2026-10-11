@@ -20,6 +20,7 @@ import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
 import { createMissionsFace } from "./missions.js";
+import { createSelfServiceFace } from "./selfservice.js";
 import { registerPrefsRoutes } from "./prefs.js";
 import { createCallbackDispatcher } from "./callbacks.js";
 import { createLogtoAuth } from "./logto-auth.js";
@@ -272,6 +273,26 @@ export function registerWanxingRoutes(app, {
     logtoAuth,
     sub2api,
   });
+
+  // Deployer self-service (add-deployer-self-service, M3 ①): the console's
+  // "deploy my agent" flow — facet packs surface under the verified identity,
+  // deploy forwarding, and the share card. Unconfigured channel degrades 503.
+  const selfService = createSelfServiceFace({
+    store,
+    logtoAuth,
+    requireToken: (req) => {
+      const t = consoleToken();
+      return Boolean(t) && req.headers.authorization === `Bearer ${t}`;
+    },
+    env,
+    ...(fetchImpl ? { fetchImpl } : {}),
+    subsidyOpen: () =>
+      /^(1|true|yes)$/i.test(String(env.WANXING_CHAT_SUBSIDY_ENABLED || "")) &&
+      Boolean(Number(env.WANXING_SUBSIDY_USER_ID) || env.WANXING_SUBSIDY_KEY) &&
+      Boolean(sub2api && !sub2api.degraded()),
+    log: (m) => console.log(`[wanxing:selfservice] ${m}`),
+  });
+  selfService.register(app);
 
   // ── Ops usage view (spec: the ops board shows both dimensions) ────────────
   // The extracted unit has no login session: the service credential (the
