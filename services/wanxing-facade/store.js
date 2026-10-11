@@ -76,6 +76,11 @@ export function createWanxingStore({ file }) {
   // (settler='plan' AND caller_id), so this column is the audit trail, not
   // the aggregation key — a cap rewrite never strands historical rows.
   if (!usageCols.has("plan_ref")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN plan_ref TEXT`);
+  // Mission attribution (add-mission-definitions D4): the facade-lane turns a
+  // mission dispatched (planner dispatch turns, later facade-run steps) ride
+  // this column — the mission's spent minutes derive from the ledger over it,
+  // never from a counter. Rows without a mission keep NULL.
+  if (!usageCols.has("mission_id")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN mission_id TEXT`);
 
   // Host allowance (D6): one one-time minute cap per agent, set and adjusted
   // by that deployment's deployer (or ops). Used minutes derive from the
@@ -129,6 +134,45 @@ export function createWanxingStore({ file }) {
     PRIMARY KEY (user_id, agent_slug)
   )`);
 
+  // Missions (add-mission-definitions D1): the M2 scenario-A four-tuple as a
+  // first-class row — owner (console identity's sub2api account), goal/model/
+  // window/cap, the explicit lifecycle state, planner artifacts (plan steps,
+  // final report), the in-row audit trail, and the CURRENT epoch writeback
+  // token (superseded on the next dispatch, dead on terminal — see D3). Spent
+  // minutes always DERIVE from the usage ledger over mission_id; nothing here
+  // is a counter.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_missions (
+    id TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL,
+    owner_email TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    window_start INTEGER NOT NULL,
+    window_end INTEGER NOT NULL,
+    cost_cap_minutes INTEGER NOT NULL,
+    approval TEXT NOT NULL DEFAULT 'human',
+    status TEXT NOT NULL DEFAULT 'draft',
+    plan_json TEXT,
+    report_json TEXT,
+    history_json TEXT NOT NULL DEFAULT '[]',
+    dispatch_token TEXT,
+    dispatch_token_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+
+  // Mission writeback idempotency (D3): one row per accepted planner
+  // writeback, keyed (mission, idem_key) — a replayed key returns the
+  // recorded result verbatim and never advances the state machine twice.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_mission_writebacks (
+    mission_id TEXT NOT NULL,
+    idem_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (mission_id, idem_key)
+  )`);
+
   const now = () => Date.now();
 
   return {
@@ -170,9 +214,9 @@ export function createWanxingStore({ file }) {
 
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
-      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, plan_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.planRef ?? null);
+      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, plan_ref, mission_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.planRef ?? null, row.missionId ?? null);
     },
     usageMarkSettled(id) {
       db.prepare(`UPDATE wanxing_usage SET settlement_status = 'settled', settled_at = ? WHERE id = ?`).run(now(), id);
@@ -316,6 +360,91 @@ export function createWanxingStore({ file }) {
           reap_minutes = excluded.reap_minutes, updated_at = excluded.updated_at`)
         .run(Number(userId), agentSlug, next.callbackUrl ?? null, next.callbackSecret ?? null, next.reapMinutes ?? null, now());
       return next;
+    },
+
+    // ── Missions (add-mission-definitions D1/D2/D3) ─────────────────────────
+    // The store's own guard is defense in depth: the route validates first
+    // (richer errors), but an invalid four-tuple must never land a row even
+    // through direct store use.
+    missionCreate({ ownerId, ownerEmail, goal, model, windowStart, windowEnd, costCapMinutes, approval }) {
+      const ws = Number(windowStart), we = Number(windowEnd), cap = Number(costCapMinutes);
+      if (typeof goal !== "string" || !goal.trim() || goal.length > 4000) throw new Error("goal must be a non-empty string of at most 4000 chars");
+      if (model != null && (typeof model !== "string" || model.length > 200)) throw new Error("model must be a string of at most 200 chars");
+      if (!Number.isInteger(ws) || !Number.isInteger(we) || we <= ws) throw new Error("window must be integer epoch ms with end after start");
+      if (!Number.isInteger(cap) || cap < 1 || cap > 1_000_000) throw new Error("costCapMinutes must be an integer in [1, 1000000]");
+      if (approval !== "human" && approval !== "auto") throw new Error("approval must be human or auto");
+      const id = `msn_${randomBytes(12).toString("hex")}`;
+      db.prepare(`INSERT INTO wanxing_missions (id, owner_id, owner_email, goal, model, window_start, window_end, cost_cap_minutes, approval, status, history_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`)
+        .run(id, Number(ownerId), String(ownerEmail || ""), goal.trim(), String(model || ""), ws, we,
+          cap, approval, "[]", now(), now());
+      return this.missionGet(id);
+    },
+    missionGet(id) {
+      const r = db.prepare(`SELECT * FROM wanxing_missions WHERE id = ?`).get(String(id || ""));
+      if (!r) return null;
+      return {
+        id: r.id, ownerId: r.owner_id, ownerEmail: r.owner_email, goal: r.goal, model: r.model,
+        windowStart: r.window_start, windowEnd: r.window_end, costCapMinutes: r.cost_cap_minutes,
+        approval: r.approval, status: r.status,
+        plan: r.plan_json ? JSON.parse(r.plan_json) : null,
+        report: r.report_json ? JSON.parse(r.report_json) : null,
+        history: JSON.parse(r.history_json || "[]"),
+        dispatchToken: r.dispatch_token, dispatchTokenAt: r.dispatch_token_at,
+        createdAt: r.created_at, updatedAt: r.updated_at,
+      };
+    },
+    missionList({ ownerId = null } = {}) {
+      const rows = ownerId == null
+        ? db.prepare(`SELECT id FROM wanxing_missions ORDER BY updated_at DESC LIMIT 500`).all()
+        : db.prepare(`SELECT id FROM wanxing_missions WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 200`).all(Number(ownerId));
+      return rows.map((r) => {
+        const m = this.missionGet(r.id);
+        return { ...m, spentMinutes: this.missionSpent(r.id), plan: undefined, report: undefined, history: undefined };
+      });
+    },
+    // Spent minutes derive from the ledger (settled or not) — the same
+    // discipline as plans/host-allowance: the row set IS the source.
+    missionSpent(id) {
+      const r = db.prepare(`SELECT COALESCE(SUM(minutes_billed), 0) AS m FROM wanxing_usage WHERE mission_id = ?`).get(String(id || ""));
+      return r.m;
+    },
+    // Optimistic-concurrency status write (design D2): the UPDATE only lands
+    // on the expected from-status — a racing writer loses as an illegal
+    // transition, so there is exactly one state-write point in the system.
+    // Artifact columns ride along via COALESCE (NULL = keep) so a transition
+    // and its payload land atomically.
+    missionTransition(id, fromStatus, toStatus, by, note = "", { planJson = null, reportJson = null, dispatchToken, dispatchTokenAt } = {}) {
+      const cur = db.prepare(`SELECT history_json FROM wanxing_missions WHERE id = ?`).get(String(id || ""));
+      if (!cur) return null;
+      const history = JSON.parse(cur.history_json || "[]");
+      history.push({ to: toStatus, by: String(by || ""), at: now(), ...(note ? { note: String(note).slice(0, 300) } : {}) });
+      const res = db.prepare(`UPDATE wanxing_missions SET status = ?, history_json = ?, updated_at = ?,
+        plan_json = COALESCE(?, plan_json), report_json = COALESCE(?, report_json),
+        dispatch_token = COALESCE(?, dispatch_token), dispatch_token_at = COALESCE(?, dispatch_token_at)
+        WHERE id = ? AND status = ?`)
+        .run(toStatus, JSON.stringify(history), now(), planJson, reportJson,
+          dispatchToken ?? null, dispatchTokenAt ?? null, String(id), fromStatus);
+      return res.changes === 1 ? this.missionGet(id) : null;
+    },
+    // Artifact-only updates (step progress inside plan_json, report text)
+    // never touch the status machine — the planner owns these fields.
+    missionPatchArtifacts(id, { plan, report } = {}) {
+      const res = db.prepare(`UPDATE wanxing_missions SET
+        ${plan !== undefined ? "plan_json = ?," : ""}${report !== undefined ? "report_json = ?," : ""}
+        updated_at = ? WHERE id = ?`)
+        .run(...(plan !== undefined ? [JSON.stringify(plan)] : []), ...(report !== undefined ? [JSON.stringify(report)] : []), now(), String(id));
+      return res.changes === 1 ? this.missionGet(id) : null;
+    },
+    // Writeback idempotency (D3): read-first replay, record-after-process —
+    // the winner's recorded result is what every replay returns.
+    missionWritebackGet(missionId, idemKey) {
+      const row = db.prepare(`SELECT kind, result FROM wanxing_mission_writebacks WHERE mission_id = ? AND idem_key = ?`).get(String(missionId), String(idemKey));
+      return row ? { kind: row.kind, result: JSON.parse(row.result) } : null;
+    },
+    missionWritebackRecord(missionId, idemKey, kind, result) {
+      db.prepare(`INSERT INTO wanxing_mission_writebacks (mission_id, idem_key, kind, result, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING`).run(String(missionId), String(idemKey), String(kind), JSON.stringify(result), now());
     },
   };
 }

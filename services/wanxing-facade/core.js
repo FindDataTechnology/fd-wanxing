@@ -178,7 +178,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
   // Minutes round UP — a 5-second turn bills one minute unit (the rate table
   // is per started minute). outcome=error rows are recorded but waived: the
   // caller is never charged for a turn that produced nothing.
-  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null }) {
+  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null, missionId = null }) {
     const durationMs = Math.max(0, endedAt - startedAt);
     const billable = outcome === "ok";
     const minutesBilled = billable ? Math.max(1, Math.ceil(durationMs / 60_000)) : 0;
@@ -186,6 +186,8 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     // caller with an active plan settles against the plan — stamped at record
     // time, the same discipline as the chat lane stamps its settler. Chat rows
     // arrive with their settler already resolved and are never re-elected.
+    // Mission dispatch rows (add-mission-definitions D4) arrive settler-stamped
+    // ('mission') for the same reason: they never elect the owner's plan.
     let planRef = null;
     if (!channel && !settler) {
       const plan = store.planGet(caller.userId);
@@ -212,6 +214,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
       ...(settler ? { settler } : {}),
       ...(visitorSub ? { visitorSub } : {}),
       planRef,
+      ...(missionId ? { missionId } : {}),
     };
     store.usageInsert(row);
     return row;
@@ -223,6 +226,15 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     // the mark. No external call and no failure ladder; a repeated mark (inline
     // settle + sweep racing) is a no-op UPDATE.
     if (row.settler === "plan") {
+      store.usageMarkSettled(row.id);
+      return true;
+    }
+    // Mission dispatch rows (add-mission-definitions D4) settle locally for
+    // the same reason one step removed: the planner deployment's own billing
+    // key already paid the model call upstream (the runner's lane), so the
+    // facade-side row exists for cap accounting and audit only — the mark IS
+    // the settlement, and the cap is a dispatch gate, never a money mover.
+    if (row.settler === "mission") {
       store.usageMarkSettled(row.id);
       return true;
     }

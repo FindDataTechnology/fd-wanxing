@@ -19,6 +19,7 @@ import { createChatFace } from "./chat.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
+import { createMissionsFace } from "./missions.js";
 import { registerPrefsRoutes } from "./prefs.js";
 import { createCallbackDispatcher } from "./callbacks.js";
 import { createLogtoAuth } from "./logto-auth.js";
@@ -242,6 +243,35 @@ export function registerWanxingRoutes(app, {
   });
   chatFaceRef = chatFace;
   chatFace.register(app);
+
+  // Missions (add-mission-definitions): the M2 task-definition face — the
+  // four-tuple store, the planner dispatch over the same agent lane the a2a
+  // face forwards through, the epoch writeback, and the console missions
+  // routes. Planner slug is env-driven; unconfigured degrades visibly (the
+  // console list answers plannerConfigured:false, submit refuses 503).
+  const publicBase = () => (env.WANXING_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+  const missionsFace = createMissionsFace({
+    store,
+    core,
+    resolveDeployment,
+    forwardHeaders,
+    config: {
+      agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
+      writebackUrlFor: (missionId) => `${publicBase()}/api/wanxing/v1/missions/${missionId}/writeback`,
+    },
+    report: (ev) => fleetReporter.report(ev),
+    env,
+    ...(fetchImpl ? { upstreamFetch: fetchImpl } : {}),
+    log: (m) => console.log(`[wanxing:missions] ${m}`),
+  });
+  missionsFace.register(app, {
+    requireToken: (req) => {
+      const t = consoleToken();
+      return Boolean(t) && req.headers.authorization === `Bearer ${t}`;
+    },
+    logtoAuth,
+    sub2api,
+  });
 
   // ── Ops usage view (spec: the ops board shows both dimensions) ────────────
   // The extracted unit has no login session: the service credential (the
