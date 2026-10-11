@@ -25,4 +25,4 @@
 ## 6. 观测与收尾
 
 - [x] 6.1 转移事件接 fleet report 通道（mission.<transition> 全集，失败不阻塞），验证单测：转移即一条事件、通道异常转移照常
-- [ ] 6.2 walkthrough 脚本 + 全量单测绿 + 推送 CI 绿，验证：node --test 全绿 + CI 步骤级结论
+- [x] 6.2 walkthrough 脚本 + 全量单测绿 + 推送 CI 绿，验证：node --test 全绿 + CI 步骤级结论（实测：本地 101/101 全绿 + walkthrough 五段 ALL PASS；fd-wanxing 唯一 workflow=images，受 org 账单阻断连续三笔未起跑（前两笔在本次提交之前，非本次引入），镜像线既定走 scs001——与 ② planner pack 同窗部署）
