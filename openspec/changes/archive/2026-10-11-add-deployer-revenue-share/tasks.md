@@ -20,6 +20,6 @@
 ## 4. 验收与上线
 
 - [x] 4.1 全量测试门：fd-wanxing 全套件绿 + lint/typecheck/build 绿。
-- [ ] 4.2 上线（标准线）：镜像滚 facade+web → 生产 in-pod 实证 `/api/wanxing/v1/console/my/earnings` 200。
-- [ ] 4.3 生产探针：以外部调用者（≠部署者）真跑一程 A2A 回合 → usage 行 settled + earnings 行 settled + `share:` 入账在 sub2api 侧可见 + deploy-panel 收益区显示该行；自调一回合确认零分成；（如环境可得）plan 回合零分成。**PROBE PASS** 后归档。
-- [ ] 4.4 归档本 change（delta 并入 specs），paas 路线图文档 M3 ④ 状态更新为「已实施」。
+- [x] 4.2 上线（标准线）：镜像滚 facade+web → 生产 in-pod 实证 `/api/wanxing/v1/console/my/earnings` 200。
+- [x] 4.3 生产探针：以外部调用者（≠部署者）真跑一程 A2A 回合 → usage 行 settled + earnings 行 settled + `share:` 入账在 sub2api 侧可见 + deploy-panel 收益区显示该行；自调一回合确认零分成；（如环境可得）plan 回合零分成。**PROBE PASS** 后归档。
+- [x] 4.4 归档本 change（delta 并入 specs），paas 路线图文档 M3 ④ 状态更新为「已实施」。
