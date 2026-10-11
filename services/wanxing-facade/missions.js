@@ -66,7 +66,12 @@ export function createMissionsFace({
       report?.({
         kind: `mission.${to}`,
         agent: plannerSlug() || "planner",
-        payload: { mission: mission.id, owner: mission.ownerEmail, status: to, by: String(by || "") },
+        // spent rides the event (add-mission-board): the board's cost column
+        // derives from it without a facade round-trip.
+        payload: {
+          mission: mission.id, owner: mission.ownerEmail, status: to, by: String(by || ""),
+          spent: (() => { try { return store.missionSpent(mission.id); } catch { return undefined; } })(),
+        },
       });
     } catch { /* observability never blocks a transition */ }
   };

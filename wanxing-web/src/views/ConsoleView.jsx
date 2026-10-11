@@ -450,6 +450,17 @@ export function ConsoleView({ focusSlug } = {}) {
                   {id} — child {s.children ?? "?"}/{s.agents ?? "?"} · {Math.round(s.budget_mb ?? 0)}/{s.budget_mb_limit ?? "?"}MB{Number(s.queued) > 0 ? ` · 排队 ${s.queued}` : ""}
                 </div>
               ))}
+              <div className="font-semibold pt-2">任务（24h）</div>
+              {board.missions === undefined && <div className="text-slate-500">暂无数据（observer 未升级）</div>}
+              {board.missions?.length === 0 && <div className="text-slate-500">窗口内无任务</div>}
+              {(board.missions ?? []).slice(0, 8).map((m) => (
+                <div key={m.id} className="text-xs flex gap-2 items-center">
+                  <span className={`px-1.5 rounded font-mono ${m.status === "reported" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : m.status === "failed" || m.status === "aborted" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{m.status}</span>
+                  <span className="font-mono text-slate-400">{(m.id || "").slice(0, 12)}</span>
+                  <span className="truncate">{m.owner || "—"}</span>
+                  {m.spent != null && <span>{m.spent} 分钟</span>}
+                </div>
+              ))}
               <div className="font-semibold pt-2">摄取滞后</div>
               {lag.length === 0 && <div className="text-slate-500">无近期事件</div>}
               {lag.map((l) => (

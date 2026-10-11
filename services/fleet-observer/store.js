@@ -16,7 +16,16 @@ export const EVENT_KINDS = [
   "turn_started", "turn_ended", "settled",
   "admitted", "refused",
   "state_changed", "runner_stats",
+  // Mission lifecycle (add-mission-board): the facade's dispatch face emits
+  // these on every state-machine transition — enumerated, not prefix-wild,
+  // so the reject surface stays enumerable.
+  "mission.submitted", "mission.planning", "mission.awaiting_approval", "mission.auto_approved",
+  "mission.scheduled", "mission.executing", "mission.reported", "mission.failed",
+  "mission.aborted", "mission.exhausted",
 ];
+
+// The mission family (add-mission-board): board synthesis keys off this set.
+export const MISSION_EVENT_KINDS = EVENT_KINDS.filter((k) => k.startsWith("mission."));
 
 export function createEventStore({ file }) {
   mkdirSync(path.dirname(file), { recursive: true });

@@ -8,7 +8,7 @@
 // timelines only.
 
 import express from "express";
-import { createEventStore, EVENT_KINDS } from "./store.js";
+import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS } from "./store.js";
 import { createBookkeeper } from "./bookkeeper.js";
 import { ulid } from "./ulid.js";
 
@@ -136,6 +136,31 @@ export function createObserver({
       if (e.payload?.settlement_status === "pending") { settledPending.count += 1; settledPending.usd += Number(e.payload?.usd) || 0; }
     }
     const reaped = store.kindSince(["reaped"], since24).length;
+
+    // Mission overview (add-mission-board): synthesized from the bounded raw
+    // window — mission events are rare (one per transition), so the rollup
+    // face is the wrong home; 24h raw is both bounded and complete here.
+    const missionRows = store.kindSince(MISSION_EVENT_KINDS, since24);
+    // Equal-ts rows come back in index order, not arrival order — rank every
+    // event by (ts, lifecycle position) so current status and trail order are
+    // robust to the storage order, not just the common distinct-ts case.
+    const LIFECYCLE = ["submitted", "planning", "awaiting_approval", "auto_approved", "scheduled", "executing", "reported", "failed", "aborted"];
+    const rank = (k) => LIFECYCLE.indexOf(k) >= 0 ? LIFECYCLE.indexOf(k) : LIFECYCLE.length;
+    const missionsById = new Map();
+    for (const e of missionRows) {
+      const id = e.payload?.mission;
+      if (!id) continue;
+      const to = e.kind.slice("mission.".length);
+      let m = missionsById.get(id);
+      if (!m) { m = { id, owner: e.payload?.owner ?? null, status: null, trail: [], spent: null, at: e.ts, _rank: -1 }; missionsById.set(id, m); }
+      if (!m.trail.includes(to)) m.trail.push(to);
+      const r = rank(to);
+      if (e.ts > m.at || (e.ts === m.at && r >= m._rank)) { m.status = to; m.at = e.ts; m._rank = r; }
+      if (Number.isFinite(Number(e.payload?.spent))) m.spent = Number(e.payload.spent);
+    }
+    const missions = [...missionsById.values()]
+      .map(({ _rank, ...m }) => ({ ...m, trail: m.trail.slice().sort((x, y) => rank(x) - rank(y)) }))
+      .sort((a, b) => b.at - a.at).slice(0, 100);
     const dist = { serving: 0, resident: 0, paused: 0, starting: 0, draining: 0, warm: 0, unknown: 0 };
     for (const a of agents) {
       let s = states[a];
@@ -169,6 +194,7 @@ export function createObserver({
       reaped,
       wake_ms: { p50: pct(wake, 0.5), p95: pct(wake, 0.95) },
       settled_pending: settledPending,
+      missions,
       ingest_lag: store.ingestLag(t), // arrival vs event-age bases kept apart
     });
   });

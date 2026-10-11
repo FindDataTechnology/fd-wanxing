@@ -247,3 +247,42 @@ test("diffRows: buckets + canonical compare (shared copy of paas logic)", () => 
   assert.equal(d.removed.length, 0);
   assert.equal(d.changed.length, 0);
 });
+
+// ── add-mission-board: mission events ingest + board synthesis ───────────────
+
+test("add-mission-board: mission transitions ingest and synthesize onto the board", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const msn = (kind, over = {}) => ev({ kind, ...over });
+    // The pre-change reject surface: unknown mission kinds still refuse.
+    assert.equal((await post(base, { events: [msn("mission.unknown")] })).status, 400);
+    const ok = await post(base, { events: [
+      msn("mission.submitted", { id: ulid(now()), payload: { mission: "msn_a", owner: "o@x.y" } }),
+      msn("mission.planning", { id: ulid(now()), payload: { mission: "msn_a", owner: "o@x.y" } }),
+      msn("mission.executing", { id: ulid(now()), payload: { mission: "msn_a", owner: "o@x.y" } }),
+      msn("mission.reported", { id: ulid(now()), payload: { mission: "msn_a", owner: "o@x.y", spent: 5 } }),
+    ] });
+    assert.equal(ok.status, 200);
+    const r = await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const board = await r.json();
+    assert.equal(board.missions.length, 1);
+    const m = board.missions[0];
+    assert.equal(m.id, "msn_a");
+    assert.equal(m.status, "reported");
+    assert.equal(m.spent, 5);
+    assert.deepEqual(m.trail, ["submitted", "planning", "executing", "reported"]);
+  } finally {
+    obs.close(); srv.close();
+  }
+});
+
+test("add-mission-board: an empty window keeps the missions segment present", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const r = await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const board = await r.json();
+    assert.deepEqual(board.missions, []);
+  } finally {
+    obs.close(); srv.close();
+  }
+});
