@@ -50,7 +50,11 @@ export function registerWanxingRoutes(app, {
         })
       : null);
 
-  const core = createWanxingCore({ store, sub2api });
+  // The share hook resolves a turn's deployer through the bookkeeping
+  // snapshot, which is defined below — the late-bound ref breaks the ordering
+  // cycle the same way chatFaceRef does for the chat/a2a pair.
+  let resolveDeploymentRef = null;
+  const core = createWanxingCore({ store, sub2api, resolveDeployment: (slug) => resolveDeploymentRef?.(slug) });
 
   const doFetch = (p, init = {}) =>
     (fetchImpl ?? fetch)(`${registryUrl()}${p}`, {
@@ -109,6 +113,7 @@ export function registerWanxingRoutes(app, {
     },
   });
   const resolveDeployment = (slug) => (slug ? bookkeeping.resolve(slug) : Promise.resolve(null));
+  resolveDeploymentRef = resolveDeployment;
   const listDeployments = async () =>
     (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath }));
 
@@ -279,6 +284,7 @@ export function registerWanxingRoutes(app, {
   // deploy forwarding, and the share card. Unconfigured channel degrades 503.
   const selfService = createSelfServiceFace({
     store,
+    sub2api,
     logtoAuth,
     requireToken: (req) => {
       const t = consoleToken();

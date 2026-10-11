@@ -173,6 +173,34 @@ export function createWanxingStore({ file }) {
     PRIMARY KEY (mission_id, idem_key)
   )`);
 
+  // Deployer revenue share (add-deployer-revenue-share, ADR-0022): the
+  // business-authoritative earnings ledger. One row per usage id (the PK is
+  // the idempotency discipline — INSERT OR IGNORE makes inline settle and the
+  // sweep race-safe), amount = revenue × (1 − commission) frozen at credit
+  // time so later knob turns never rewrite history. No negative rows exist:
+  // share is only produced alongside a successful deduction.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_deployer_earnings (
+    usage_id TEXT PRIMARY KEY,
+    deployer_user_id INTEGER NOT NULL,
+    deployer_email TEXT NOT NULL DEFAULT '',
+    agent_slug TEXT NOT NULL,
+    revenue_usd REAL NOT NULL,
+    amount_usd REAL NOT NULL,
+    commission REAL NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'settled', 'void')),
+    created_at INTEGER NOT NULL,
+    settled_at INTEGER
+  )`);
+
+  // Facade-meta key/value store: the share epoch (this code's first boot)
+  // bounds the reconciliation backfill — rows settled before the epoch are
+  // history the deployer had no expectation of, and are never backfilled.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+
   const now = () => Date.now();
 
   return {
@@ -223,6 +251,9 @@ export function createWanxingStore({ file }) {
     },
     usagePending() {
       return db.prepare(`SELECT * FROM wanxing_usage WHERE settlement_status = 'pending' ORDER BY started_at`).all();
+    },
+    usageGet(id) {
+      return db.prepare(`SELECT * FROM wanxing_usage WHERE id = ?`).get(String(id)) ?? null;
     },
     // Chat-lane allowance derivation (D3): no counters, the ledger IS the
     // source. Subsidy per visitor per day window [fromMs, toMs); host usage
@@ -445,6 +476,68 @@ export function createWanxingStore({ file }) {
     missionWritebackRecord(missionId, idemKey, kind, result) {
       db.prepare(`INSERT INTO wanxing_mission_writebacks (mission_id, idem_key, kind, result, created_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT DO NOTHING`).run(String(missionId), String(idemKey), String(kind), JSON.stringify(result), now());
+    },
+
+    // ── Facade meta ─────────────────────────────────────────────────────────
+    metaGet(key) {
+      const r = db.prepare(`SELECT value FROM wanxing_meta WHERE key = ?`).get(String(key));
+      return r ? r.value : null;
+    },
+    metaPut(key, value) {
+      db.prepare(`INSERT INTO wanxing_meta (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(String(key), String(value), now());
+    },
+
+    // ── Deployer earnings (add-deployer-revenue-share D2) ────────────────────
+    // Insert-or-ignore keyed by usage_id: a second creditShare pass for the
+    // same turn (inline vs sweep race, crash-window backfill) is a no-op, and
+    // the caller distinguishes "already there" via earningsGet.
+    earningsInsertOrIgnore(row) {
+      const res = db.prepare(`INSERT INTO wanxing_deployer_earnings (usage_id, deployer_user_id, deployer_email, agent_slug, revenue_usd, amount_usd, commission, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        ON CONFLICT(usage_id) DO NOTHING`)
+        .run(row.usageId, Number(row.deployerUserId), String(row.deployerEmail || ""), String(row.agentSlug),
+          row.revenueUsd, row.amountUsd, row.commission, now());
+      return res.changes === 1;
+    },
+    earningsGet(usageId) {
+      const r = db.prepare(`SELECT * FROM wanxing_deployer_earnings WHERE usage_id = ?`).get(String(usageId));
+      if (!r) return null;
+      return { usageId: r.usage_id, deployerUserId: r.deployer_user_id, deployerEmail: r.deployer_email, agentSlug: r.agent_slug,
+        revenueUsd: r.revenue_usd, amountUsd: r.amount_usd, commission: r.commission, status: r.status, createdAt: r.created_at, settledAt: r.settled_at };
+    },
+    earningsMarkSettled(usageId) {
+      db.prepare(`UPDATE wanxing_deployer_earnings SET status = 'settled', settled_at = ? WHERE usage_id = ? AND status = 'pending'`).run(now(), String(usageId));
+    },
+    earningsPending() {
+      return db.prepare(`SELECT usage_id FROM wanxing_deployer_earnings WHERE status = 'pending' ORDER BY created_at LIMIT 200`).all()
+        .map((r) => this.earningsGet(r.usage_id));
+    },
+    earningsForDeployer(deployerUserId, limit = 50) {
+      return db.prepare(`SELECT usage_id FROM wanxing_deployer_earnings WHERE deployer_user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+        .all(Number(deployerUserId), Math.max(1, Math.min(Number(limit) || 50, 200)))
+        .map((r) => this.earningsGet(r.usage_id));
+    },
+    earningsTotals(deployerUserId) {
+      const r = db.prepare(`SELECT
+        COALESCE(SUM(CASE WHEN status = 'settled' THEN amount_usd ELSE 0 END), 0) AS settledUsd,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount_usd ELSE 0 END), 0) AS pendingUsd,
+        COUNT(*) AS turns
+        FROM wanxing_deployer_earnings WHERE deployer_user_id = ?`).get(Number(deployerUserId));
+      return r;
+    },
+    // Reconciliation input (D3): usage rows settled after the epoch through
+    // the external deduction path with billable minutes that have no share
+    // twin — the crash window between usageMarkSettled and the earnings
+    // insert, closed by the sweep. share_epoch's absence (pre-change
+    // database) yields no rows, which is exactly "no retroactivity".
+    usageSettledSinceWithoutShare(epochMs, limit = 100) {
+      const rows = db.prepare(`SELECT u.id FROM wanxing_usage u
+        LEFT JOIN wanxing_deployer_earnings e ON e.usage_id = u.id
+        WHERE u.settlement_status = 'settled' AND u.settled_at >= ? AND u.channel = 'api' AND u.settler IS NULL
+          AND u.minutes_billed > 0 AND e.usage_id IS NULL
+        ORDER BY u.settled_at LIMIT ?`).all(Number(epochMs), Math.max(1, Math.min(Number(limit) || 100, 500)));
+      return rows.map((r) => this.usageGet(r.id));
     },
   };
 }

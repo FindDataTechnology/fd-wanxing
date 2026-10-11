@@ -196,3 +196,64 @@ test("3.1 the share card assembles URL, chatability, and allowance", async () =>
     await facet.close();
   }
 });
+
+// ── add-deployer-revenue-share: the earnings view (task 3.1) ────────────────
+//
+// Identity-scoped rows + totals for the verified deployer; ops refused (no
+// attributable identity); no billing account reads as honestly empty; a
+// billing-plane outage is an explicit 502, never a silent empty list.
+
+test("3.1 my/earnings: rows and totals for the deployer; ops refused; no-account empty; outage 502", async () => {
+  const facet = await stubFacet({ packs: [pack()] });
+  const sub2api = {
+    degraded: () => false,
+    findUserByEmail: async (mail) => (mail === DEPLOYER ? { userId: 42, email: mail } : null),
+  };
+  const store = freshStore();
+  const face = createSelfServiceFace({
+    store,
+    sub2api,
+    logtoAuth: { configured: true, verifyIdToken: async (t) => (t === DEPLOYER_TOKEN ? { email: DEPLOYER } : null) },
+    requireToken: (req) => String(req.headers.authorization || "") === `Bearer ${OPS_TOKEN}`,
+    env: { FACET_BASE_URL: facet.base, FACET_INTERNAL_TOKEN: "fit-secret" },
+    fetchImpl: fetch,
+    log: () => {},
+  });
+  const app = express();
+  face.register(app);
+  const server = http.createServer(app).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (p, headers = {}) => (await fetch(base + p, { headers })).json();
+  try {
+    // Seeded ledger for the deployer's user id.
+    store.earningsInsertOrIgnore({ usageId: "wu_1", deployerUserId: 42, deployerEmail: DEPLOYER, agentSlug: "packs-p1-chat-agent", revenueUsd: 0.2, amountUsd: 0.14, commission: 0.3 });
+    store.earningsMarkSettled("wu_1");
+    store.earningsInsertOrIgnore({ usageId: "wu_2", deployerUserId: 42, deployerEmail: DEPLOYER, agentSlug: "packs-p1-chat-agent", revenueUsd: 0.1, amountUsd: 0.07, commission: 0.3 });
+    store.earningsInsertOrIgnore({ usageId: "wu_3", deployerUserId: 7, deployerEmail: "other@x", agentSlug: "packs-p1-chat-agent", revenueUsd: 0.1, amountUsd: 0.07, commission: 0.3 });
+
+    const ops = await fetch(base + "/api/wanxing/v1/console/my/earnings", { headers: { Authorization: `Bearer ${OPS_TOKEN}` } });
+    assert.equal(ops.status, 403, "ops carries no attributable identity");
+
+    const r = await fetch(base + "/api/wanxing/v1/console/my/earnings", { headers: { Authorization: `Bearer ${DEPLOYER_TOKEN}` } });
+    assert.equal(r.status, 200);
+    const d = await r.json();
+    assert.equal(d.rows.length, 2, "only the deployer's rows");
+    assert.equal(d.rows[0].usageId, "wu_2", "newest first");
+    assert.deepEqual(d.totals, { settledUsd: 0.14, pendingUsd: 0.07, turns: 2 });
+
+    // No sub2api account for this identity: honestly empty, still 200.
+    sub2api.findUserByEmail = async () => null;
+    const r2 = await fetch(base + "/api/wanxing/v1/console/my/earnings", { headers: { Authorization: `Bearer ${DEPLOYER_TOKEN}` } });
+    assert.equal(r2.status, 200);
+    assert.deepEqual((await r2.json()).totals, { settledUsd: 0, pendingUsd: 0, turns: 0 });
+
+    // Billing plane outage: explicit 502.
+    sub2api.findUserByEmail = async () => { throw new Error("connection refused"); };
+    const r3 = await fetch(base + "/api/wanxing/v1/console/my/earnings", { headers: { Authorization: `Bearer ${DEPLOYER_TOKEN}` } });
+    assert.equal(r3.status, 502);
+  } finally {
+    await new Promise((r) => server.close(() => r()));
+    await facet.close();
+    store.close();
+  }
+});

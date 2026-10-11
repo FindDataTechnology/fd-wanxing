@@ -12,6 +12,7 @@ import express from "express";
 
 export function createSelfServiceFace({
   store,
+  sub2api = null,
   logtoAuth,
   requireToken,
   env = process.env,
@@ -193,6 +194,38 @@ export function createSelfServiceFace({
           remainingMinutes: Math.max(0, cap.limitMinutes - store.hostAllowanceUsed(slug)),
           updatedBy: cap.updatedBy,
         } : null,
+      });
+    });
+
+    // Deployer earnings view (add-deployer-revenue-share D5): the ADR-0022
+    // ledger read back for the verified deployer. Identity email → sub2api
+    // userId → earnings rows + settled/pending totals; no sub2api account
+    // means the deployer has never been on the billing plane (a serving
+    // deployment requires one), which is honestly empty — while a billing
+    // plane outage is an explicit 502, never a silent empty list.
+    app.get("/api/wanxing/v1/console/my/earnings", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — my/earnings is for a verified deployer" });
+
+      let userId = null;
+      if (sub2api && !sub2api.degraded()) {
+        let acct;
+        try {
+          acct = await sub2api.findUserByEmail(who.email);
+        } catch (e) {
+          return res.status(502).json({ error: `billing plane unreachable: ${e?.message || e}` });
+        }
+        userId = acct?.userId ?? null;
+      } else {
+        return res.status(502).json({ error: "billing plane not configured on this deployment" });
+      }
+      if (userId == null) {
+        return res.json({ rows: [], totals: { settledUsd: 0, pendingUsd: 0, turns: 0 } });
+      }
+      res.json({
+        rows: store.earningsForDeployer(userId, 50),
+        totals: store.earningsTotals(userId),
       });
     });
   }

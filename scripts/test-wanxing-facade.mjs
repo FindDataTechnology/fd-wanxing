@@ -1108,3 +1108,193 @@ test("3.2 declared examples ride the card and catalog verbatim; undeclared keeps
     await bare.close();
   }
 });
+
+// ── add-deployer-revenue-share: ADR-0022 settlement v2 ──────────────────────
+//
+// The share matrix: only externally-settled real-money turns (API lane,
+// settler NULL, minutes>0) from a caller who is not the deployer credit a
+// share; everything else — plan, mission, chat settlers, self-calls, waived
+// rows — earns nothing. Crediting is idempotent (usage_id PK + share:
+// idempotency key), crash-window rows are backfilled after the epoch, and
+// pre-epoch history is never touched.
+
+const DEPLOYER_EMAIL = "deployer@finddata.tech";
+const DEPLOYER_ID = 42;
+
+// A deployments stub shaped like the bookkeeping resolve() rows, plus a
+// sub2api whose findUserByEmail knows the deployer.
+function shareHarness({ deployment = { packId: "p1", agentId: "a", agentPath: "/packs/p1/a", deployedBy: DEPLOYER_EMAIL }, subOpts = {} } = {}) {
+  const sub = stubSub2api(subOpts);
+  sub.findUserByEmail = async (mail) =>
+    mail === DEPLOYER_EMAIL ? { userId: DEPLOYER_ID, email: DEPLOYER_EMAIL } : null;
+  const store = freshStore();
+  const core = createWanxingCore({
+    store,
+    sub2api: sub,
+    resolveDeployment: async (slug) => (slug === "a" ? deployment : null),
+    config: { ratePerMin: 0.1 },
+  });
+  return { sub, store, core };
+}
+
+test("share 2.1 the commission knob defaults to 0.30 and rejects out-of-range envs", async () => {
+  delete process.env.WANXING_SHARE_COMMISSION;
+  const h = shareHarness();
+  const row = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  await h.core.trySettle(row);
+  const add = h.sub.adjustCalls.find((c) => c.operation === "add");
+  assert.equal(add.amountUsd, 0.07, "0.10 revenue × 0.70 share");
+  assert.equal(add.idempotencyKey, `share:${row.id}`);
+
+  process.env.WANXING_SHARE_COMMISSION = "1.5"; // out of range → default 0.30
+  const h2 = shareHarness();
+  const row2 = h2.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  await h2.core.trySettle(row2);
+  assert.equal(h2.sub.adjustCalls.find((c) => c.operation === "add").amountUsd, 0.07);
+  process.env.WANXING_SHARE_COMMISSION = "0.5"; // valid override
+  const h3 = shareHarness();
+  const row3 = h3.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  await h3.core.trySettle(row3);
+  assert.equal(h3.sub.adjustCalls.find((c) => c.operation === "add").amountUsd, 0.05, "0.10 revenue × 0.50 share");
+  delete process.env.WANXING_SHARE_COMMISSION;
+});
+
+test("share 2.3 an external paid turn credits the deployer in the same settle pass", async () => {
+  const h = shareHarness();
+  const row = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 90_000, outcome: "ok" });
+  assert.equal(await h.core.trySettle(row), true);
+  assert.equal(h.sub.adjustCalls.length, 2, "subtract then share add");
+  assert.deepEqual(
+    h.sub.adjustCalls.map((c) => c.operation),
+    ["subtract", "add"],
+  );
+  const earn = h.store.earningsGet(row.id);
+  assert.equal(earn.status, "settled");
+  assert.equal(earn.deployerUserId, DEPLOYER_ID);
+  assert.equal(earn.revenueUsd, 0.2);
+  assert.equal(earn.amountUsd, 0.14);
+  assert.equal(earn.agentSlug, "a");
+  assert.deepEqual(h.store.earningsTotals(DEPLOYER_ID), { settledUsd: 0.14, pendingUsd: 0, turns: 1 });
+});
+
+test("share 2.3 plan, mission, chat, self-call, waived, and unresolved rows never share", async () => {
+  const h = shareHarness();
+  // Plan row settles locally.
+  const planRow = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "p", startedAt: 0, endedAt: 60_000, outcome: "ok", settler: "plan", planRef: "wp_x" });
+  await h.core.trySettle(planRow);
+  // Mission row settles locally.
+  const mRow = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "m", startedAt: 0, endedAt: 60_000, outcome: "ok", settler: "mission", missionId: "msn_x" });
+  await h.core.trySettle(mRow);
+  // Chat-lane rows (subsidy/host settlers) never ride trySettle; creditShare guards anyway.
+  for (const settler of ["subsidy", "host"]) {
+    const cRow = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: `c-${settler}`, startedAt: 0, endedAt: 60_000, outcome: "ok", channel: "chat", settler, visitorSub: "v1" });
+    assert.equal(await h.core.creditShare(cRow), false);
+  }
+  // Self-call: the deployer is the caller.
+  const selfRow = h.core.recordUsage({ caller: { userId: DEPLOYER_ID, email: DEPLOYER_EMAIL }, slug: "a", idemKey: "s", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  await h.core.trySettle(selfRow);
+  assert.equal(h.sub.adjustCalls.filter((c) => c.operation === "add").length, 0, "self-call subtracts but never shares");
+  // Waived row: zero minutes.
+  const wRow = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "w", startedAt: 0, endedAt: 60_000, outcome: "error" });
+  assert.equal(await h.core.creditShare(wRow), false);
+  // Unresolvable slug.
+  const gRow = h.core.recordUsage({ caller: CALLER, slug: "ghost", idemKey: "g", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  assert.equal(await h.core.creditShare(gRow), false);
+  assert.equal(h.store.earningsTotals(DEPLOYER_ID).turns, 0);
+});
+
+test("share 2.3 crediting is idempotent across retries and races", async () => {
+  const h = shareHarness();
+  const row = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  // The add fails on the first pass: the earnings row lands pending.
+  h.sub.adjustBalance = async (args) => {
+    h.sub.adjustCalls.push(args);
+    if (args.operation === "add") throw new Error("sub2api unreachable");
+    return { ok: true };
+  };
+  await h.core.trySettle(row);
+  assert.equal(h.store.earningsGet(row.id).status, "pending");
+  // Crash-between-credit-and-mark replay: the retry's add is refused upstream
+  // as a duplicate — that refusal IS the settled state.
+  h.sub.adjustBalance = async (args) => {
+    h.sub.adjustCalls.push(args);
+    if (args.operation === "add") throw new Error("duplicate idempotency key refused");
+    return { ok: true };
+  };
+  assert.equal(await h.core.creditShare(row), true, "duplicate refusal IS the settled state");
+  assert.equal(h.store.earningsGet(row.id).status, "settled");
+  // A later racing creditShare (inline vs sweep) is a pure no-op.
+  assert.equal(await h.core.creditShare(row), true);
+  const adds = h.sub.adjustCalls.filter((c) => c.operation === "add");
+  assert.equal(adds.length, 2, "one failed add + one refused replay — no third call");
+  assert.equal(h.store.earningsTotals(DEPLOYER_ID).settledUsd, 0.07, "totals count the share once");
+});
+
+test("share 2.3 a failed add leaves the row pending and the sweep retries it", async () => {
+  const h = shareHarness();
+  const row = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "k", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  h.sub.adjustOk = false; // the subtract succeeds first…
+  // Make only the add fail: the first call is the subtract.
+  let n = 0;
+  h.sub.adjustBalance = async (args) => {
+    h.sub.adjustCalls.push(args);
+    n += 1;
+    if (args.operation === "add") throw new Error("sub2api unreachable");
+    return { ok: true };
+  };
+  await h.core.trySettle(row);
+  assert.equal(h.store.earningsGet(row.id).status, "pending");
+  assert.equal(h.store.earningsTotals(DEPLOYER_ID).pendingUsd, 0.07);
+  n; // (call count sanity only)
+  // The sweep retries the pending earnings row and lands it.
+  h.sub.adjustBalance = async (args) => {
+    h.sub.adjustCalls.push(args);
+    return { ok: true };
+  };
+  await h.core.settlePending();
+  assert.equal(h.store.earningsGet(row.id).status, "settled");
+});
+
+test("share 2.4 the epoch bounds the crash-window backfill, never history", async () => {
+  const h = shareHarness();
+  // A settled row from BEFORE the feature (pre-change history): settled
+  // without ever passing the share hook. The epoch the first sweep stamps
+  // lands after its settled_at, so the backfill must skip it forever.
+  const oldRow = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "old", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  h.store.usageMarkSettled(oldRow.id); // direct mark = the pre-change settle path
+  await new Promise((r) => setTimeout(r, 5)); // settled_at strictly before the epoch stamp
+  await h.core.settlePending(); // first sweep stamps the epoch (now > oldRow.settled_at)
+  assert.equal(h.store.earningsGet(oldRow.id), null, "pre-epoch history never backfilled");
+
+  // The crash window: a row settled after the epoch whose earnings insert
+  // never landed (crash between usageMarkSettled and the insert).
+  const cw = h.core.recordUsage({ caller: CALLER, slug: "a", idemKey: "cw", startedAt: 0, endedAt: 60_000, outcome: "ok" });
+  h.store.usageMarkSettled(cw.id);
+  await new Promise((r) => setTimeout(r, 5)); // settled_at strictly after the epoch
+  await h.core.settlePending();
+  assert.equal(h.store.earningsGet(cw.id)?.status, "settled", "crash-window row backfilled and credited");
+  const adds = h.sub.adjustCalls.filter((c) => c.operation === "add");
+  assert.equal(adds.length, 1, "exactly one share credit in total");
+});
+
+test("share 1.1/1.2 store: insert-or-ignore is idempotent and totals scope by deployer", () => {
+  const s = freshStore();
+  const row = { usageId: "wu_x", deployerUserId: 42, deployerEmail: DEPLOYER_EMAIL, agentSlug: "a", revenueUsd: 1, amountUsd: 0.7, commission: 0.3 };
+  assert.equal(s.earningsInsertOrIgnore(row), true);
+  assert.equal(s.earningsInsertOrIgnore({ ...row, amountUsd: 999 }), false, "second insert changes nothing");
+  assert.equal(s.earningsGet("wu_x").amountUsd, 0.7);
+  assert.equal(s.earningsGet("wu_x").status, "pending");
+  s.earningsMarkSettled("wu_x");
+  assert.equal(s.earningsGet("wu_x").status, "settled");
+  assert.equal(s.earningsPending().length, 0);
+  s.earningsInsertOrIgnore({ ...row, usageId: "wu_y" });
+  assert.equal(s.earningsPending().length, 1);
+  assert.equal(s.earningsForDeployer(42).length, 2);
+  assert.equal(s.earningsForDeployer(7).length, 0, "scoped to the deployer");
+  assert.deepEqual(s.earningsTotals(42), { settledUsd: 0.7, pendingUsd: 0.7, turns: 2 });
+  assert.equal(s.metaGet("nothing"), null);
+  s.metaPut("k", "v");
+  s.metaPut("k", "v2");
+  assert.equal(s.metaGet("k"), "v2");
+  s.close();
+});

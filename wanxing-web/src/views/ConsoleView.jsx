@@ -59,6 +59,10 @@ export function ConsoleView({ focusSlug } = {}) {
   const [depDraft, setDepDraft] = useState({ packId: "", version: "", billingKey: "", notifyChannel: "" });
   const [depBusy, setDepBusy] = useState(false);
   const [shareCard, setShareCard] = useState(null);
+  // Deployer earnings (add-deployer-revenue-share, ADR-0022): closed-loop
+  // revenue share for externally-settled turns on my deployments.
+  const [earn, setEarn] = useState(null);
+  const [earnErr, setEarnErr] = useState("");
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
@@ -79,6 +83,24 @@ export function ConsoleView({ focusSlug } = {}) {
       })
       .then((d) => live && (setStmt(d), setStmtErr("")))
       .catch((e) => live && setStmtErr(String(e?.message || e)));
+    return () => {
+      live = false;
+    };
+  }, [token]);
+
+  // My earnings (add-deployer-revenue-share): same identity scoping — a 402/502
+  // style failure is shown as an explicit error, never as "no earnings".
+  useEffect(() => {
+    if (!token) return;
+    let live = true;
+    authFetch("/api/wanxing/v1/console/my/earnings")
+      .then(async (r) => {
+        if (r.status === 403) throw new Error("ops 令牌没有身份——收益请用登录身份查看");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => live && (setEarn(d), setEarnErr("")))
+      .catch((e) => live && setEarnErr(String(e?.message || e)));
     return () => {
       live = false;
     };
@@ -852,6 +874,35 @@ export function ConsoleView({ focusSlug } = {}) {
               {shareCard.allowance && <div className="text-slate-500">部署者额度：余 {shareCard.allowance.remainingMinutes}/{shareCard.allowance.limitMinutes} 分钟</div>}
             </div>
           )}
+          <div className="text-xs border-t border-slate-200 dark:border-slate-800 pt-2 space-y-1" data-testid="earnings-section">
+            <div className="font-semibold">我的收益</div>
+            {earnErr && (
+              <div className="text-amber-600 dark:text-amber-400" data-testid="earnings-error">
+                收益读取失败（{earnErr}）——这不是「没有收益」，请稍后再试。
+              </div>
+            )}
+            {earn && (
+              <div className="space-y-1" data-testid="earnings-body">
+                <div>
+                  已入账 <b className="text-emerald-600 dark:text-emerald-400">${(earn.totals.settledUsd ?? 0).toFixed(4)}</b>
+                  {" · "}待入账 <b>${(earn.totals.pendingUsd ?? 0).toFixed(4)}</b>
+                  {" · "}共 {earn.totals.turns ?? 0} 笔（外部真金回合的分成，入账即抵扣平台消耗，暂不支持提现）
+                </div>
+                {(earn.rows ?? []).length === 0 && <div className="text-slate-500">暂无分成记录——外部调用者经 API 车道付费调用你的 agent 时产生。</div>}
+                {(earn.rows ?? []).length > 0 && (
+                  <div className="space-y-0.5" data-testid="earnings-rows">
+                    {earn.rows.map((r) => (
+                      <div key={r.usageId} className="flex gap-2 items-center flex-wrap">
+                        <span className={`px-1.5 py-0.5 rounded font-mono ${r.status === "settled" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>{r.status === "settled" ? "已入账" : "待入账"}</span>
+                        <span className="font-mono">{r.agentSlug}</span>
+                        <span>回合收入 ${r.revenueUsd?.toFixed(4)} → 分成 <b>${r.amountUsd?.toFixed(4)}</b>（抽成 {(r.commission * 100).toFixed(0)}%）</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="missions-panel">

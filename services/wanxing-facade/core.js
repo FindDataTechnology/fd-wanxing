@@ -27,7 +27,20 @@ export function slugFor(agentPath) {
   return String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
 }
 
-export function createWanxingCore({ store, sub2api, config = {} }) {
+export function createWanxingCore({ store, sub2api, resolveDeployment = null, config = {} }) {
+  // The share commission knob (ADR-0022 ①): revenue × (1 − commission) is the
+  // deployer's share. Valid range is the half-open [0, 1) — anything else
+  // falls back to the ADR default with a boot-time warning, never silently.
+  const commissionFromEnv = () => {
+    const raw = process.env.WANXING_SHARE_COMMISSION;
+    if (raw == null || raw === "") return 0.30;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0 || v >= 1) {
+      console.warn(`[wanxing] WANXING_SHARE_COMMISSION=${raw} out of range [0,1) — falling back to 0.30`);
+      return 0.30;
+    }
+    return v;
+  };
   const cfg = {
     ratePerMin: config.ratePerMin ?? Number(process.env.WANXING_RATE_PER_MIN ?? 0.1),
     rpmMax: config.rpmMax ?? Number(process.env.WANXING_RPM_MAX ?? 30),
@@ -35,6 +48,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     negCacheTtlMs: config.negCacheTtlMs ?? 15_000,
     suspendAfterFailures: config.suspendAfterFailures ?? Number(process.env.WANXING_SUSPEND_AFTER_FAILURES ?? 3),
     idemWindowMs: config.idemWindowMs ?? 86_400_000,
+    shareCommission: config.shareCommission ?? commissionFromEnv(),
   };
 
   // In-memory verdict cache keyed by sha256(key) — the key itself is never a
@@ -220,6 +234,100 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     return row;
   }
 
+  // ── Deployer revenue share (add-deployer-revenue-share, ADR-0022) ─────────
+  // Deployer resolution: slug → deployment snapshot's deployedBy email →
+  // sub2api user id, with a TTL cache mirroring the subsidy-holder cache's
+  // shape. Resolution failure is a pending-earnings condition (the account
+  // may exist later), never an admission or settlement failure.
+  let deployerCache = null; // Map<email, { at, userId } | { at, miss: true }>
+  async function resolveDeployerUser(slug) {
+    if (!resolveDeployment) return null;
+    let dep;
+    try {
+      dep = await resolveDeployment(slug);
+    } catch {
+      return null;
+    }
+    const email = dep?.deployedBy;
+    if (!email) return null;
+    const hit = deployerCache?.get(email);
+    if (hit && Date.now() - hit.at < 300_000) return hit.miss ? null : { userId: hit.userId, email };
+    let out = null;
+    try {
+      const acct = sub2api && !sub2api.degraded() ? await sub2api.findUserByEmail(email) : null;
+      if (acct?.userId != null) out = { userId: Number(acct.userId), email };
+    } catch { /* cached as a miss for the window; the sweep retries */ }
+    if (!deployerCache) deployerCache = new Map();
+    deployerCache.set(email, out ? { at: Date.now(), userId: out.userId } : { at: Date.now(), miss: true });
+    return out;
+  }
+
+  // Share eligibility (design D1): externally-settled real money only — the
+  // API lane's key-balance deduction path (no channel dim, no settler), with
+  // billable minutes, a resolvable deployer who is not the caller. Plan,
+  // mission, subsidy, host, and own-key turns never share; waived/error rows
+  // never share (negative protection's positive face).
+  async function creditShare(rowIn) {
+    try {
+      // Both row shapes arrive here: the in-memory recordUsage row (camelCase,
+      // no channel key) and DB-read rows (snake_case, channel='api' default).
+      // Normalize once at the door — the API lane is "not chat", which is
+      // what eligibility means, and the slug answers both spellings.
+      const row = { ...rowIn, agentSlug: rowIn.agentSlug ?? rowIn.agent_slug };
+      if (row.channel && row.channel !== "api") return false;
+      if (row.settler) return false;
+      if (!(row.minutesBilled > 0)) return false;
+      const existing = store.earningsGet(row.id);
+      if (existing?.status === "settled") return true; // already credited (race/retry)
+      const deployer = await resolveDeployerUser(row.agentSlug);
+      if (!deployer) return false;
+      if (deployer.userId === Number(row.callerId)) return false; // self-call: no share
+      const revenue = Number((row.minutesBilled * row.rateUsd).toFixed(4));
+      const amount = Number((revenue * (1 - cfg.shareCommission)).toFixed(4));
+      if (!(amount > 0)) return false;
+      store.earningsInsertOrIgnore({
+        usageId: row.id, deployerUserId: deployer.userId, deployerEmail: deployer.email,
+        agentSlug: row.agentSlug, revenueUsd: revenue, amountUsd: amount, commission: cfg.shareCommission,
+      });
+      try {
+        await sub2api.adjustBalance({
+          userId: deployer.userId,
+          amountUsd: amount,
+          operation: "add",
+          idempotencyKey: `share:${row.id}`,
+        });
+      } catch (e) {
+        // A duplicate refusal means the credit already landed (crash between
+        // upstream success and the local mark) — that IS the settled state.
+        if (!/duplicate|idempoten/i.test(String(e?.message || ""))) throw e;
+      }
+      store.earningsMarkSettled(row.id);
+      return true;
+    } catch (e) {
+      // A share is a credit owed to the deployer, never a charge — failures
+      // leave the row pending for the sweep and can never suspend anyone.
+      console.warn(`[wanxing:share] credit failed for ${row.id}: ${e?.message || e}`);
+      return false;
+    }
+  }
+
+  // Reconciliation (design D3): the epoch is this code's first boot — rows
+  // settled after it that meet eligibility but lack their share twin (the
+  // crash window between usageMarkSettled and the earnings insert) are
+  // backfilled here; history before the epoch is never touched.
+  async function sweepEarnings() {
+    const epoch = store.metaGet("share_epoch");
+    if (epoch == null) return;
+    for (const row of store.usageSettledSinceWithoutShare(Number(epoch))) {
+      await creditShare({ ...row, callerId: row.caller_id, minutesBilled: row.minutes_billed, rateUsd: row.rate_usd });
+    }
+    for (const er of store.earningsPending()) {
+      const row = store.usageGet(er.usageId);
+      if (!row) continue;
+      await creditShare({ ...row, callerId: row.caller_id, minutesBilled: row.minutes_billed, rateUsd: row.rate_usd });
+    }
+  }
+
   async function trySettle(row) {
     // Plan-backed rows settle locally (add-serving-plans D2): the drawdown IS
     // the ledger row — remaining minutes derive from it, so settlement is just
@@ -248,6 +356,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
       });
       store.usageMarkSettled(row.id);
       store.clearCaller(row.callerId);
+      await creditShare(row); // ADR-0022: same-turn deployer share, best-effort
       return true;
     } catch (e) {
       // A retry whose deduction already landed (crash between the upstream
@@ -256,6 +365,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
       if (/duplicate|idempoten/i.test(String(e?.message || ""))) {
         store.usageMarkSettled(row.id);
         store.clearCaller(row.callerId);
+        await creditShare(row); // the original landing credits its share here
         return true;
       }
       const failures = store.recordSettlementFailure(row.callerId, e?.message || "settlement failed");
@@ -274,6 +384,10 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
   // onChatRow owns them (add-agent-chat-lane 3.2); without the hook they
   // stay pending for a later sweep that has one.
   async function settlePending(onChatRow = null) {
+    // First boot of the share code stamps the epoch (ADR-0022 D3): rows
+    // settled after it are reconciled against the earnings ledger each sweep;
+    // rows before it are history and are never backfilled.
+    if (store.metaGet("share_epoch") == null) store.metaPut("share_epoch", String(Date.now()));
     for (const raw of store.usagePending()) {
       const row = { ...raw, callerId: raw.caller_id, minutesBilled: raw.minutes_billed, rateUsd: raw.rate_usd };
       try {
@@ -284,6 +398,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
         }
       } catch { /* logged by the failure counter / chat settle hook */ }
     }
+    await sweepEarnings();
   }
 
   // ── Serving-plan admission + state (add-serving-plans D3) ────────────────
@@ -318,6 +433,7 @@ export function createWanxingCore({ store, sub2api, config = {} }) {
     recordUsage,
     trySettle,
     settlePending,
+    creditShare,
     planStateFor,
     checkPlan,
   };
