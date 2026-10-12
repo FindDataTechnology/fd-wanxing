@@ -210,7 +210,7 @@ export function registerWanxingRoutes(app, {
     // Catalog signals (add-catalog-facets): the facet packs browse (public
     // listed view — private packs never enter the catalog) and the facade's
     // own usage ledger read back as the 7-day activity count.
-    packsBrowseFetch: async () => (await packsInternalCall("/api/packs?pageSize=100")).packs ?? [],
+    packsBrowseFetch: async () => (await packsInternalFetch("/api/packs?pageSize=100")).packs ?? [],
     usageTurnsByAgent: (sinceMs) => store.usageTurnsByAgent(sinceMs),
   });
   face.register(app);
