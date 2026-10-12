@@ -39,6 +39,9 @@ export function FleetView({ focusSlug } = {}) {
   // Deployer earnings (add-deployer-revenue-share, ADR-0022): closed-loop
   // revenue share for externally-settled turns on my deployments.
   const [earn, setEarn] = useState(null);
+  // Cockpit summary (add-cockpit-views, M4④b): per-slug usage aggregates +
+  // allowances — the cards' signal column, polled with the deployments list.
+  const [summary, setSummary] = useState(null);
   const [earnErr, setEarnErr] = useState("");
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
@@ -95,6 +98,12 @@ export function FleetView({ focusSlug } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadSummary = () =>
+    authFetch("/api/wanxing/v1/console/fleet/summary")
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((d) => setSummary(d))
+      .catch(() => { /* cards degrade their signal columns honestly */ });
+
   const loadDeps = () =>
     authFetch("/api/wanxing/v1/console/deployments")
       .then(async (r) => {
@@ -105,7 +114,11 @@ export function FleetView({ focusSlug } = {}) {
       .catch((e) => setDepErr(String(e?.message || e)));
   useEffect(() => {
     loadDeps();
-    const t = setInterval(loadDeps, 60_000);
+    loadSummary();
+    const t = setInterval(() => {
+      loadDeps();
+      loadSummary();
+    }, 60_000);
     return () => clearInterval(t);
   }, []);
 
@@ -248,37 +261,70 @@ export function FleetView({ focusSlug } = {}) {
         <h2 className="font-semibold">管理 · 部署</h2>
         {depErr && <div className="text-sm text-amber-600 dark:text-amber-400">部署面读取失败（{depErr}）</div>}
         {deps && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left border-b border-slate-200 dark:border-slate-800">
-                  <th className="py-2 px-3">agent</th><th className="px-3">名称</th><th className="px-3">可见</th><th className="px-3">状态</th><th className="px-3 text-right">动作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(deps.deployments ?? []).map((d) => (
-                  <tr key={d.slug} className="border-b border-slate-100 dark:border-slate-900">
-                    <td className="py-1.5 px-3 font-mono">{d.slug}</td>
-                    <td className="px-3">{d.name ?? "—"}</td>
-                    <td className="px-3">{d.visibility ?? "?"}</td>
-                    <td className="px-3">{d.paused ? <span className="text-amber-600 dark:text-amber-400">已暂停</span> : <span className="text-emerald-600 dark:text-emerald-400">运行中</span>}</td>
-                    <td className="px-3 text-right space-x-2 whitespace-nowrap">
-                      <button
-                        disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
-                        onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
-                        className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-40"
-                      >
-                        {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
-                      </button>
-                      <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">允许清单</button>
-                      <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">配置</button>
-                      <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">记录</button>
-                      <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700">额度</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid gap-3 sm:grid-cols-2" data-testid="fleet-cards">
+            {(deps.deployments ?? []).map((d) => {
+              // The summary's signal columns degrade to placeholders — never
+              // fake zeros — when the summary call hasn't landed.
+              const sig = summary?.agents?.[d.slug] ?? null;
+              const unknown = summary === null;
+              return (
+                <div key={d.slug} className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5" data-testid={`fleet-card-${d.slug}`}>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${d.paused ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"}`}>
+                      {d.paused ? "已暂停" : "运行中"}
+                    </span>
+                    <span className="font-semibold text-sm">{d.name ?? d.slug}</span>
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{d.visibility === "private" ? "私有" : "公开"}</span>
+                    <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-sky-600 dark:text-sky-400 hover:underline">对话 →</a>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-xs" data-testid={`fleet-signals-${d.slug}`}>
+                    <div>
+                      <div className="text-slate-400 text-[10px]">近 7 天回合</div>
+                      <div className="font-semibold">{unknown ? "…" : (sig?.turns7d ?? 0)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-[10px]">近 30 天分钟</div>
+                      <div className="font-semibold">{unknown ? "…" : (sig?.minutes30d ?? 0)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-[10px]">近 30 天结算</div>
+                      <div className="font-semibold">{unknown ? "…" : `$${(sig?.usd30d ?? 0).toFixed(2)}`}</div>
+                    </div>
+                  </div>
+                  {sig?.allowance && (
+                    <div className="text-xs" data-testid={`fleet-allowance-${d.slug}`}>
+                      <div className="flex justify-between text-slate-500">
+                        <span>对话额度</span>
+                        <span>余 {sig.allowance.remainingMinutes}/{sig.allowance.limitMinutes} 分钟</span>
+                      </div>
+                      <div className="h-1.5 mt-1 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className={`h-full ${sig.allowance.remainingMinutes <= 0 ? "bg-rose-500" : sig.allowance.limitMinutes && sig.allowance.remainingMinutes / sig.allowance.limitMinutes <= 0.2 ? "bg-amber-500" : "bg-sky-500"}`}
+                          style={{ width: `${sig.allowance.limitMinutes ? Math.min(100, (sig.allowance.remainingMinutes / sig.allowance.limitMinutes) * 100) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex gap-2 flex-wrap pt-0.5">
+                    <button
+                      disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
+                      onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
+                      className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs disabled:opacity-40"
+                    >
+                      {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
+                    </button>
+                    <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
+                    <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
+                    <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
+                    <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
+                    <details className="text-[11px] text-slate-400 ml-auto self-center">
+                      <summary className="cursor-pointer select-none">slug</summary>
+                      <code className="block mt-1 font-mono">{d.slug}</code>
+                    </details>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
         {cfg && (

@@ -307,6 +307,29 @@ export function createWanxingStore({ file }) {
         .all(Math.max(0, Number(sinceMs) || 0));
       return new Map(rows.map((r) => [r.slug, r.turns]));
     },
+    // Cockpit aggregates (add-cockpit-views, M4④b): one conditional-aggregation
+    // pass per slug — 7-day turns (both lanes), 30-day minutes, and 30-day
+    // settled value (waived turns excluded, same expression as usageBoard).
+    usageSummaryByAgent(nowMs = now()) {
+      const since7 = Math.max(0, nowMs - 7 * 24 * 3600_000);
+      const since30 = Math.max(0, nowMs - 30 * 24 * 3600_000);
+      const rows = db
+        .prepare(`SELECT agent_slug AS slug,
+            SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END) AS turns7d,
+            SUM(CASE WHEN started_at >= ? THEN minutes_billed ELSE 0 END) AS minutes30d,
+            SUM(CASE WHEN started_at >= ? AND settlement_status != 'waived' THEN minutes_billed * rate_usd ELSE 0 END) AS usd30d
+          FROM wanxing_usage GROUP BY agent_slug`)
+        .all(since7, since30, since30);
+      return new Map(rows.map((r) => [r.slug, {
+        turns7d: Number(r.turns7d) || 0,
+        minutes30d: Number(r.minutes30d) || 0,
+        usd30d: Number(r.usd30d) || 0,
+      }]));
+    },
+    hostAllowanceList() {
+      return db.prepare(`SELECT agent_slug, limit_minutes, updated_by, updated_at FROM wanxing_host_allowance`).all()
+        .map((r) => ({ slug: r.agent_slug, limitMinutes: r.limit_minutes, updatedBy: r.updated_by, updatedAt: r.updated_at }));
+    },
     usageBoard() {
       const byCaller = db.prepare(`SELECT caller_id AS callerId, caller_email AS email, COUNT(*) AS turns, SUM(minutes_billed) AS minutes, SUM(CASE WHEN settlement_status != 'waived' THEN minutes_billed * rate_usd ELSE 0 END) AS usd,
         SUM(CASE WHEN settlement_status = 'pending' THEN 1 ELSE 0 END) AS pending FROM wanxing_usage GROUP BY caller_id ORDER BY usd DESC`).all();

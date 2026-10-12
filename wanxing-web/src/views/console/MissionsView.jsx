@@ -4,6 +4,23 @@
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
 
+// Cockpit watermark (add-cockpit-views, M4④b): spent against a cap — the
+// amber tone starts at 80% of the ceiling; a capped bar never lies about 100%.
+const Watermark = ({ spent, cap, label, testid }) => (
+  <div className="min-w-32" data-testid={testid}>
+    <div className="flex justify-between text-[10px] text-slate-400">
+      <span>{label}</span>
+      <span>{spent}/{cap}</span>
+    </div>
+    <div className="h-1.5 mt-0.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+      <div
+        className={`h-full ${spent >= cap ? "bg-rose-500" : cap && spent / cap >= 0.8 ? "bg-amber-500" : "bg-sky-500"}`}
+        style={{ width: `${Math.min(100, cap ? (spent / cap) * 100 : 0)}%` }}
+      />
+    </div>
+  </div>
+);
+
 export function MissionsView() {
   const [missions, setMissions] = useState(null);
   const [missionErr, setMissionErr] = useState("");
@@ -127,7 +144,8 @@ export function MissionsView() {
             <div key={m.id} className="flex gap-2 items-center flex-wrap">
               <span className={`px-1.5 py-0.5 rounded font-mono ${m.status === "reported" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : m.status === "failed" || m.status === "aborted" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{m.status}</span>
               <button onClick={() => openMission(m.id)} className="w-64 truncate text-left hover:underline">{m.goal || "—"}</button>
-              <span>已用 {m.spentMinutes}/{m.costCapMinutes} 分钟 · {m.approval === "auto" ? "自动" : "人批"}</span>
+              <Watermark spent={m.spentMinutes ?? 0} cap={m.costCapMinutes ?? 0} label="成本" testid={`mission-cost-${m.id}`} />
+              <span className="text-slate-400">{m.approval === "auto" ? "自动" : "人批"}</span>
               {m.status === "draft" && <button disabled={mBusy} onClick={() => missionAction(m.id, "submit")} className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">提交</button>}
               {m.status === "awaiting_approval" && <button disabled={mBusy} onClick={() => missionAction(m.id, "approve")} className="px-2 py-0.5 rounded border border-emerald-400 text-emerald-700 dark:text-emerald-300">批准</button>}
               {!["reported", "failed", "aborted"].includes(m.status) && <button disabled={mBusy} onClick={() => missionAction(m.id, "abort")} className="px-2 py-0.5 rounded border border-rose-300 text-rose-600 dark:text-rose-300">中止</button>}
@@ -139,7 +157,18 @@ export function MissionsView() {
         <div className="text-xs border-t border-slate-200 dark:border-slate-800 pt-2 space-y-1" data-testid="mission-detail">
           <div className="font-mono text-slate-400">{mDetail.id}</div>
           <div>目标：{mDetail.doc.goal}</div>
-          <div>窗口 {new Date(mDetail.doc.windowStart).toLocaleString()} ~ {new Date(mDetail.doc.windowEnd).toLocaleString()} · 已用 {mDetail.doc.spentMinutes}/{mDetail.doc.costCapMinutes} 分钟</div>
+          <div>窗口 {new Date(mDetail.doc.windowStart).toLocaleString()} ~ {new Date(mDetail.doc.windowEnd).toLocaleString()} · 剩余 {Math.max(0, Math.round((mDetail.doc.windowEnd - Date.now()) / 3_600_000))} 小时</div>
+          <div className="flex gap-4 pt-1" data-testid={`mission-progress-${mDetail.id}`}>
+            {mDetail.doc.plan && (
+              <Watermark
+                spent={(mDetail.doc.plan.steps ?? []).filter((st) => st.status === "done").length}
+                cap={(mDetail.doc.plan.steps ?? []).length}
+                label="步骤"
+                testid={`mission-steps-${mDetail.id}`}
+              />
+            )}
+            <Watermark spent={mDetail.doc.spentMinutes ?? 0} cap={mDetail.doc.costCapMinutes ?? 0} label="成本" testid={`mission-cost-${mDetail.id}`} />
+          </div>
           {mDetail.doc.plan && (
             <div className="space-y-0.5">
               {mDetail.doc.plan.steps.map((st) => (

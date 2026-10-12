@@ -385,6 +385,28 @@ export function createSelfServiceFace({
       res.status(out.status).json(out.body);
     });
 
+    // Cockpit summary (add-cockpit-views, M4④b): the fleet cards' signal
+    // column, store-local by construction — one usage-ledger pass plus every
+    // host allowance. No registry call: the deployments list's enrichment
+    // joins client-side, so an unreachable anything never degrades this.
+    app.get("/api/wanxing/v1/console/fleet/summary", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — the fleet summary is for a verified deployer" });
+      const usage = store.usageSummaryByAgent();
+      const agents = {};
+      for (const [slug, sum] of usage) agents[slug] = { ...sum };
+      for (const a of store.hostAllowanceList()) {
+        if (!agents[a.slug]) agents[a.slug] = { turns7d: 0, minutes30d: 0, usd30d: 0 };
+        const used = store.hostAllowanceUsed(a.slug);
+        agents[a.slug].allowance = {
+          limitMinutes: a.limitMinutes,
+          remainingMinutes: Math.max(0, a.limitMinutes - used),
+        };
+      }
+      res.json({ agents });
+    });
+
     // The share card: everything a fresh deployer asks next — where is my
     // page, can visitors talk, who pays. Assembled from live faces, no store.
     app.get("/api/wanxing/v1/console/my/deployments/:slug/share", async (req, res) => {

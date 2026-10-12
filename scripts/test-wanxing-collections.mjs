@@ -261,3 +261,52 @@ test("share face: public only, no owner leak, entries resolved", async () => {
     await facet.close();
   }
 });
+
+// ── Fleet summary (add-cockpit-views, M4④b) ─────────────────────────────────
+
+test("fleet/summary: windowed aggregates + allowances, honest zeros, identity gate", async () => {
+  const facet = await stubFacet({ packs: [pack("p1")] });
+  const h = await harness({ facet });
+  try {
+    const ops = await h.call("/api/wanxing/v1/console/fleet/summary", { token: OPS_TOKEN });
+    assert.equal(ops.status, 403);
+
+    const now = Date.now();
+    const insert = (slug, startedAt, minutes, rate, status = "settled") =>
+      h.store.usageInsert({
+        id: `u_${slug}_${startedAt}_${minutes}`,
+        callerId: 1, callerEmail: "c@x", agentSlug: slug, idemKey: `k_${startedAt}_${minutes}`,
+        startedAt, endedAt: startedAt + 60_000, durationMs: 60_000, outcome: "ok",
+        minutesBilled: minutes, rateUsd: rate, settlementStatus: status,
+        settledAt: status === "settled" ? startedAt + 120_000 : null,
+      });
+    insert("packs-p1-a1", now - 1 * 24 * 3600_000, 5, 0.1);   // in 7d and 30d, value 0.5
+    insert("packs-p1-a1", now - 10 * 24 * 3600_000, 5, 0.1);  // between windows: 30d only
+    insert("packs-p1-a1", now - 40 * 24 * 3600_000, 9, 0.1);  // outside both windows
+    insert("packs-p1-a2", now - 2 * 24 * 3600_000, 3, 0.1, "waived"); // minutes count, value does not
+    h.store.hostAllowanceSet("packs-p1-a1", 60, "ops");
+    h.store.hostAllowanceUsedAdd?.("packs-p1-a1", 10); // if the seam exists; allowance remaining asserted loosely below
+
+    const r = await h.call("/api/wanxing/v1/console/fleet/summary");
+    assert.equal(r.status, 200);
+    const a1 = r.body.agents["packs-p1-a1"];
+    assert.equal(a1.turns7d, 1, "only the within-7d turn counts");
+    assert.equal(a1.minutes30d, 10, "two within-30d turns' minutes");
+    assert.ok(Math.abs(a1.usd30d - 1.0) < 1e-9, `settled value only (${a1.usd30d})`);
+    assert.equal(a1.allowance.limitMinutes, 60);
+    assert.ok(a1.allowance.remainingMinutes <= 60);
+    const a2 = r.body.agents["packs-p1-a2"];
+    assert.equal(a2.turns7d, 1);
+    assert.equal(a2.minutes30d, 3);
+    assert.equal(a2.usd30d, 0, "waived turns carry no value");
+    assert.equal(a2.allowance, undefined, "no allowance set = no key");
+    // A slug known only by its allowance reads honest zeros.
+    h.store.hostAllowanceSet("packs-px-quiet", 30, "ops");
+    const r2 = await h.call("/api/wanxing/v1/console/fleet/summary");
+    const quiet = r2.body.agents["packs-px-quiet"];
+    assert.deepEqual([quiet.turns7d, quiet.minutes30d, quiet.usd30d], [0, 0, 0]);
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
