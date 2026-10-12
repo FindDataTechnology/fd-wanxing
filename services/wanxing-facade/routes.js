@@ -115,7 +115,7 @@ export function registerWanxingRoutes(app, {
   const resolveDeployment = (slug) => (slug ? bookkeeping.resolve(slug) : Promise.resolve(null));
   resolveDeploymentRef = resolveDeployment;
   const listDeployments = async () =>
-    (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath }));
+    (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath, packId: d.packId }));
 
   // Cross-process fleet reporting (add-fleet-event-backbone 6.3): the facade
   // reports admission/settlement toward the Wanxing observer while it still
@@ -207,6 +207,11 @@ export function registerWanxingRoutes(app, {
       agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
     },
     ...(fetchImpl ? { upstreamFetch: fetchImpl } : {}),
+    // Catalog signals (add-catalog-facets): the facet packs browse (public
+    // listed view — private packs never enter the catalog) and the facade's
+    // own usage ledger read back as the 7-day activity count.
+    packsBrowseFetch: async () => (await packsInternalCall("/api/packs?pageSize=100")).packs ?? [],
+    usageTurnsByAgent: (sinceMs) => store.usageTurnsByAgent(sinceMs),
   });
   face.register(app);
 
@@ -286,6 +291,7 @@ export function registerWanxingRoutes(app, {
     store,
     sub2api,
     logtoAuth,
+    listDeployments,
     requireToken: (req) => {
       const t = consoleToken();
       return Boolean(t) && req.headers.authorization === `Bearer ${t}`;

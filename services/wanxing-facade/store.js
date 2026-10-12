@@ -281,6 +281,15 @@ export function createWanxingStore({ file }) {
       return db.prepare(`SELECT started_at AS at, channel, outcome, minutes_billed AS minutes, caller_email AS email
         FROM wanxing_usage WHERE agent_slug = ? ORDER BY started_at DESC LIMIT ?`).all(agentSlug, Math.max(1, Math.min(Number(limit) || 50, 200)));
     },
+    // Per-slug external-turn counts since a timestamp, both lanes — the
+    // catalog's activity signal (add-catalog-facets): one GROUP BY, read
+    // back as a Map so the catalog join is O(1) per entry.
+    usageTurnsByAgent(sinceMs) {
+      const rows = db
+        .prepare(`SELECT agent_slug AS slug, COUNT(*) AS turns FROM wanxing_usage WHERE started_at >= ? GROUP BY agent_slug`)
+        .all(Math.max(0, Number(sinceMs) || 0));
+      return new Map(rows.map((r) => [r.slug, r.turns]));
+    },
     usageBoard() {
       const byCaller = db.prepare(`SELECT caller_id AS callerId, caller_email AS email, COUNT(*) AS turns, SUM(minutes_billed) AS minutes, SUM(CASE WHEN settlement_status != 'waived' THEN minutes_billed * rate_usd ELSE 0 END) AS usd,
         SUM(CASE WHEN settlement_status = 'pending' THEN 1 ELSE 0 END) AS pending FROM wanxing_usage GROUP BY caller_id ORDER BY usd DESC`).all();

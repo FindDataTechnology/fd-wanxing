@@ -17,6 +17,10 @@ export function createSelfServiceFace({
   requireToken,
   env = process.env,
   fetchImpl = fetch,
+  // Deployments snapshot (add-catalog-facets): async () → [{ slug, agentPath,
+  // packId }] — the in-service signal for the directory source and the
+  // greenfield gate.
+  listDeployments = null,
   // Chatability inputs (chat face's own derivation, re-composed here from the
   // same store/env facts — one definition each side, same inputs).
   subsidyOpen = () => false,
@@ -53,6 +57,29 @@ export function createSelfServiceFace({
   };
 
   const slugFor = (agentPath) => String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
+
+  // Serving-agent summary shared by my/packs and the directory source
+  // (add-catalog-facets): one definition of deployability + the wizard's
+  // model hint. modelWhitelist rides only when declared — an empty array
+  // would read as "no model allowed".
+  const deployableAgentsOf = (detail) =>
+    (detail?.manifest?.agents ?? [])
+      .filter((a) => a?.serving)
+      .map((a) => ({ id: a.id, name: a.name, ...(a.serving.modelWhitelist ? { modelWhitelist: a.serving.modelWhitelist } : {}) }));
+
+  // Directory detail cache (add-catalog-facets): pack id → deployable agents,
+  // 60s TTL — the per-pack detail fetch is the same call my/packs makes per
+  // request; the directory source makes it once per window instead.
+  const dirCache = new Map(); // packId → { at, agents }
+  const directoryAgents = async (identity, packId) => {
+    const cached = dirCache.get(packId);
+    if (cached && Date.now() - cached.at < 60_000) return cached.agents;
+    const agents = await facetCall(identity, `/api/packs/${encodeURIComponent(packId)}`)
+      .then(async (r) => (r.ok ? deployableAgentsOf(await r.json()) : []))
+      .catch(() => []); // detail failure lists the pack as not-deployable
+    dirCache.set(packId, { at: Date.now(), agents });
+    return agents;
+  };
 
   // Chatability verdict for the share card: public + unpaused + the chat
   // waterfall open (platform subsidy or the deployer's own allowance).
@@ -98,13 +125,7 @@ export function createSelfServiceFace({
         try {
           const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(p.id)}`);
           if (r.ok) {
-            const d = await r.json();
-            agents = (d?.manifest?.agents ?? [])
-              .filter((a) => a?.serving)
-              // modelWhitelist rides along when declared (add-deploy-wizard):
-              // the wizard's model input hints the legal domain. Absent stays
-              // absent — an empty array would read as "no model allowed".
-              .map((a) => ({ id: a.id, name: a.name, ...(a.serving.modelWhitelist ? { modelWhitelist: a.serving.modelWhitelist } : {}) }));
+            agents = deployableAgentsOf(await r.json());
           }
         } catch { /* detail failure lists the pack as not-deployable */ }
         out.push({
@@ -112,6 +133,54 @@ export function createSelfServiceFace({
           unlisted: p.unlisted === true, updatedAt: p.publishedAt ?? p.createdAt ?? null,
           deployableAgents: agents,
           deployable: agents.length > 0,
+        });
+      }
+      res.json({ packs: out });
+    });
+
+    // The deploy wizard's directory source (add-catalog-facets, M4② 挑得准):
+    // public listed packs joined with serving agents and their in-service
+    // state. Same facet browse the market renders, seen through the deployer
+    // console — discovery feeding deployment.
+    app.get("/api/wanxing/v1/console/catalog/packs", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — the directory source is for a verified deployer" });
+      if (needChannel(res)) return;
+      if (!listDeployments) return res.status(503).json({ error: "deployment snapshot not wired on this deployment" });
+
+      let browse;
+      try {
+        const r = await facetCall(who.identity, "/api/packs?pageSize=100");
+        if (!r.ok) throw Object.assign(new Error(`facet browse ${r.status}`), { status: 502 });
+        browse = await r.json();
+      } catch (e) {
+        return res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: `packs surface unreachable: ${e?.message || e}` });
+      }
+      const packs = browse?.packs ?? [];
+      if (packs.length >= 100) log(`selfservice: directory browse hit the 100-pack page cap (${packs.length} listed)`);
+      let rows;
+      try {
+        rows = await listDeployments();
+      } catch (e) {
+        // The in-service badge is load-bearing (it gates selection); a failed
+        // snapshot would mislabel every pack as greenfield — refuse instead.
+        return res.status(503).json({ error: `deployment snapshot unavailable: ${e?.message || e}` });
+      }
+      const inService = new Set(rows.map((d) => d.packId));
+
+      const out = [];
+      for (const p of packs) {
+        const agents = await directoryAgents(who.identity, p.id);
+        out.push({
+          id: p.id,
+          name: p.name,
+          version: p.version,
+          category: p.category ?? "",
+          featured: p.featured === true,
+          deployableAgents: agents,
+          deployable: agents.length > 0,
+          deployed: inService.has(p.id),
         });
       }
       res.json({ packs: out });
@@ -158,8 +227,29 @@ export function createSelfServiceFace({
       } catch (e) {
         return res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: `packs surface unreachable: ${e?.message || e}` });
       }
+      let foreignGreenfield = false;
       if (String(detail?.authorEmail || "").toLowerCase() !== who.email) {
-        return res.status(404).json({ error: "pack not found" }); // foreign packs do not exist on this face
+        // Foreign packs (add-catalog-facets, M4②): private/unlisted keep the
+        // not-found answer — foreign means public listed here. A public
+        // foreign pack deploys GREENFIELD-only: already-in-service refuses,
+        // so this face can never take over someone's live deployment
+        // (upgrades belong to the author's my/packs path by construction).
+        if (detail.visibility === "private" || detail.unlisted === true) {
+          return res.status(404).json({ error: "pack not found" });
+        }
+        if (!listDeployments) {
+          return res.status(503).json({ error: "deployment snapshot not wired — foreign deploys cannot be gated greenfield" });
+        }
+        let inService = false;
+        try {
+          inService = (await listDeployments()).some((d) => d.packId === req.params.id);
+        } catch (e) {
+          return res.status(503).json({ error: `deployment snapshot unavailable — greenfield cannot be verified: ${e?.message || e}` });
+        }
+        if (inService) {
+          return res.status(400).json({ error: "该 pack 已在役——升级/重部署走作者侧（「我的 pack」路径），本面不接管他人在役部署" });
+        }
+        foreignGreenfield = true;
       }
       const serving = (detail?.manifest?.agents ?? []).filter((a) => a?.serving);
       if (serving.length === 0) {
@@ -181,7 +271,14 @@ export function createSelfServiceFace({
         ...(req.body?.rhythms !== undefined ? { rhythms: req.body.rhythms } : {}),
       };
       try {
-        const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(req.params.id)}/versions/${version}/deploy`, {
+        // A greenfield foreign deploy bridges the console's operator-granted
+        // deployer credential into the facet's creator gate: the allowlisted
+        // identity vouches, the facet's own author-or-creator rule still
+        // applies (and its structured refusal passes through verbatim below).
+        const fwdIdentity = foreignGreenfield
+          ? { ...who.identity, groups: [...new Set([...(who.identity.groups ?? []), "creators"])] }
+          : who.identity;
+        const r = await facetCall(fwdIdentity, `/api/packs/${encodeURIComponent(req.params.id)}/versions/${version}/deploy`, {
           method: "POST",
           body: JSON.stringify(body),
         });

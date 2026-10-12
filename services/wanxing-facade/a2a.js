@@ -67,6 +67,13 @@ export function createA2aFace({
   onTurnComplete = null, // ({caller, slug, idemKey, outcome, startedAt, endedAt, minutesBilled, traceId}) → void
   chatability = null, // (state) → boolean (add-agent-chat-lane 3.4): catalog and card summaries carry the marker when true; null = never
   upstreamFetch = fetch, // injection seam for tests
+  // Curation + activity signals for the catalog (add-catalog-facets):
+  // packsBrowseFetch returns the facet packs browse rows ({id, category,
+  // featured} among others); usageTurnsByAgent(sinceMs) returns a Map
+  // slug → external turns. Both optional — absent or failing degrades to
+  // no signal, never blocks the catalog.
+  packsBrowseFetch = null,
+  usageTurnsByAgent = null,
 }) {
   const note = (kind, agent, payload = {}, id = null) => {
     try {
@@ -79,6 +86,38 @@ export function createA2aFace({
   const entryTtlMs = 60_000;
   const pausedTtlMs = 15_000;
   const entryCache = new Map(); // slug → { at, entry }
+
+  // Curation join (add-catalog-facets): the facet packs browse mapped
+  // pack-id → {category, featured}, cached on the entry cache's cadence. A
+  // browse that fails or omits a pack leaves that entry signal-less (it
+  // renders ungrouped) — the catalog never blocks on the curation join.
+  const curationCache = { at: 0, map: new Map() };
+  const curationMap = async () => {
+    if (!packsBrowseFetch) return curationCache.map;
+    if (Date.now() - curationCache.at < entryTtlMs) return curationCache.map;
+    try {
+      const packs = (await packsBrowseFetch()) ?? [];
+      const map = new Map();
+      for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
+      curationCache.map = map;
+      curationCache.at = Date.now();
+    } catch { /* unreachable join degrades to the last-known map */ }
+    return curationCache.map;
+  };
+  // Activity signal: per-slug external turns over the trailing 7 days, both
+  // lanes — the facade's own usage ledger read back (M4② 热度口径: featured
+  // 策展优先档 + turns7d 真实外部使用；安装数无回流不采用).
+  const turnsCache = { at: 0, map: new Map() };
+  const turns7dMap = async () => {
+    if (!usageTurnsByAgent) return turnsCache.map;
+    if (Date.now() - turnsCache.at < entryTtlMs) return turnsCache.map;
+    try {
+      const map = await usageTurnsByAgent(Date.now() - 7 * 24 * 3600_000);
+      turnsCache.map = map instanceof Map ? map : new Map(Object.entries(map ?? {}));
+      turnsCache.at = Date.now();
+    } catch { /* ledger hiccup degrades to the last-known counts */ }
+    return turnsCache.map;
+  };
 
   // The deployment source (packs internal API, add-facet-platform S0) being
   // unreachable is a 503, never a hang and never a silent "no agents": the
@@ -163,9 +202,13 @@ export function createA2aFace({
       } catch (e) {
         return sourceUnavailable(res, String(e?.message || e));
       }
+      // Signals (add-catalog-facets): curation by pack id, activity by slug —
+      // both cached 60s, both degrading honestly.
+      const [curation, turns] = await Promise.all([curationMap(), turns7dMap()]);
       for (const dep of deps) {
         const entry = await entryFor(dep.slug, dep);
         if (!entry || entry.visibility === "private") continue;
+        const cur = dep.packId != null ? curation.get(dep.packId) : null;
         out.push({
           slug: dep.slug,
           name: entry.name,
@@ -178,14 +221,32 @@ export function createA2aFace({
           ...(chatability?.({ exists: true, slug: dep.slug, visibility: "public", paused: false, entry })
             ? { chatable: true }
             : {}),
+          // Curation + activity (additive fields; unknown keys are ignored
+          // by existing JSON consumers). No category = renders ungrouped.
+          ...(cur?.category ? { category: cur.category } : {}),
+          ...(cur?.featured ? { featured: true } : {}),
+          turns7d: turns.get(dep.slug) ?? 0,
         });
       }
-      // Pagination (add-wanxing-deployments-cache): explicit page/page_size
-      // pages the public list with a total; no params keeps the legacy full
-      // shape so existing callers (finddata) are untouched.
+      // Server-side facets (add-catalog-facets): filtering happens BEFORE
+      // pagination; the facets summary counts the UNFILTERED list so chip
+      // rows render whole. A bare request (no filter, no facets, no paging)
+      // keeps the legacy full-list shape — only the additive entry fields
+      // above differ, which JSON consumers ignore.
       const q = req.query ?? {};
-      if (q.page === undefined && q.page_size === undefined) {
+      const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined;
+      const wantsFacets = q.facets === "1" || q.facets === "true";
+      if (q.page === undefined && q.page_size === undefined && !hasFilter && !wantsFacets) {
         return res.json({ agents: out });
+      }
+      const needle = String(q.q ?? "").trim().toLowerCase();
+      let list = out;
+      if (q.category !== undefined) list = list.filter((a) => (a.category ?? "") === String(q.category));
+      if (q.featured !== undefined && !["", "0", "false"].includes(String(q.featured))) list = list.filter((a) => a.featured === true);
+      if (needle) {
+        list = list.filter((a) =>
+          [a.name, a.description, a.slug, ...(a.tags ?? [])].join(" ").toLowerCase().includes(needle),
+        );
       }
       const clamp = (v, def) => {
         const n = Number.parseInt(String(v), 10);
@@ -194,10 +255,27 @@ export function createA2aFace({
       const pageSize = Math.min(clamp(q.page_size, 50), 200);
       const page = clamp(q.page, 1);
       res.json({
-        agents: out.slice((page - 1) * pageSize, page * pageSize),
+        agents: list.slice((page - 1) * pageSize, page * pageSize),
         page,
         page_size: pageSize,
-        total: out.length,
+        total: list.length,
+        ...(wantsFacets
+          ? {
+              facets: {
+                total: out.length,
+                featured: out.filter((a) => a.featured === true).length,
+                categories: Object.entries(
+                  out.reduce((acc, a) => {
+                    const c = a.category ?? "";
+                    if (c) acc[c] = (acc[c] ?? 0) + 1;
+                    return acc;
+                  }, {}),
+                )
+                  .map(([name, count]) => ({ name, count }))
+                  .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name)),
+              },
+            }
+          : {}),
       });
     });
 

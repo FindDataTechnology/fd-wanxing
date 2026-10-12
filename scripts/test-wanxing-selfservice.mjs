@@ -46,18 +46,22 @@ function stubFacet({ packs = [], deployReply = null } = {}) {
   app.post("/api/packs/:id/versions/:v/deploy", (req, res) => {
     seen.push({ path: "/deploy", body: req.body, user: req.headers["x-facet-user"] });
     if (deployReply) return res.status(deployReply.status).json(deployReply.body);
-    res.json({ deployed: [{ agentId: "chat-agent", agentPath: "/packs/p1/chat-agent" }] });
+    res.json({ deployed: [{ agentId: "chat-agent", agentPath: `/packs/${req.params.id}/chat-agent` }] });
   });
   const server = http.createServer(app).listen(0);
   return {
     server,
     seen,
     base: `http://127.0.0.1:${server.address().port}`,
-    close: () => new Promise((r) => server.close(() => r())),
+    close: () =>
+      new Promise((r) => {
+        server.close(() => r());
+        server.closeAllConnections?.();
+      }),
   };
 }
 
-function harness({ facet, channel = true, subsidyOpen = () => false } = {}) {
+function harness({ facet, channel = true, subsidyOpen = () => false, inService = [] } = {}) {
   const store = freshStore();
   const env = channel
     ? { FACET_BASE_URL: facet.base, FACET_INTERNAL_TOKEN: "fit-secret", WANXING_WEB_BASE_URL: "https://wanxing.example" }
@@ -69,6 +73,8 @@ function harness({ facet, channel = true, subsidyOpen = () => false } = {}) {
     env,
     fetchImpl: fetch,
     subsidyOpen,
+    // add-catalog-facets: the deployments snapshot seam (packId set).
+    listDeployments: async () => inService.map((packId) => ({ slug: `stub-${packId}`, agentPath: `/packs/${packId}/x`, packId })),
     log: () => {},
   });
   const app = express();
@@ -136,16 +142,23 @@ test("1.1 my/packs filters by author and marks deployability; empty reads as []"
 });
 
 test("2.1 deploy: billing key required, foreign pack 404, facet refusals pass through, success maps slugs", async () => {
-  const facet = await stubFacet({ packs: [pack(), pack({ id: "p9", authorEmail: "other@x.y" })] });
+  const facet = await stubFacet({ packs: [pack(), pack({ id: "p8", authorEmail: "other@x.y", visibility: "private" }), pack({ id: "p9", authorEmail: "other@x.y" })] });
   const h = await harness({ facet });
   try {
     const noKey = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", { method: "POST", body: JSON.stringify({}) });
     assert.equal(noKey.status, 400);
     assert.match(noKey.body.error, /billingKey/);
 
-    const foreign = await h.asDeployer("/api/wanxing/v1/console/my/packs/p9/deploy", { method: "POST", body: JSON.stringify({ billingKey: "sk-x" }) });
-    assert.equal(foreign.status, 404);
-    assert.equal(facet.seen.filter((s) => s.path === "/deploy").length, 0); // never forwarded
+    // Foreign PRIVATE keeps the not-found answer (probing teaches nothing).
+    const foreignPrivate = await h.asDeployer("/api/wanxing/v1/console/my/packs/p8/deploy", { method: "POST", body: JSON.stringify({ billingKey: "sk-x" }) });
+    assert.equal(foreignPrivate.status, 404);
+    // Foreign public but IN SERVICE: refused naming the author path.
+    const h2 = await harness({ facet, inService: ["p9"] });
+    const foreignLive = await h2.asDeployer("/api/wanxing/v1/console/my/packs/p9/deploy", { method: "POST", body: JSON.stringify({ billingKey: "sk-x" }) });
+    assert.equal(foreignLive.status, 400);
+    assert.match(foreignLive.body.error, /在役/);
+    await h2.close();
+    assert.equal(facet.seen.filter((s) => s.path === "/deploy").length, 0); // neither forwarded
 
     const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", { method: "POST", body: JSON.stringify({ billingKey: "sk-good" }) });
     assert.equal(r.status, 200);
@@ -366,6 +379,102 @@ test("3.1 my/earnings: rows and totals for the deployer; ops refused; no-account
   } finally {
     await new Promise((r) => server.close(() => r()));
     await facet.close();
+    store.close();
+  }
+});
+
+// ── add-catalog-facets: the directory source + greenfield foreign deploy ────
+
+test("catalog/packs: browse joined with agents and in-service state; greenfield foreign deploy bridges creators", async () => {
+  const facet = await stubFacet({
+    packs: [
+      pack(),
+      pack({ id: "p2", name: "外部好货", authorEmail: "someone@x.y", visibility: "public", category: "legal", featured: true }),
+      pack({ id: "p3", authorEmail: "someone@x.y", manifest: { agents: [{ id: "a", name: "b" }] } }),
+    ],
+  });
+  const h = await harness({ facet, inService: ["p1"] });
+  try {
+    // The directory source: public listed packs with serving agents + state.
+    const r = await h.asDeployer("/api/wanxing/v1/console/catalog/packs");
+    assert.equal(r.status, 200);
+    const byId = Object.fromEntries(r.body.packs.map((p) => [p.id, p]));
+    assert.equal(byId.p1.deployed, true); // own, in service
+    assert.equal(byId.p1.deployable, true);
+    assert.equal(byId.p2.category, "legal");
+    assert.equal(byId.p2.featured, true);
+    assert.equal(byId.p2.deployed, false); // greenfield
+    assert.equal(byId.p2.deployable, true);
+    assert.equal(byId.p3.deployable, false); // no serving contract
+
+    // A greenfield foreign deploy forwards WITH the creators group bridged.
+    const dep = await h.asDeployer("/api/wanxing/v1/console/my/packs/p2/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good" }),
+    });
+    assert.equal(dep.status, 200);
+    assert.equal(dep.body.deployed[0].slug, "packs-p2-chat-agent");
+    const fwd = facet.seen.filter((s) => s.path === "/deploy").at(-1);
+    assert.deepEqual(fwd.body.billingKeys, { "chat-agent": "sk-good" });
+    const ident = JSON.parse(Buffer.from(fwd.user, "base64url").toString());
+    assert.equal(ident.email, DEPLOYER);
+    assert.ok(ident.groups.includes("creators"), "the greenfield bridge carries the creators group");
+
+    // The own-pack path forwards WITHOUT the bridge (author authority only).
+    const own = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good" }),
+    });
+    assert.equal(own.status, 200);
+    const ownIdent = JSON.parse(Buffer.from(facet.seen.filter((s) => s.path === "/deploy").at(-1).user, "base64url").toString());
+    assert.deepEqual(ownIdent.groups, []);
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
+test("catalog/packs: ops refused; a failed snapshot refuses rather than mislabeling greenfield", async () => {
+  const facet = await stubFacet({ packs: [pack()] });
+  const h = await harness({ facet, inService: ["p1"] });
+  try {
+    const ops = await h.call("/api/wanxing/v1/console/catalog/packs", { headers: { Authorization: `Bearer ${OPS_TOKEN}` } });
+    assert.equal(ops.status, 403);
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+  // Snapshot failure on the deploy gate: explicit 503, never a silent pass.
+  const facet2 = await stubFacet({ packs: [pack({ id: "p9", authorEmail: "other@x.y" })] });
+  const store = freshStore();
+  const face = createSelfServiceFace({
+    store,
+    logtoAuth: { configured: true, verifyIdToken: async (t) => (t === DEPLOYER_TOKEN ? { email: DEPLOYER } : null) },
+    requireToken: (req) => String(req.headers.authorization || "") === `Bearer ${OPS_TOKEN}`,
+    env: { FACET_BASE_URL: facet2.base, FACET_INTERNAL_TOKEN: "fit-secret" },
+    fetchImpl: fetch,
+    listDeployments: async () => {
+      throw new Error("snapshot down");
+    },
+    log: () => {},
+  });
+  const app = express();
+  face.register(app);
+  const server = http.createServer(app).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const r = await fetch(`${base}/api/wanxing/v1/console/my/packs/p9/deploy`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEPLOYER_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ billingKey: "sk-x" }),
+    });
+    assert.equal(r.status, 503);
+    assert.match((await r.json()).error, /snapshot/);
+    assert.equal(facet2.seen.filter((s) => s.path === "/deploy").length, 0);
+  } finally {
+    server.close(() => {});
+    server.closeAllConnections?.();
+    await facet2.close();
     store.close();
   }
 });

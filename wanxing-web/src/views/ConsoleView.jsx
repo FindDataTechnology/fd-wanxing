@@ -26,6 +26,11 @@ const RHYTHM_PRESETS = [
 const STEP_LABELS = ["选包", "勾选 agent", "配置", "计费与通知"];
 
 function DeployWizard({ packs, loadMyPacks, authFetch }) {
+  // M4②: the pack step's two sources — the author's own packs and the
+  // deployable directory (console catalog pack list with in-service state).
+  const [source, setSource] = useState("mine");
+  const [dirPacks, setDirPacks] = useState(null);
+  const [dirErr, setDirErr] = useState("");
   const [step, setStep] = useState(1);
   const [packId, setPackId] = useState(null);
   const [version, setVersion] = useState("");
@@ -41,13 +46,15 @@ function DeployWizard({ packs, loadMyPacks, authFetch }) {
   const [callerEmail, setCallerEmail] = useState({});
   const [callerNote, setCallerNote] = useState({});
 
-  const pack = packs?.find((p) => p.id === packId) ?? null;
+  const sourcePacks = source === "mine" ? packs : (dirPacks?.packs ?? []);
+  const pack = (source === "mine" ? packs : (dirPacks?.packs ?? []))?.find((p) => p.id === packId) ?? null;
   const agents = pack?.deployableAgents ?? [];
   const deployable = packs?.filter((p) => p.deployable) ?? [];
   const undeployable = packs?.filter((p) => !p.deployable) ?? [];
 
   const reset = () => {
     setStep(1);
+    setSource("mine");
     setPackId(null);
     setVersion("");
     setPicked(new Set());
@@ -174,6 +181,26 @@ function DeployWizard({ packs, loadMyPacks, authFetch }) {
     }
   };
 
+  const loadDirectory = () => {
+    setDirErr("");
+    authFetch("/api/wanxing/v1/console/catalog/packs")
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+        setDirPacks(d);
+      })
+      .catch((e) => setDirErr(String(e?.message || e)));
+  };
+
+  const switchSource = (next) => {
+    setSource(next);
+    setPackId(null);
+    setPicked(new Set());
+    setCfg({});
+    setErr("");
+    if (next === "dir" && !dirPacks && !dirErr) loadDirectory();
+  };
+
   const inputCls = "px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono";
 
   // Result step: share cards + the visibility close-out per deployed slug.
@@ -243,22 +270,67 @@ function DeployWizard({ packs, loadMyPacks, authFetch }) {
       </div>
 
       {step === 1 && (
-        <div className="space-y-1">
-          {deployable.map((p) => (
-            <div key={p.id} className="flex gap-2 items-center flex-wrap">
-              <span className="px-1.5 py-0.5 rounded font-mono bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可部署</span>
-              <button onClick={() => choosePack(p)} className="text-left hover:underline" data-testid={`wizard-pack-row-${p.id}`}>
-                {p.name}（v{p.version}{p.visibility === "private" ? " · 私有" : ""}）
+        <div className="space-y-2">
+          <div className="flex gap-2 items-center">
+            {[
+              ["mine", "我的 pack"],
+              ["dir", "目录可部署"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => switchSource(key)}
+                className={`text-xs px-2.5 py-1 rounded-full border ${source === key ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
+                data-testid={`wizard-source-${key}`}
+              >
+                {label}
               </button>
-              <span className="text-slate-400">{(p.deployableAgents ?? []).map((a) => a.name ?? a.id).join("、") || "—"}</span>
+            ))}
+          </div>
+          {source === "mine" && (
+            <div className="space-y-1">
+              {deployable.map((p) => (
+                <div key={p.id} className="flex gap-2 items-center flex-wrap">
+                  <span className="px-1.5 py-0.5 rounded font-mono bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可部署</span>
+                  <button onClick={() => choosePack(p)} className="text-left hover:underline" data-testid={`wizard-pack-row-${p.id}`}>
+                    {p.name}（v{p.version}{p.visibility === "private" ? " · 私有" : ""}）
+                  </button>
+                  <span className="text-slate-400">{(p.deployableAgents ?? []).map((a) => a.name ?? a.id).join("、") || "—"}</span>
+                </div>
+              ))}
+              {undeployable.map((p) => (
+                <div key={p.id} className="flex gap-2 items-center opacity-60">
+                  <span className="px-1.5 py-0.5 rounded font-mono bg-slate-100 text-slate-500 dark:bg-slate-800">无契约</span>
+                  <span className="text-left">{p.name}（v{p.version}）——pack 内没有带 serving 契约的 agent，不可部署为服务</span>
+                </div>
+              ))}
             </div>
-          ))}
-          {undeployable.map((p) => (
-            <div key={p.id} className="flex gap-2 items-center opacity-60">
-              <span className="px-1.5 py-0.5 rounded font-mono bg-slate-100 text-slate-500 dark:bg-slate-800">无契约</span>
-              <span className="text-left">{p.name}（v{p.version}）——pack 内没有带 serving 契约的 agent，不可部署为服务</span>
+          )}
+          {source === "dir" && (
+            <div className="space-y-1">
+              {dirErr && <div className="text-xs text-amber-600 dark:text-amber-400">目录读取失败（{dirErr}）<button onClick={loadDirectory} className="underline ml-1">重试</button></div>}
+              {!dirErr && !dirPacks && <div className="text-xs text-slate-500">目录加载中…</div>}
+              {dirPacks && (dirPacks.packs ?? []).filter((p) => p.deployable).length === 0 && (
+                <div className="text-xs text-slate-500">目录里暂无可部署的 pack（公开且含 serving 契约）。</div>
+              )}
+              {(dirPacks?.packs ?? []).filter((p) => p.deployable).map((p) => (
+                <div key={p.id} className="flex gap-2 items-center flex-wrap">
+                  {p.featured && <span className="text-amber-500" title="谦面策展精选">★</span>}
+                  {p.category && <span className="px-1.5 py-0.5 rounded font-mono bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{p.category}</span>}
+                  {p.deployed ? (
+                    <span className="text-left text-slate-500" title="已在役——升级/重部署走作者侧（「我的 pack」），本面不接管在役部署">
+                      <span className="px-1.5 py-0.5 rounded font-mono bg-slate-100 text-slate-400 dark:bg-slate-800" data-testid={`wizard-dir-inservice-${p.id}`}>在役</span>{" "}
+                      {p.name}（v{p.version}）
+                    </span>
+                  ) : (
+                    <button onClick={() => choosePack(p)} className="text-left hover:underline" data-testid={`wizard-dir-row-${p.id}`}>
+                      {p.name}（v{p.version}）
+                    </button>
+                  )}
+                  <span className="text-slate-400">{(p.deployableAgents ?? []).map((a) => a.name ?? a.id).join("、") || "—"}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
