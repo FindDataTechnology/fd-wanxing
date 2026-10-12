@@ -101,7 +101,10 @@ export function createSelfServiceFace({
             const d = await r.json();
             agents = (d?.manifest?.agents ?? [])
               .filter((a) => a?.serving)
-              .map((a) => ({ id: a.id, name: a.name }));
+              // modelWhitelist rides along when declared (add-deploy-wizard):
+              // the wizard's model input hints the legal domain. Absent stays
+              // absent — an empty array would read as "no model allowed".
+              .map((a) => ({ id: a.id, name: a.name, ...(a.serving.modelWhitelist ? { modelWhitelist: a.serving.modelWhitelist } : {}) }));
           }
         } catch { /* detail failure lists the pack as not-deployable */ }
         out.push({
@@ -114,7 +117,7 @@ export function createSelfServiceFace({
       res.json({ packs: out });
     });
 
-    app.post("/api/wanxing/v1/console/my/packs/:id/deploy", express.json({ limit: "4kb" }), async (req, res) => {
+    app.post("/api/wanxing/v1/console/my/packs/:id/deploy", express.json({ limit: "16kb" }), async (req, res) => {
       const who = await gate(req, res);
       if (!who) return;
       if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — deploy is for a verified deployer" });
@@ -125,6 +128,25 @@ export function createSelfServiceFace({
         return res.status(400).json({ error: "billingKey is required (your sub2api key, sk-…) — the deployment's turns bill against it" });
       }
       const notifyChannel = typeof req.body?.notifyChannel === "string" && req.body.notifyChannel.trim() ? req.body.notifyChannel.trim() : null;
+
+      // Wizard payload (add-deploy-wizard / M4①): `agents` names the serving
+      // agents to deploy (subset selection — facet validates membership);
+      // models/budgets/rhythms are per-agent deploy-time initial config.
+      // Facet is the single validation authority: these ride the forward
+      // verbatim, its structured refusals pass through. The facade's own gate
+      // is only the cheap shape guard — a non-object or array would otherwise
+      // sail through JSON.stringify into a confusing facet 400.
+      const wizardKeys = ["models", "budgets", "rhythms"];
+      for (const key of wizardKeys) {
+        const v = req.body?.[key];
+        if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
+          return res.status(400).json({ error: `${key} must be an object of { agentId: value }` });
+        }
+      }
+      const agentsBody = req.body?.agents;
+      if (agentsBody !== undefined && (!Array.isArray(agentsBody) || agentsBody.length === 0 || agentsBody.some((a) => typeof a !== "string" || !a))) {
+        return res.status(400).json({ error: "agents must be a non-empty array of serving agent ids" });
+      }
 
       // Ownership: the facet detail is the truth (browse rows can lag).
       let detail;
@@ -146,10 +168,17 @@ export function createSelfServiceFace({
       const version = Number.isInteger(req.body?.version) && req.body.version > 0 ? req.body.version : (detail.version ?? null);
       if (!version) return res.status(400).json({ error: "version could not be resolved" });
 
-      // One key backs every serving agent (v1): the deployer's own account.
+      // One key backs every DEPLOYED agent (the deployer's own account). The
+      // mapping follows the selection — an absent `agents` maps over every
+      // serving agent exactly as before (self-service v1 contract).
+      const selected = Array.isArray(agentsBody) ? agentsBody.map(String) : serving.map((a) => a.id);
       const body = {
-        billingKeys: Object.fromEntries(serving.map((a) => [a.id, billingKey])),
-        ...(notifyChannel ? { notifyChannel: Object.fromEntries(serving.map((a) => [a.id, notifyChannel])) } : {}),
+        ...(agentsBody !== undefined ? { agents: selected } : {}),
+        billingKeys: Object.fromEntries(selected.map((id) => [id, billingKey])),
+        ...(notifyChannel ? { notifyChannel: Object.fromEntries(selected.map((id) => [id, notifyChannel])) } : {}),
+        ...(req.body?.models !== undefined ? { models: req.body.models } : {}),
+        ...(req.body?.budgets !== undefined ? { budgets: req.body.budgets } : {}),
+        ...(req.body?.rhythms !== undefined ? { rhythms: req.body.rhythms } : {}),
       };
       try {
         const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(req.params.id)}/versions/${version}/deploy`, {
@@ -162,7 +191,7 @@ export function createSelfServiceFace({
           // model lane validation, …) — the deployer sees the real reason.
           return res.status(r.status).json(doc ?? { error: `facet deploy ${r.status}` });
         }
-        log(`selfservice: ${who.email} deployed ${req.params.id} v${version} (${serving.map((a) => a.id).join(",")})`);
+        log(`selfservice: ${who.email} deployed ${req.params.id} v${version} (${selected.join(",")})`);
         res.json({
           deployed: (doc?.deployed ?? []).map((d) => ({
             agentId: d.agentId,

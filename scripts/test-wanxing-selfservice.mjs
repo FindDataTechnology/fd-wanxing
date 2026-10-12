@@ -175,6 +175,118 @@ test("2.1 facet's structured refusal reaches the deployer verbatim", async () =>
   }
 });
 
+// ── add-deploy-wizard: subset forwarding + config passthrough + hints ───────
+
+const twoAgentPack = pack({
+  manifest: {
+    agents: [
+      { id: "chat-agent", name: "小助手", serving: { protocol: "a2a", modelWhitelist: ["deepseek-v4-flash", "m-alt"] } },
+      { id: "report-agent", name: "研报员", serving: { protocol: "a2a" } },
+    ],
+  },
+});
+
+test("wizard: agents selection maps keys over the selection; config rides verbatim; default stays full", async () => {
+  const facet = await stubFacet({ packs: [twoAgentPack] });
+  const h = await harness({ facet });
+  try {
+    // A subset deploy: billingKeys/notifyChannel map over the SELECTION only,
+    // agents + per-agent config ride the forward untouched (facet validates).
+    const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({
+        billingKey: "sk-good",
+        notifyChannel: "fd-ops",
+        agents: ["chat-agent"],
+        models: { "chat-agent": "m-alt" },
+        budgets: { "chat-agent": 20 },
+        rhythms: { "chat-agent": [{ every: "1h" }] },
+      }),
+    });
+    assert.equal(r.status, 200);
+    const fwd = facet.seen.find((s) => s.path === "/deploy").body;
+    assert.deepEqual(fwd.agents, ["chat-agent"]);
+    assert.deepEqual(Object.keys(fwd.billingKeys), ["chat-agent"]);
+    assert.equal(fwd.billingKeys["chat-agent"], "sk-good");
+    assert.deepEqual(Object.keys(fwd.notifyChannel), ["chat-agent"]);
+    assert.deepEqual(fwd.models, { "chat-agent": "m-alt" });
+    assert.deepEqual(fwd.budgets, { "chat-agent": 20 });
+    assert.deepEqual(fwd.rhythms, { "chat-agent": [{ every: "1h" }] });
+
+    // The default (no agents key) still maps over EVERY serving agent — the
+    // self-service v1 contract, byte for byte.
+    const r2 = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good" }),
+    });
+    assert.equal(r2.status, 200);
+    const fwd2 = facet.seen.filter((s) => s.path === "/deploy").at(-1).body;
+    assert.equal(fwd2.agents, undefined);
+    assert.deepEqual(Object.keys(fwd2.billingKeys).sort(), ["chat-agent", "report-agent"]);
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
+test("wizard: cheap shape guards refuse before forwarding; facet's selection refusals pass through", async () => {
+  const facet = await stubFacet({ packs: [twoAgentPack] });
+  const h = await harness({ facet });
+  try {
+    for (const [name, body] of [
+      ["agents not an array", { billingKey: "sk-x", agents: "chat-agent" }],
+      ["agents empty", { billingKey: "sk-x", agents: [] }],
+      ["agents non-string entry", { billingKey: "sk-x", agents: [42] }],
+      ["models not an object", { billingKey: "sk-x", models: ["m"] }],
+      ["budgets null", { billingKey: "sk-x", budgets: null }],
+      ["rhythms array", { billingKey: "sk-x", rhythms: [{ every: "1h" }] }],
+    ]) {
+      const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", { method: "POST", body: JSON.stringify(body) });
+      assert.equal(r.status, 400, name);
+      assert.match(r.body.error, /agents|models|budgets|rhythms/, name);
+    }
+    assert.equal(facet.seen.filter((s) => s.path === "/deploy").length, 0, "shape guards refuse before any forward");
+
+    // Facet remains the selection's validation authority — its refusal (e.g.
+    // a non-serving id) passes through verbatim, not re-derived facade-side.
+    const facet2 = await stubFacet({
+      packs: [twoAgentPack],
+      deployReply: { status: 400, body: { error: "agents entry 'ghost' is not a serving agent of this pack (serving: chat-agent, report-agent)" } },
+    });
+    const h2 = await harness({ facet: facet2 });
+    try {
+      const r = await h2.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+        method: "POST",
+        body: JSON.stringify({ billingKey: "sk-x", agents: ["ghost"] }),
+      });
+      assert.equal(r.status, 400);
+      assert.match(r.body.error, /ghost/);
+    } finally {
+      await h2.close();
+      await facet2.close();
+    }
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
+test("wizard: my/packs carries the declared model whitelist; absent stays absent", async () => {
+  const facet = await stubFacet({ packs: [twoAgentPack] });
+  const h = await harness({ facet });
+  try {
+    const r = await h.asDeployer("/api/wanxing/v1/console/my/packs");
+    assert.equal(r.status, 200);
+    const agents = r.body.packs[0].deployableAgents;
+    const byId = Object.fromEntries(agents.map((a) => [a.id, a]));
+    assert.deepEqual(byId["chat-agent"].modelWhitelist, ["deepseek-v4-flash", "m-alt"]);
+    assert.equal("modelWhitelist" in byId["report-agent"], false, "undeclared carries no key — never a fake empty array");
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
 test("3.1 the share card assembles URL, chatability, and allowance", async () => {
   const facet = await stubFacet({ packs: [pack()] });
   const h = await harness({ facet, subsidyOpen: () => false });
