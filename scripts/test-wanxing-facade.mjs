@@ -1298,3 +1298,69 @@ test("share 1.1/1.2 store: insert-or-ignore is idempotent and totals scope by de
   assert.equal(s.metaGet("k"), "v2");
   s.close();
 });
+
+// ── fix-error-turn-billing: send-path outcome derives from the ANSWER ────────
+//
+// The A2A transport carries model-failed turns as HTTP 200 + a JSON-RPC error
+// object (the runner's adapter answers res.status(200).json(jsonRpcError())).
+// The send path used to finish("ok") on any 2xx and billed those turns — the
+// 2026-10-13 live incident settled two LLM-502 turns AND paid the deployer
+// share on each. Error turns must be recorded but waived on BOTH lanes, and a
+// replay of a failed flight stays verbatim with no second metering.
+
+const errorReply = () => new Response(
+  JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32003, message: "502: Upstream service temporarily unavailable" } }),
+  { status: 200, headers: { "Content-Type": "application/json" } },
+);
+
+test("fix-error-turn-billing: API lane — HTTP 200 + JSON-RPC error bills nothing, replays verbatim", async () => {
+  const h = faceHarness({ upstream: () => errorReply() });
+  try {
+    const call = (key) => fetch(h.base + "/api/wanxing/v1/a2a/packs-p1-heal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer sk-good", "Idempotency-Key": key },
+      body: JSON.stringify(sendBody("hi")),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+
+    const first = await call("eb-1");
+    assert.equal(first.status, 200, "the A2A error rides HTTP 200");
+    assert.equal(first.body.error.code, -32003, "the caller receives the error verbatim");
+
+    await new Promise((r) => setTimeout(r, 60));
+    const rows = h.store.usageActivity("packs-p1-heal", 5);
+    assert.equal(rows.length, 1, "one usage row for the flight");
+    assert.equal(rows[0].outcome, "error");
+    assert.equal(rows[0].minutes, 0, "waived — no started-minute billing");
+    assert.equal(h.sub.adjustCalls.length, 0, "no balance deduction and no deployer share");
+    assert.equal(h.store.usagePending().length, 0, "waived rows never pend");
+
+    const replay = await call("eb-1");
+    assert.equal(replay.body.error.code, -32003, "replay returns the recorded error");
+    assert.equal(h.upstreamCalls.length, 1, "no second upstream call");
+    assert.equal(h.store.usageActivity("packs-p1-heal", 5).length, 1, "no second metering");
+  } finally {
+    await h.close();
+  }
+});
+
+test("fix-error-turn-billing: chat lane — same derivation, settler never invoked", async () => {
+  const h = chatHarness({
+    chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 30, rpmMax: 50 },
+    upstream: () => errorReply(),
+  });
+  try {
+    const r = await h.call(CHAT_URL, chatSend("hello", { idem: "ceb-1" }));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.error.code, -32003, "chat callers also see the error verbatim");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const rows = h.store.usageActivity("packs-p1-chat", 5);
+    assert.equal(rows.length, 1, "the chat turn is ledgered");
+    assert.equal(rows[0].outcome, "error");
+    assert.equal(rows[0].minutes, 0);
+    assert.equal(h.sub.adjustCalls.length, 0, "subsidy not drawn");
+    assert.equal(h.hostSettleCalls.length, 0, "host settler never invoked");
+  } finally {
+    await h.close();
+  }
+});

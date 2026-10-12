@@ -385,10 +385,14 @@ export function createChatFace({
             if (!upstream.ok) {
               throw Object.assign(new Error(`agent route refused the turn (${upstream.status})`), { code: -32033 });
             }
-            return { response: doc ?? { jsonrpc: "2.0", id: id ?? null, result: { message: { parts: [] } } } };
+            return { response: doc ?? { jsonrpc: "2.0", id: id ?? null, error: { code: -32001, message: "agent route returned an unreadable response" } } };
           },
         });
-        if (!out.replayed) finish("ok");
+        // Same outcome derivation as the API lane (fix-error-turn-billing):
+        // the A2A transport carries model-failed turns as HTTP 200 + a
+        // JSON-RPC error object — error turns are recorded but waived, and
+        // the channel settler is never invoked for them.
+        if (!out.replayed) finish(out.response?.error ? "error" : "ok");
         else exitReadonly();
         res.status(200).json(out.response);
       } catch (e) {

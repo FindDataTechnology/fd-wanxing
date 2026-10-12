@@ -465,12 +465,17 @@ export function createA2aFace({
             if (!upstream.ok) {
               throw Object.assign(new Error(`agent route refused the turn (${upstream.status})`), { code: -32033 });
             }
-            return { response: doc ?? { jsonrpc: "2.0", id: id ?? null, result: { message: { parts: [] } } } };
+            return { response: doc ?? { jsonrpc: "2.0", id: id ?? null, error: { code: -32001, message: "agent route returned an unreadable response" } } };
           },
         });
         // message/send: replay/join land here without a slot of their own —
         // no usage row, no settle; the flight's owner did (or will) record.
-        if (!out.replayed) finish("ok");
+        // The outcome is derived from the ANSWER, not the HTTP status: the
+        // A2A transport carries a model-failed turn as HTTP 200 + a JSON-RPC
+        // error object, so "upstream.ok" says nothing about the turn —
+        // billing those as "ok" charged callers for turns that returned
+        // nothing (live incident 2026-10-13, fix-error-turn-billing).
+        if (!out.replayed) finish(out.response?.error ? "error" : "ok");
         else exitReadonly();
         res.status(200).json(out.response);
       } catch (e) {
