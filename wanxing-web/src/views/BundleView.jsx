@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { loginLogto, useAuth } from "../auth.js";
 import { BundleDeployDialog } from "../components/BundleDeployDialog.jsx";
 
-export function BundleView({ focusId } = {}) {
+export function BundleView({ focusSlug: focusId } = {}) {
   const auth = useAuth();
   const token = auth.token;
   const [doc, setDoc] = useState(null);
