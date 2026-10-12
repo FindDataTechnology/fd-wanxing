@@ -192,6 +192,23 @@ export function createWanxingStore({ file }) {
     settled_at INTEGER
   )`);
 
+  // ── Collections (add-deploy-collections, M4③) ─────────────────────────────
+  // One table, entries as a JSON list of references — a collection is a
+  // reference list (pack stays the atomic supply unit), never a content
+  // copy and never an execution surface (hard constraint: no scheduling,
+  // no running, no monitoring rides here).
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_collections (
+    id TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    visibility TEXT NOT NULL DEFAULT 'private',
+    entries TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS wanxing_collections_owner ON wanxing_collections (owner_email)`);
+
   // Facade-meta key/value store: the share epoch (this code's first boot)
   // bounds the reconciliation backfill — rows settled before the epoch are
   // history the deployer had no expectation of, and are never backfilled.
@@ -547,6 +564,54 @@ export function createWanxingStore({ file }) {
           AND u.minutes_billed > 0 AND e.usage_id IS NULL
         ORDER BY u.settled_at LIMIT ?`).all(Number(epochMs), Math.max(1, Math.min(Number(limit) || 100, 500)));
       return rows.map((r) => this.usageGet(r.id));
+    },
+
+    // ── Collections (add-deploy-collections) ────────────────────────────────
+    collectionsForOwner(ownerEmail) {
+      return db.prepare(`SELECT id FROM wanxing_collections WHERE owner_email = ? ORDER BY updated_at DESC`).all(String(ownerEmail))
+        .map((r) => this.collectionGet(r.id));
+    },
+    collectionGet(id) {
+      const r = db.prepare(`SELECT * FROM wanxing_collections WHERE id = ?`).get(String(id));
+      if (!r) return null;
+      let entries = [];
+      try {
+        entries = JSON.parse(r.entries) ?? [];
+      } catch { /* a corrupt list reads empty — writes always re-serialize */ }
+      return { id: r.id, ownerEmail: r.owner_email, name: r.name, description: r.description,
+        visibility: r.visibility === "public" ? "public" : "private", entries,
+        createdAt: r.created_at, updatedAt: r.updated_at };
+    },
+    collectionInsert({ ownerEmail, name, description = "", visibility = "private" }) {
+      const id = `col_${randomBytes(9).toString("hex")}`;
+      db.prepare(`INSERT INTO wanxing_collections (id, owner_email, name, description, visibility, entries, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`)
+        .run(id, String(ownerEmail), String(name), String(description ?? ""), visibility === "public" ? "public" : "private", now(), now());
+      return this.collectionGet(id);
+    },
+    collectionUpdate(id, { name, description, visibility, entries }) {
+      const existing = db.prepare(`SELECT id FROM wanxing_collections WHERE id = ?`).get(String(id));
+      if (!existing) return null;
+      db.prepare(`UPDATE wanxing_collections SET
+          name = COALESCE(?, name),
+          description = COALESCE(?, description),
+          visibility = COALESCE(?, visibility),
+          entries = COALESCE(?, entries),
+          updated_at = ?
+        WHERE id = ?`)
+        .run(
+          name !== undefined ? String(name) : null,
+          description !== undefined ? String(description ?? "") : null,
+          visibility !== undefined ? (visibility === "public" ? "public" : "private") : null,
+          entries !== undefined ? JSON.stringify(entries) : null,
+          now(),
+          String(id),
+        );
+      return this.collectionGet(id);
+    },
+    collectionDelete(id) {
+      const res = db.prepare(`DELETE FROM wanxing_collections WHERE id = ?`).run(String(id));
+      return res.changes === 1;
     },
   };
 }

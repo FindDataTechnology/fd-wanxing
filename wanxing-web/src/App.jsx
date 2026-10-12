@@ -12,11 +12,13 @@ import { CatalogView } from "./views/CatalogView.jsx";
 import { DocsView } from "./views/DocsView.jsx";
 import { ConsoleView } from "./views/ConsoleView.jsx";
 import { ChatView } from "./views/ChatView.jsx";
+import { CollectionsView } from "./views/CollectionsView.jsx";
+import { BundleView } from "./views/BundleView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
 import { loginLogto, signOut, useAuth } from "./auth.js";
 
-const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView };
+const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView };
 
 const CONTACT_EMAIL = "1253774197@qq.com";
 const CONTACT_PHONE = "17753221425";
@@ -130,7 +132,7 @@ export function App() {
   // (the 壹座 pack detail's "去配置" points here); `#/chat/<slug>` is the
   // visitor conversation page.
   const [viewKey, focusSlug] = (() => {
-    const m = hash.match(/^(#\/(?:console|catalog|docs|chat))(\/(.+))?$/);
+    const m = hash.match(/^(#\/(?:console|catalog|docs|chat|collections|bundle))(\/(.+))?$/);
     return m ? [m[1], m[3] ? decodeURIComponent(m[3]) : null] : [hash, null];
   })();
   const View = VIEWS[viewKey] ?? IntroView;

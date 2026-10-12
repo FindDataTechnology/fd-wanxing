@@ -95,6 +95,195 @@ export function createSelfServiceFace({
     return { chatable: true, reason: `部署者额度支付访客对话（余 ${remaining} 分钟）` };
   };
 
+  // The deploy core (add-deploy-collections extraction): everything between
+  // the request gate and the response — validation, ownership/greenfield,
+  // payload assembly, forward, slug mapping. Returns {status, body}; the
+  // single-pack route and the bundle deploy both ride it.
+  const deployPackCore = async (who, packId, body) => {
+    const billingKey = String(body?.billingKey || "").trim();
+    if (!billingKey || !/^sk-/.test(billingKey)) {
+      return { status: 400, body: { error: "billingKey is required (your sub2api key, sk-…) — the deployment's turns bill against it" } };
+    }
+    const notifyChannel = typeof body?.notifyChannel === "string" && body.notifyChannel.trim() ? body.notifyChannel.trim() : null;
+
+    // Wizard payload (add-deploy-wizard / M4①): `agents` names the serving
+    // agents to deploy (subset selection — facet validates membership);
+    // models/budgets/rhythms are per-agent deploy-time initial config.
+    // Facet is the single validation authority: these ride the forward
+    // verbatim, its structured refusals pass through. The facade's own gate
+    // is only the cheap shape guard — a non-object or array would otherwise
+    // sail through JSON.stringify into a confusing facet 400.
+    for (const key of ["models", "budgets", "rhythms"]) {
+      const v = body?.[key];
+      if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
+        return { status: 400, body: { error: `${key} must be an object of { agentId: value }` } };
+      }
+    }
+    const agentsBody = body?.agents;
+    if (agentsBody !== undefined && (!Array.isArray(agentsBody) || agentsBody.length === 0 || agentsBody.some((a) => typeof a !== "string" || !a))) {
+      return { status: 400, body: { error: "agents must be a non-empty array of serving agent ids" } };
+    }
+
+    // Ownership: the facet detail is the truth (browse rows can lag).
+    let detail;
+    try {
+      const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(packId)}`);
+      if (r.status === 404) return { status: 404, body: { error: "pack not found" } };
+      if (!r.ok) throw Object.assign(new Error(`facet detail ${r.status}`), { status: 502 });
+      detail = await r.json();
+    } catch (e) {
+      return { status: Number.isInteger(e?.status) ? e.status : 502, body: { error: `packs surface unreachable: ${e?.message || e}` } };
+    }
+    let foreignGreenfield = false;
+    if (String(detail?.authorEmail || "").toLowerCase() !== who.email) {
+      // Foreign packs (add-catalog-facets, M4②): private/unlisted keep the
+      // not-found answer — foreign means public listed here. A public
+      // foreign pack deploys GREENFIELD-only: already-in-service refuses,
+      // so this face can never take over someone's live deployment
+      // (upgrades belong to the author's my/packs path by construction).
+      if (detail.visibility === "private" || detail.unlisted === true) {
+        return { status: 404, body: { error: "pack not found" } };
+      }
+      if (!listDeployments) {
+        return { status: 503, body: { error: "deployment snapshot not wired — foreign deploys cannot be gated greenfield" } };
+      }
+      let inService = false;
+      try {
+        inService = (await listDeployments()).some((d) => d.packId === packId);
+      } catch (e) {
+        return { status: 503, body: { error: `deployment snapshot unavailable — greenfield cannot be verified: ${e?.message || e}` } };
+      }
+      if (inService) {
+        return { status: 400, body: { error: "该 pack 已在役——升级/重部署走作者侧（「我的 pack」路径），本面不接管他人在役部署", code: "IN_SERVICE" } };
+      }
+      foreignGreenfield = true;
+    }
+    const serving = (detail?.manifest?.agents ?? []).filter((a) => a?.serving);
+    if (serving.length === 0) {
+      return { status: 400, body: { error: "no serving-contract agent in this pack — 只有带 serving 契约的 agent 可部署为服务" } };
+    }
+    const version = Number.isInteger(body?.version) && body.version > 0 ? body.version : (detail.version ?? null);
+    if (!version) return { status: 400, body: { error: "version could not be resolved" } };
+
+    // One key backs every DEPLOYED agent (the deployer's own account). The
+    // mapping follows the selection — an absent `agents` maps over every
+    // serving agent exactly as before (self-service v1 contract).
+    const selected = Array.isArray(agentsBody) ? agentsBody.map(String) : serving.map((a) => a.id);
+    const fwdBody = {
+      ...(agentsBody !== undefined ? { agents: selected } : {}),
+      billingKeys: Object.fromEntries(selected.map((id) => [id, billingKey])),
+      ...(notifyChannel ? { notifyChannel: Object.fromEntries(selected.map((id) => [id, notifyChannel])) } : {}),
+      ...(body?.models !== undefined ? { models: body.models } : {}),
+      ...(body?.budgets !== undefined ? { budgets: body.budgets } : {}),
+      ...(body?.rhythms !== undefined ? { rhythms: body.rhythms } : {}),
+    };
+    try {
+      // A greenfield foreign deploy bridges the console's operator-granted
+      // deployer credential into the facet's creator gate: the allowlisted
+      // identity vouches, the facet's own author-or-creator rule still
+      // applies (and its structured refusal passes through verbatim below).
+      const fwdIdentity = foreignGreenfield
+        ? { ...who.identity, groups: [...new Set([...(who.identity.groups ?? []), "creators"])] }
+        : who.identity;
+      const r = await facetCall(fwdIdentity, `/api/packs/${encodeURIComponent(packId)}/versions/${version}/deploy`, {
+        method: "POST",
+        body: JSON.stringify(fwdBody),
+      });
+      const doc = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // Facet's structured refusal passes through verbatim (balance gate,
+        // model lane validation, …) — the deployer sees the real reason.
+        return { status: r.status, body: doc ?? { error: `facet deploy ${r.status}` } };
+      }
+      log(`selfservice: ${who.email} deployed ${packId} v${version} (${selected.join(",")})`);
+      return {
+        status: 200,
+        body: {
+          deployed: (doc?.deployed ?? []).map((d) => ({
+            agentId: d.agentId,
+            agentPath: d.agentPath,
+            slug: slugFor(d.agentPath),
+          })),
+          version,
+        },
+      };
+    } catch (e) {
+      return { status: 502, body: { error: `deploy forward failed: ${e?.message || e}` } };
+    }
+  };
+
+  // ── Collections (add-deploy-collections, M4③) ──────────────────────────────
+  // A collection is a REFERENCE list — {packId, agentId?, suggestedConfig?}
+  // entries, pack stays the atomic supply unit — never a content copy and
+  // never an execution surface. Cheap shape guards here; the facet remains
+  // the validation authority when an entry actually deploys.
+  const ENTRY_LIMIT = 20;
+  const SUGGESTED_KEYS = new Set(["model", "budgetMinutes", "rhythm"]);
+  const entriesError = (msg) => ({ status: 400, body: { error: msg } });
+  const validateEntries = (list) => {
+    if (!Array.isArray(list)) return "entries must be an array of { packId, agentId?, suggestedConfig? }";
+    if (list.length > ENTRY_LIMIT) return `entries exceed the ${ENTRY_LIMIT}-entry bound`;
+    const seen = new Set();
+    for (const e of list) {
+      if (!e || typeof e !== "object" || Array.isArray(e)) return "each entry must be an object";
+      if (typeof e.packId !== "string" || !e.packId) return "each entry needs a packId string";
+      if (e.agentId !== undefined && (typeof e.agentId !== "string" || !e.agentId)) return "entry.agentId must be a non-empty string when present";
+      const key = `${e.packId}\u0000${e.agentId ?? ""}`;
+      if (seen.has(key)) return `entry ${e.packId}${e.agentId ? "/" + e.agentId : ""} is listed twice — references are unique`;
+      seen.add(key);
+      if (e.suggestedConfig !== undefined) {
+        if (!e.agentId) return `entry ${e.packId}: suggestedConfig requires agentId — name the agent it configures`;
+        if (!e.suggestedConfig || typeof e.suggestedConfig !== "object" || Array.isArray(e.suggestedConfig)) {
+          return `entry ${e.packId}: suggestedConfig must be an object of { model?, budgetMinutes?, rhythm? }`;
+        }
+        for (const k of Object.keys(e.suggestedConfig)) {
+          if (!SUGGESTED_KEYS.has(k)) return `entry ${e.packId}: suggestedConfig has unknown key '${k}' (model / budgetMinutes / rhythm only)`;
+        }
+        const sc = e.suggestedConfig;
+        if (sc.model !== undefined && (typeof sc.model !== "string" || !sc.model)) return `entry ${e.packId}: suggestedConfig.model must be a model identifier string`;
+        if (sc.budgetMinutes !== undefined && (!Number.isInteger(sc.budgetMinutes) || sc.budgetMinutes < 1 || sc.budgetMinutes > 120)) {
+          return `entry ${e.packId}: suggestedConfig.budgetMinutes must be a whole number of minutes (1–120)`;
+        }
+        if (sc.rhythm !== undefined && !Array.isArray(sc.rhythm)) return `entry ${e.packId}: suggestedConfig.rhythm must be a rhythm entries array`;
+      }
+    }
+    return null;
+  };
+
+  // Entry resolution for detail/share views: cached browse (name, version,
+  // curation), cached serving agents (agent names), snapshot (in-service).
+  const resolveEntries = async (identity, entries) => {
+    const browse = await facetCall(identity, "/api/packs?pageSize=100")
+      .then(async (r) => (r.ok ? await r.json() : null))
+      .catch(() => null);
+    const byId = new Map((browse?.packs ?? []).map((p) => [p.id, p]));
+    let inServiceIds = new Set();
+    try {
+      if (listDeployments) inServiceIds = new Set((await listDeployments()).map((d) => d.packId));
+    } catch { /* snapshot failure: no in-service answer rather than a wrong one */ }
+    const out = [];
+    for (const e of entries) {
+      const pack = byId.get(e.packId) ?? null;
+      let agentName = null;
+      if (pack) {
+        const agents = await directoryAgents(identity, e.packId).catch(() => []);
+        agentName = e.agentId ? (agents.find((a) => a.id === e.agentId)?.name ?? null) : null;
+      }
+      out.push({
+        packId: e.packId,
+        ...(e.agentId ? { agentId: e.agentId } : {}),
+        packName: pack?.name ?? null,
+        packVersion: pack?.version ?? null,
+        ...(pack?.category ? { category: pack.category } : {}),
+        ...(pack?.featured ? { featured: true } : {}),
+        inService: inServiceIds.has(e.packId),
+        ...(e.agentId && agentName ? { agentName } : {}),
+        ...(e.suggestedConfig ? { suggestedConfig: e.suggestedConfig } : {}),
+      });
+    }
+    return out;
+  };
+
   function register(app) {
     const needChannel = (res) => {
       if (channelReady()) return false;
@@ -192,114 +381,8 @@ export function createSelfServiceFace({
       if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — deploy is for a verified deployer" });
       if (needChannel(res)) return;
 
-      const billingKey = String(req.body?.billingKey || "").trim();
-      if (!billingKey || !/^sk-/.test(billingKey)) {
-        return res.status(400).json({ error: "billingKey is required (your sub2api key, sk-…) — the deployment's turns bill against it" });
-      }
-      const notifyChannel = typeof req.body?.notifyChannel === "string" && req.body.notifyChannel.trim() ? req.body.notifyChannel.trim() : null;
-
-      // Wizard payload (add-deploy-wizard / M4①): `agents` names the serving
-      // agents to deploy (subset selection — facet validates membership);
-      // models/budgets/rhythms are per-agent deploy-time initial config.
-      // Facet is the single validation authority: these ride the forward
-      // verbatim, its structured refusals pass through. The facade's own gate
-      // is only the cheap shape guard — a non-object or array would otherwise
-      // sail through JSON.stringify into a confusing facet 400.
-      const wizardKeys = ["models", "budgets", "rhythms"];
-      for (const key of wizardKeys) {
-        const v = req.body?.[key];
-        if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
-          return res.status(400).json({ error: `${key} must be an object of { agentId: value }` });
-        }
-      }
-      const agentsBody = req.body?.agents;
-      if (agentsBody !== undefined && (!Array.isArray(agentsBody) || agentsBody.length === 0 || agentsBody.some((a) => typeof a !== "string" || !a))) {
-        return res.status(400).json({ error: "agents must be a non-empty array of serving agent ids" });
-      }
-
-      // Ownership: the facet detail is the truth (browse rows can lag).
-      let detail;
-      try {
-        const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(req.params.id)}`);
-        if (r.status === 404) return res.status(404).json({ error: "pack not found" });
-        if (!r.ok) throw Object.assign(new Error(`facet detail ${r.status}`), { status: 502 });
-        detail = await r.json();
-      } catch (e) {
-        return res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: `packs surface unreachable: ${e?.message || e}` });
-      }
-      let foreignGreenfield = false;
-      if (String(detail?.authorEmail || "").toLowerCase() !== who.email) {
-        // Foreign packs (add-catalog-facets, M4②): private/unlisted keep the
-        // not-found answer — foreign means public listed here. A public
-        // foreign pack deploys GREENFIELD-only: already-in-service refuses,
-        // so this face can never take over someone's live deployment
-        // (upgrades belong to the author's my/packs path by construction).
-        if (detail.visibility === "private" || detail.unlisted === true) {
-          return res.status(404).json({ error: "pack not found" });
-        }
-        if (!listDeployments) {
-          return res.status(503).json({ error: "deployment snapshot not wired — foreign deploys cannot be gated greenfield" });
-        }
-        let inService = false;
-        try {
-          inService = (await listDeployments()).some((d) => d.packId === req.params.id);
-        } catch (e) {
-          return res.status(503).json({ error: `deployment snapshot unavailable — greenfield cannot be verified: ${e?.message || e}` });
-        }
-        if (inService) {
-          return res.status(400).json({ error: "该 pack 已在役——升级/重部署走作者侧（「我的 pack」路径），本面不接管他人在役部署" });
-        }
-        foreignGreenfield = true;
-      }
-      const serving = (detail?.manifest?.agents ?? []).filter((a) => a?.serving);
-      if (serving.length === 0) {
-        return res.status(400).json({ error: "no serving-contract agent in this pack — 只有带 serving 契约的 agent 可部署为服务" });
-      }
-      const version = Number.isInteger(req.body?.version) && req.body.version > 0 ? req.body.version : (detail.version ?? null);
-      if (!version) return res.status(400).json({ error: "version could not be resolved" });
-
-      // One key backs every DEPLOYED agent (the deployer's own account). The
-      // mapping follows the selection — an absent `agents` maps over every
-      // serving agent exactly as before (self-service v1 contract).
-      const selected = Array.isArray(agentsBody) ? agentsBody.map(String) : serving.map((a) => a.id);
-      const body = {
-        ...(agentsBody !== undefined ? { agents: selected } : {}),
-        billingKeys: Object.fromEntries(selected.map((id) => [id, billingKey])),
-        ...(notifyChannel ? { notifyChannel: Object.fromEntries(selected.map((id) => [id, notifyChannel])) } : {}),
-        ...(req.body?.models !== undefined ? { models: req.body.models } : {}),
-        ...(req.body?.budgets !== undefined ? { budgets: req.body.budgets } : {}),
-        ...(req.body?.rhythms !== undefined ? { rhythms: req.body.rhythms } : {}),
-      };
-      try {
-        // A greenfield foreign deploy bridges the console's operator-granted
-        // deployer credential into the facet's creator gate: the allowlisted
-        // identity vouches, the facet's own author-or-creator rule still
-        // applies (and its structured refusal passes through verbatim below).
-        const fwdIdentity = foreignGreenfield
-          ? { ...who.identity, groups: [...new Set([...(who.identity.groups ?? []), "creators"])] }
-          : who.identity;
-        const r = await facetCall(fwdIdentity, `/api/packs/${encodeURIComponent(req.params.id)}/versions/${version}/deploy`, {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
-        const doc = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          // Facet's structured refusal passes through verbatim (balance gate,
-          // model lane validation, …) — the deployer sees the real reason.
-          return res.status(r.status).json(doc ?? { error: `facet deploy ${r.status}` });
-        }
-        log(`selfservice: ${who.email} deployed ${req.params.id} v${version} (${selected.join(",")})`);
-        res.json({
-          deployed: (doc?.deployed ?? []).map((d) => ({
-            agentId: d.agentId,
-            agentPath: d.agentPath,
-            slug: slugFor(d.agentPath),
-          })),
-          version,
-        });
-      } catch (e) {
-        res.status(502).json({ error: `deploy forward failed: ${e?.message || e}` });
-      }
+      const out = await deployPackCore(who, req.params.id, req.body ?? {});
+      res.status(out.status).json(out.body);
     });
 
     // The share card: everything a fresh deployer asks next — where is my
@@ -321,6 +404,153 @@ export function createSelfServiceFace({
           updatedBy: cap.updatedBy,
         } : null,
       });
+    });
+
+    // ── Collections: console CRUD (add-deploy-collections, M4③) ─────────────
+    app.get("/api/wanxing/v1/console/collections", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — collections are for a verified deployer" });
+      res.json({
+        collections: store.collectionsForOwner(who.email).map((c) => ({
+          id: c.id, name: c.name, description: c.description, visibility: c.visibility,
+          entries: c.entries.length, updatedAt: c.updatedAt,
+        })),
+      });
+    });
+
+    app.post("/api/wanxing/v1/console/collections", express.json({ limit: "16kb" }), async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — collections are for a verified deployer" });
+      const name = String(req.body?.name || "").trim();
+      if (!name || name.length > 60) return res.status(400).json({ error: "name is required (≤60 chars)" });
+      const description = String(req.body?.description ?? "").slice(0, 300);
+      const visibility = req.body?.visibility === "public" ? "public" : "private";
+      const c = store.collectionInsert({ ownerEmail: who.email, name, description, visibility });
+      log(`selfservice: ${who.email} created collection ${c.id} (${visibility})`);
+      res.json({ collection: c });
+    });
+
+    app.get("/api/wanxing/v1/console/collections/:id", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity" });
+      const c = store.collectionGet(req.params.id);
+      if (!c || c.ownerEmail !== who.email) return res.status(404).json({ error: "collection not found" });
+      if (needChannel(res)) return;
+      res.json({ collection: { ...c, entries: await resolveEntries(who.identity, c.entries) } });
+    });
+
+    app.put("/api/wanxing/v1/console/collections/:id", express.json({ limit: "32kb" }), async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity" });
+      const c = store.collectionGet(req.params.id);
+      if (!c || c.ownerEmail !== who.email) return res.status(404).json({ error: "collection not found" });
+      const { name, description, visibility } = req.body ?? {};
+      if (name !== undefined && (!String(name).trim() || String(name).length > 60)) {
+        return res.status(400).json({ error: "name must be 1–60 chars when provided" });
+      }
+      if (visibility !== undefined && visibility !== "private" && visibility !== "public") {
+        return res.status(400).json({ error: "visibility must be private or public" });
+      }
+      const updated = store.collectionUpdate(c.id, {
+        ...(name !== undefined ? { name: String(name).trim() } : {}),
+        ...(description !== undefined ? { description: String(description ?? "").slice(0, 300) } : {}),
+        ...(visibility !== undefined ? { visibility } : {}),
+      });
+      res.json({ collection: updated });
+    });
+
+    app.put("/api/wanxing/v1/console/collections/:id/entries", express.json({ limit: "64kb" }), async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity" });
+      const c = store.collectionGet(req.params.id);
+      if (!c || c.ownerEmail !== who.email) return res.status(404).json({ error: "collection not found" });
+      const err = validateEntries(req.body?.entries);
+      if (err) return res.status(400).json({ error: err });
+      const updated = store.collectionUpdate(c.id, { entries: req.body.entries });
+      log(`selfservice: ${who.email} set ${req.body.entries.length} entries on ${c.id}`);
+      res.json({ collection: { ...updated, entries: await resolveEntries(who.identity, updated.entries) } });
+    });
+
+    app.delete("/api/wanxing/v1/console/collections/:id", async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity" });
+      const c = store.collectionGet(req.params.id);
+      if (!c || c.ownerEmail !== who.email) return res.status(404).json({ error: "collection not found" });
+      store.collectionDelete(c.id);
+      res.json({ deleted: true });
+    });
+
+    // Bundle deploy (M4③b): one billing key, every entry rides the deploy
+    // core sequentially — per-entry verdicts, in-service skips never block.
+    app.post("/api/wanxing/v1/console/collections/:id/deploy", express.json({ limit: "4kb" }), async (req, res) => {
+      const who = await gate(req, res);
+      if (!who) return;
+      if (who.ops) return res.status(403).json({ error: "the ops token carries no identity — bundle deploys are for a verified deployer" });
+      if (needChannel(res)) return;
+      const c = store.collectionGet(req.params.id);
+      if (!c || (c.ownerEmail !== who.email && c.visibility !== "public")) {
+        return res.status(404).json({ error: "collection not found" });
+      }
+      if (c.entries.length === 0) return res.status(400).json({ error: "the collection is empty — add entries first" });
+      const billingKey = String(req.body?.billingKey || "").trim();
+      if (!billingKey || !/^sk-/.test(billingKey)) {
+        return res.status(400).json({ error: "billingKey is required (your sub2api key, sk-…) — every entry's turns bill against it" });
+      }
+      const notifyChannel = typeof req.body?.notifyChannel === "string" && req.body.notifyChannel.trim() ? req.body.notifyChannel.trim() : null;
+
+      const results = [];
+      const deployedSlugs = [];
+      for (const e of c.entries) {
+        const sc = e.suggestedConfig ?? {};
+        const out = await deployPackCore(who, e.packId, {
+          billingKey,
+          ...(notifyChannel ? { notifyChannel } : {}),
+          ...(e.agentId ? { agents: [e.agentId] } : {}),
+          // suggestedConfig is agent-scoped by construction (validateEntries)
+          // — an agent-less entry deploys under declaration defaults.
+          ...(e.agentId && (sc.model || sc.budgetMinutes || sc.rhythm)
+            ? {
+                ...(sc.model ? { models: { [e.agentId]: sc.model } } : {}),
+                ...(sc.budgetMinutes ? { budgets: { [e.agentId]: sc.budgetMinutes } } : {}),
+                ...(sc.rhythm ? { rhythms: { [e.agentId]: sc.rhythm } } : {}),
+              }
+            : {}),
+        });
+        if (out.status === 200) {
+          for (const d of out.body.deployed ?? []) deployedSlugs.push(d.slug);
+          results.push({ packId: e.packId, ...(e.agentId ? { agentId: e.agentId } : {}), verdict: "deployed", slugs: (out.body.deployed ?? []).map((d) => d.slug) });
+        } else if (out.status === 400 && out.body?.code === "IN_SERVICE") {
+          // A bundle commonly mixes in already-deployed packs — a re-deploy
+          // of a live entry is a no-op-by-policy skip, not a refusal.
+          results.push({ packId: e.packId, ...(e.agentId ? { agentId: e.agentId } : {}), verdict: "skipped-in-service" });
+        } else {
+          results.push({
+            packId: e.packId,
+            ...(e.agentId ? { agentId: e.agentId } : {}),
+            verdict: out.status === 400 || out.status === 402 ? "refused" : "error",
+            error: typeof out.body?.error === "string" ? out.body.error : JSON.stringify(out.body?.error ?? out.body ?? {}),
+          });
+        }
+      }
+      log(`selfservice: ${who.email} bundle-deployed ${c.id} — ${deployedSlugs.length} agent(s) live`);
+      res.json({ results, deployedSlugs });
+    });
+
+    // ── Public share face (M4③b): public collections only, no credential ────
+    app.get("/api/wanxing/v1/collections/:id", async (req, res) => {
+      if (needChannel(res)) return;
+      const c = store.collectionGet(req.params.id);
+      if (!c || c.visibility !== "public") return res.status(404).json({ error: "collection not found" });
+      // The share face resolves against the anonymous browse — the same view
+      // any visitor gets; owner email never rides.
+      const entries = await resolveEntries({ email: "", groups: [] }, c.entries);
+      res.json({ collection: { id: c.id, name: c.name, description: c.description, entries, updatedAt: c.updatedAt } });
     });
 
     // Deployer earnings view (add-deployer-revenue-share D5): the ADR-0022

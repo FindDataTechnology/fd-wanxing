@@ -1269,7 +1269,7 @@ export function ConsoleView({ focusSlug } = {}) {
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="deploy-panel">
-          <h3 className="font-semibold">部署我的 agent</h3>
+          <h3 className="font-semibold">部署我的 agent <a href="#/collections" className="ml-2 text-xs font-normal text-sky-600 dark:text-sky-400 hover:underline" data-testid="collections-entry-link">我的集合 →</a></h3>
           {myPacksErr && <div className="text-xs text-amber-600 dark:text-amber-400">{myPacksErr}</div>}
           {myPacks && myPacks.packs.length === 0 && (
             <div className="text-xs text-slate-500">名下暂无已发布的 pack——先在壹座「设置 → 功能集」发布（含 serving 契约的 agent 才可部署）。</div>
