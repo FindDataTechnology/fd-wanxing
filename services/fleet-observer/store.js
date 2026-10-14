@@ -22,6 +22,10 @@ export const EVENT_KINDS = [
   "mission.submitted", "mission.planning", "mission.awaiting_approval", "mission.auto_approved",
   "mission.scheduled", "mission.executing", "mission.reported", "mission.failed",
   "mission.aborted", "mission.exhausted",
+  // Cell short-term telemetry (add-fleet-cell-views, fed by paas's gateway
+  // cell sampler): periodic snapshots, one per live cell per tick — pure
+  // counts, addressed as cell:<userId>.
+  "cell_stats",
 ];
 
 // The mission family (add-mission-board): board synthesis keys off this set.
@@ -127,6 +131,10 @@ export function createEventStore({ file }) {
       const wake = new Map(); // agent → [wake_ms…]
       const pausedAt = new Map(); // agent → open paused ts (hour-clamped)
       for (const r of rows) {
+        // Cell snapshots (add-fleet-cell-views) never enter the rollup face:
+        // they contribute to no metric, and registering their cell: identities
+        // here would leak them into the board's resident agents_total.
+        if (r.kind === "cell_stats") continue;
         const a = acc.get(r.agent) ?? { turns: 0, errors: 0, minutes: 0, usd: 0, kills: 0, pausedMs: 0 };
         const p = JSON.parse(r.payload || "{}");
         switch (r.kind) {

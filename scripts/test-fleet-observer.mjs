@@ -286,3 +286,57 @@ test("add-mission-board: an empty window keeps the missions segment present", as
     obs.close(); srv.close();
   }
 });
+
+// ── add-fleet-cell-views: cell short-term telemetry on the board ────────────
+
+test("add-fleet-cell-views: cell_stats ingest and synthesize cells/shortterm", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    // A resident-agent turn keeps the legacy scopes alive alongside the new kind.
+    await post(base, { events: [ev()] });
+    await post(base, {
+      events: [
+        ev({ id: ulid(now()), source: "cell-sampler", agent: "cell:a@x.test", runner: null, kind: "cell_stats", payload: { jobs: 3, executions: { running: 1, queued: 2 }, workers: { cap: 4, busy: 1, idle: 3 }, recent: { done: 5, failed: 1, interrupted: 0 }, agentBusy: true } }),
+        ev({ id: ulid(now()), source: "cell-sampler", agent: "cell:b@x.test", runner: null, kind: "cell_stats", payload: { jobs: 0, executions: { running: 0, queued: 1 }, workers: { cap: 0, busy: 0, idle: 0 }, recent: { done: 0, failed: 0, interrupted: 0 }, agentBusy: false } }),
+        // fresher snapshot for the SAME cell wins (latest-wins watermark)
+        ev({ id: ulid(now()), source: "cell-sampler", agent: "cell:a@x.test", runner: null, kind: "cell_stats", ts: now() + 1000, payload: { jobs: 3, executions: { running: 0, queued: 0 }, workers: { cap: 4, busy: 0, idle: 3 }, recent: { done: 6, failed: 1, interrupted: 0 }, agentBusy: false } }),
+      ],
+    });
+    const r = await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const b = await r.json();
+    assert.deepEqual(Object.keys(b.cells).sort(), ["cell:a@x.test", "cell:b@x.test"]);
+    assert.equal(b.cells["cell:a@x.test"].jobs, 3); // freshest payload
+    assert.equal(b.cells["cell:a@x.test"].executions.running, 0);
+    assert.deepEqual(b.shortterm, { cells: 2, running: 0, queued: 1, workers_busy: 0, workers_idle: 3, workers_cap: 4 });
+    // Resident scopes stay clean: the two cell identities never count as agents.
+    assert.equal(b.agents_total, 1);
+    assert.equal(b.states.unknown + b.states.serving + b.states.resident, 1);
+  } finally {
+    obs.shutdown?.();
+    srv.close();
+  }
+});
+
+test("add-fleet-cell-views: empty window keeps segments present and zero", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const r = await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const b = await r.json();
+    assert.deepEqual(b.cells, {});
+    assert.deepEqual(b.shortterm, { cells: 0, running: 0, queued: 0, workers_busy: 0, workers_idle: 0, workers_cap: 0 });
+  } finally {
+    obs.shutdown?.();
+    srv.close();
+  }
+});
+
+test("add-fleet-cell-views: unknown kinds still refused (whitelist stays enumerated)", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const r = await post(base, { events: [ev({ kind: "cell_stat" })] }); // near-miss kind
+    assert.equal(r.status, 400);
+  } finally {
+    obs.shutdown?.();
+    srv.close();
+  }
+});

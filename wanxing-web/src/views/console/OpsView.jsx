@@ -93,6 +93,9 @@ export function OpsView() {
   const lag = board?.ingest_lag ?? [];
   const pending = board?.settled_pending ?? {};
   const wake = board?.wake_ms ?? {};
+  // 短期执行 (add-fleet-cell-views): cell 遥测段——board.cells 缺席=observer 未升级。
+  const cells = Object.entries(board?.cells ?? {});
+  const st = board?.shortterm ?? null;
 
   return (
     <div className="space-y-6">
@@ -115,6 +118,11 @@ export function OpsView() {
                 {k} <b>{Number(v)}</b>
               </span>
             ))}
+            {st && (
+              <span className="text-xs px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800">
+                短期在跑 <b>{st.running}</b> · 排队 <b>{st.queued}</b> · cells <b>{st.cells}</b>
+              </span>
+            )}
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-1.5">
@@ -132,7 +140,7 @@ export function OpsView() {
               {runners.length === 0 && <div className="text-slate-500">窗口内无 runner_stats</div>}
               {runners.map(([id, s]) => (
                 <div key={id} className="font-mono text-xs">
-                  {id} — child {s.children ?? "?"}/{s.agents ?? "?"} · {Math.round(s.budget_mb ?? 0)}/{s.budget_mb_limit ?? "?"}MB{Number(s.queued) > 0 ? ` · 排队 ${s.queued}` : ""}
+                  {id}{s.pod ? <span className="ml-1 px-1 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" title="pod 共宿模式（密度档）">pod</span> : null} — child {s.children ?? "?"}/{s.agents ?? "?"} · {Math.round(s.budget_mb ?? 0)}/{s.budget_mb_limit ?? "?"}MB{Number(s.queued) > 0 ? ` · 排队 ${s.queued}` : ""}
                 </div>
               ))}
               <div className="font-semibold pt-2">任务（24h）</div>
@@ -162,6 +170,29 @@ export function OpsView() {
       ) : (
         <div className="text-sm text-slate-500">观测面加载中…</div>
       )}
+
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-2" data-testid="cells-panel">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="font-semibold">短期执行 · cells <span className="text-xs font-normal text-slate-400">（30 分钟水位 · 只读代采）</span></div>
+          {st && (
+            <div className="text-xs text-slate-500">
+              cells <b>{st.cells}</b> · 在跑 <b>{st.running}</b> · 排队 <b>{st.queued}</b> · worker <b>{st.workers_busy}</b>busy/<b>{st.workers_idle}</b>idle/<b>{st.workers_cap}</b>cap
+            </div>
+          )}
+        </div>
+        {board?.cells === undefined && <div className="text-slate-500">暂无数据（observer 未升级）</div>}
+        {board?.cells !== undefined && cells.length === 0 && <div className="text-slate-500">窗口内无 cell 遥测（gateway 未配置 FLEET_INGEST_URL）</div>}
+        {cells.map(([id, c]) => (
+          <div key={id} className="font-mono text-xs flex flex-wrap gap-x-4 gap-y-1 items-baseline">
+            <span className="text-slate-400 truncate max-w-64" title={id}>{id}</span>
+            <span>在跑 <b>{c.executions?.running ?? 0}</b> · 排队 <b>{c.executions?.queued ?? 0}</b></span>
+            <span>worker {c.workers?.busy ?? 0}/{c.workers?.idle ?? 0}/{c.workers?.cap ?? 0}</span>
+            <span>jobs {c.jobs ?? 0}{c.agentBusy ? " · 主槽忙" : ""}</span>
+            <span className="text-slate-500">1h ✓{c.recent?.done ?? 0} ✗{c.recent?.failed ?? 0} ⏸{c.recent?.interrupted ?? 0}</span>
+            <span className="text-slate-400 ml-auto">{fmtAgo(Date.now() - Number(c.seen_at ?? 0))}</span>
+          </div>
+        ))}
+      </div>
 
       <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
         <h3 className="font-semibold">单 agent 时间线</h3>

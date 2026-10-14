@@ -180,12 +180,33 @@ export function createObserver({
       const e = statRows[i];
       if (e.runner && !runnerStats[e.runner]) runnerStats[e.runner] = { seen_at: e.ts, ...(e.payload ?? {}) };
     }
+    // Cell short-term telemetry (add-fleet-cell-views): freshest cell_stats per
+    // cell identity in the same 30-min window — snapshots, not an event stream,
+    // so "latest wins" is the whole aggregation. Deliberately NOT fed into the
+    // agents/states scopes above: those count resident serving agents only, and
+    // cell identities polluting them would blur the resident picture.
+    const cellRows = store.kindSince(["cell_stats"], t - 30 * 60_000);
+    const cells = {};
+    const shortterm = { cells: 0, running: 0, queued: 0, workers_busy: 0, workers_idle: 0, workers_cap: 0 };
+    for (let i = cellRows.length - 1; i >= 0; i--) {
+      const e = cellRows[i];
+      if (!e.agent || cells[e.agent]) continue;
+      cells[e.agent] = { seen_at: e.ts, ...(e.payload ?? {}) };
+      shortterm.cells += 1;
+      shortterm.running += Number(e.payload?.executions?.running) || 0;
+      shortterm.queued += Number(e.payload?.executions?.queued) || 0;
+      shortterm.workers_busy += Number(e.payload?.workers?.busy) || 0;
+      shortterm.workers_idle += Number(e.payload?.workers?.idle) || 0;
+      shortterm.workers_cap += Number(e.payload?.workers?.cap) || 0;
+    }
     res.json({
       window: "24h",
       states_window: "2h",
       agents_total: agents.size,
       states: dist,
       runners: runnerStats,
+      cells,
+      shortterm,
       turns: agg.turns,
       errors: agg.errors,
       minutes_billed: Number(agg.minutes_billed.toFixed(2)),
