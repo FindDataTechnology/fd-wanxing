@@ -41,6 +41,20 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
   const [alwNote, setAlwNote] = useState({});
   const [callerEmail, setCallerEmail] = useState({});
   const [callerNote, setCallerNote] = useState({});
+  // Deploy target (add-desktop-fleet-runner ③): cloud auto-placement, or one
+  // of the deployer's paired desktop seats (ownership is re-verified
+  // server-side; the seat grant rides the forward).
+  const [seats, setSeats] = useState(null);
+  const [target, setTarget] = useState("");
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await authFetch("/api/wanxing/v1/console/devices");
+        if (r.ok) setSeats((await r.json()).devices ?? []);
+        else setSeats([]);
+      } catch { setSeats([]); }
+    })();
+  }, []);
 
   const sourcePacks = source === "mine" ? packs : (dirPacks?.packs ?? []);
   const pack = (source === "mine" ? packs : (dirPacks?.packs ?? []))?.find((p) => p.id === packId) ?? null;
@@ -113,6 +127,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
       }
       const body = {
         ...(version ? { version: Number(version) } : {}),
+        ...(target ? { runnerId: target } : {}),
         billingKey,
         ...(notifyChannel ? { notifyChannel } : {}),
         agents: [...picked],
@@ -479,7 +494,28 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             </div>
           )}
           {err && <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="wizard-error">{err}</div>}
-          <div className="flex gap-2 items-center">
+          <div className="mb-3">
+          <label className="block text-xs font-medium text-slate-500 mb-1">部署目标</label>
+          <select
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            data-testid="deploy-target"
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+          >
+            <option value="">云端运行位（自动选址）</option>
+            {(seats ?? []).map((d) => (
+              <option key={d.runnerId} value={d.runnerId}>
+                桌面机位：{d.name || d.runnerId}（{d.runnerId}）
+              </option>
+            ))}
+          </select>
+          {target ? (
+            <p className="text-[11px] text-slate-400 mt-1">
+              桌面目标：agents 在该机位本地运行与计费；对外 A2A 服务待信箱协议（后续切片）开放。
+            </p>
+          ) : null}
+        </div>
+        <div className="flex gap-2 items-center">
             <button
               disabled={busy || !billingKey}
               onClick={submit}

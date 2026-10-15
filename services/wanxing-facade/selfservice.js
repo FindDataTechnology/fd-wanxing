@@ -8,6 +8,7 @@
 // The facet contract is consumed, never modified; the channel degrades
 // visibly when unconfigured — never a silent empty list.
 
+import { createHmac } from "node:crypto";
 import express from "express";
 
 export function createSelfServiceFace({
@@ -165,11 +166,34 @@ export function createSelfServiceFace({
     const version = Number.isInteger(body?.version) && body.version > 0 ? body.version : (detail.version ?? null);
     if (!version) return { status: 400, body: { error: "version could not be resolved" } };
 
+    // Deploy target (add-desktop-fleet-runner ③): a desktop- runnerId names
+    // one of the deployer's OWN paired seats — verified against the device
+    // registry here (the packs surface cannot know it) and authorized by a
+    // short-lived HMAC seat grant the packs surface re-verifies against the
+    // shared secret. Any other runnerId passes through untouched for the
+    // fleet-table check.
+    let seatGrant = null;
+    const runnerIdBody = typeof body?.runnerId === "string" && body.runnerId.trim() ? body.runnerId.trim() : null;
+    if (runnerIdBody && /^desktop-/i.test(runnerIdBody)) {
+      const seatSecret = String(env.WANXING_SEAT_DEPLOY_SECRET || "");
+      const owned = store.deviceListByEmail(who.email).some((d) => d.runner_id === runnerIdBody);
+      if (!owned) {
+        return { status: 403, body: { error: `runnerId '${runnerIdBody}' 不是你配对的桌面机位——先在设备面配对` } };
+      }
+      if (!seatSecret) {
+        return { status: 503, body: { error: "seat deploy secret not configured (WANXING_SEAT_DEPLOY_SECRET)" } };
+      }
+      const exp = String(Date.now() + 5 * 60_000);
+      seatGrant = `${exp}.${createHmac("sha256", seatSecret).update(`${runnerIdBody}|${who.email}|${exp}`).digest("hex")}`;
+    }
+
     // One key backs every DEPLOYED agent (the deployer's own account). The
     // mapping follows the selection — an absent `agents` maps over every
     // serving agent exactly as before (self-service v1 contract).
     const selected = Array.isArray(agentsBody) ? agentsBody.map(String) : serving.map((a) => a.id);
     const fwdBody = {
+      ...(runnerIdBody ? { runnerId: runnerIdBody } : {}),
+      ...(seatGrant ? { seatGrant } : {}),
       ...(agentsBody !== undefined ? { agents: selected } : {}),
       billingKeys: Object.fromEntries(selected.map((id) => [id, billingKey])),
       ...(notifyChannel ? { notifyChannel: Object.fromEntries(selected.map((id) => [id, notifyChannel])) } : {}),

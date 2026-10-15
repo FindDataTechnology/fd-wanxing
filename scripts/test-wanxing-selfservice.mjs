@@ -61,11 +61,11 @@ function stubFacet({ packs = [], deployReply = null } = {}) {
   };
 }
 
-function harness({ facet, channel = true, subsidyOpen = () => false, inService = [] } = {}) {
+function harness({ facet, channel = true, subsidyOpen = () => false, inService = [], extraEnv = {} } = {}) {
   const store = freshStore();
   const env = channel
-    ? { FACET_BASE_URL: facet.base, FACET_INTERNAL_TOKEN: "fit-secret", WANXING_WEB_BASE_URL: "https://wanxing.example" }
-    : {};
+    ? { FACET_BASE_URL: facet.base, FACET_INTERNAL_TOKEN: "fit-secret", WANXING_WEB_BASE_URL: "https://wanxing.example", ...extraEnv }
+    : { ...extraEnv };
   const face = createSelfServiceFace({
     store,
     logtoAuth: { configured: true, verifyIdToken: async (t) => (t === DEPLOYER_TOKEN ? { email: DEPLOYER } : null) },
@@ -476,5 +476,75 @@ test("catalog/packs: ops refused; a failed snapshot refuses rather than mislabel
     server.closeAllConnections?.();
     await facet2.close();
     store.close();
+  }
+});
+
+// ── Desktop seat deploy targets (add-desktop-fleet-runner ③) ────────────────
+// Ownership is checked against the device registry here; the forward carries
+// the facade-signed seat grant the packs surface re-verifies. Non-seat ids
+// pass through untouched for the fleet-table check.
+const SEAT_SECRET = "seat-secret";
+const mkHarness = async ({ facet, devices = [] }) => {
+  const h = await harness({ facet, extraEnv: { WANXING_SEAT_DEPLOY_SECRET: SEAT_SECRET } });
+  for (const d of devices) {
+    h.store.deviceUpsert({ runnerId: d, ownerEmail: DEPLOYER, name: d, tokenHash: `h-${d}`, now: 1 });
+  }
+  return h;
+};
+const { createHmac: hmacOf } = await import("node:crypto");
+
+test("seat target: owned seat forwards runnerId + a verifiable grant", async () => {
+  const facet = await stubFacet({ packs: [pack()] });
+  const h = await mkHarness({ facet, devices: ["desktop-ab12cd34"] });
+  try {
+    const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good", runnerId: "desktop-ab12cd34" }),
+    });
+    assert.equal(r.status, 200);
+    const fwd = facet.seen.find((s) => s.path === "/deploy").body;
+    assert.equal(fwd.runnerId, "desktop-ab12cd34");
+    const [exp, mac] = String(fwd.seatGrant).split(".");
+    assert.ok(Number(exp) > Date.now(), "grant is future-dated");
+    const expect = hmacOf("sha256", SEAT_SECRET).update(`desktop-ab12cd34|${DEPLOYER}|${exp}`).digest("hex");
+    assert.equal(mac, expect, "the grant is the facade's HMAC over seat|email|exp");
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
+test("seat target: a seat you do NOT own is refused before the forward", async () => {
+  const facet = await stubFacet({ packs: [pack()] });
+  const h = await mkHarness({ facet, devices: ["desktop-mine0001"] });
+  try {
+    const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good", runnerId: "desktop-someoneelses" }),
+    });
+    assert.equal(r.status, 403);
+    assert.match(r.body.error, /不是你配对/);
+    assert.equal(facet.seen.filter((s) => s.path === "/deploy").length, 0);
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});
+
+test("non-seat runnerId passes through untouched (fleet-table path)", async () => {
+  const facet = await stubFacet({ packs: [pack()] });
+  const h = await mkHarness({ facet });
+  try {
+    const r = await h.asDeployer("/api/wanxing/v1/console/my/packs/p1/deploy", {
+      method: "POST",
+      body: JSON.stringify({ billingKey: "sk-good", runnerId: "runner-b" }),
+    });
+    assert.equal(r.status, 200);
+    const fwd = facet.seen.find((s) => s.path === "/deploy").body;
+    assert.equal(fwd.runnerId, "runner-b");
+    assert.equal(fwd.seatGrant, undefined, "cloud targets carry no seat grant");
+  } finally {
+    await h.close();
+    await facet.close();
   }
 });
