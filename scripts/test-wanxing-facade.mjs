@@ -271,7 +271,7 @@ test("5.1 the usage board aggregates by caller and by agent", async () => {
 
 // ── Task 3.x: the A2A face against a listening app ───────────────────────────
 
-function faceHarness({ entry, upstream, sub = stubSub2api(), store = freshStore() } = {}) {
+function faceHarness({ entry, upstream, sub = stubSub2api(), store = freshStore(), seat = null } = {}) {
   const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1, rpmMax: 100 } });
   const upstreamCalls = [];
   const defaultEntry = {
@@ -290,8 +290,12 @@ function faceHarness({ entry, upstream, sub = stubSub2api(), store = freshStore(
     listDeployments: () => [{ slug: "packs-p1-heal", agentPath: "/packs/p1/heal" }],
     forwardHeaders: () => ({ "X-Authorization": "Bearer svc", Authorization: "Bearer backend" }),
     registryFetch: async () => new Response(JSON.stringify({ ...defaultEntry, ...(entry ?? {}) }), { headers: { "Content-Type": "application/json" } }),
-    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+    config: {
+      agentUrlFor: (p) => `https://registry.internal/agent${p}/`,
+      ...(seat ? { seatTargetFor: async () => seat.runnerId, mailboxEnqueue: (args) => seat.enqueue(args) } : {}),
+    },
     upstreamFetch: async (url, init) => {
+      if (seat) throw new Error("seat targets must never reach the upstream");
       upstreamCalls.push({ url, init });
       return upstream(init);
     },
@@ -1360,6 +1364,47 @@ test("fix-error-turn-billing: chat lane — same derivation, settler never invok
     assert.equal(rows[0].minutes, 0);
     assert.equal(h.sub.adjustCalls.length, 0, "subsidy not drawn");
     assert.equal(h.hostSettleCalls.length, 0, "host settler never invoked");
+  } finally {
+    await h.close();
+  }
+});
+
+// ── Desktop-seat interception (add-desktop-fleet-runner ④) ──────────────────
+// A desktop_seat entry reroutes message/send into the mailbox with a queued
+// ack (no upstream call at all), and message/stream is refused for seat
+// targets.
+test("3.x seat target: message/send deposits to the mailbox with a queued ack; stream refused", async () => {
+  const deposited = [];
+  const h = faceHarness({
+    entry: { metadata: { desktop_seat: true, runner_id: "desktop-seat0001" } },
+    seat: {
+      runnerId: "desktop-seat0001",
+      enqueue: (args) => {
+        deposited.push(args);
+        return "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+      },
+    },
+  });
+  try {
+    const send = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+      method: "POST",
+      headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+      body: JSON.stringify(sendBody("跑一次巡检")),
+    });
+    assert.equal(send.body.error, undefined, JSON.stringify(send.body));
+    assert.equal(send.body.result.async, true);
+    assert.equal(send.body.result.task_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert.equal(deposited.length, 1);
+    assert.equal(deposited[0].runnerId, "desktop-seat0001");
+    assert.equal(deposited[0].agentPath, "/packs/p1/heal");
+    assert.equal(deposited[0].text, "跑一次巡检");
+
+    const stream = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+      method: "POST",
+      headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+      body: JSON.stringify({ ...sendBody("x"), method: "message/stream" }),
+    });
+    assert.equal(stream.body.error.code, -32601);
   } finally {
     await h.close();
   }

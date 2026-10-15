@@ -22,6 +22,25 @@ export function createWanxingStore({ file }) {
   // seat — owner identity, display name, and the SHA-256 of the seat's fleet
   // token (the plaintext is handed out exactly once at redeem). Deleting the
   // row IS revocation: the ingest forward's lookup fails closed.
+  // Desktop seat mailbox (add-desktop-fleet-runner ④): queued turns for
+  // desktop-hosted agents. status: queued → delivered (pulled) → done
+  // (ok flag + result_text carry the outcome). Retention is lazy — the
+  // console reads recent tasks; old rows age out via mailboxSweep.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_mailbox (
+    id TEXT PRIMARY KEY,
+    runner_id TEXT NOT NULL,
+    agent_path TEXT NOT NULL,
+    text TEXT NOT NULL,
+    caller_email TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    ok INTEGER,
+    result_text TEXT,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER,
+    done_at INTEGER
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS wanxing_mailbox_runner_status ON wanxing_mailbox (runner_id, status)`);
+
   db.exec(`CREATE TABLE IF NOT EXISTS wanxing_devices (
     runner_id TEXT PRIMARY KEY,
     owner_email TEXT NOT NULL,
@@ -262,6 +281,37 @@ export function createWanxingStore({ file }) {
     deviceDelete(runnerId, ownerEmail) {
       const res = db.prepare(`DELETE FROM wanxing_devices WHERE runner_id = ? AND owner_email = ?`).run(String(runnerId), String(ownerEmail));
       return res.changes === 1;
+    },
+
+    // ── Seat mailbox (add-desktop-fleet-runner ④) ───────────────────────────
+    mailboxEnqueue({ id, runnerId, agentPath, text, callerEmail, now }) {
+      db.prepare(`
+        INSERT INTO wanxing_mailbox (id, runner_id, agent_path, text, caller_email, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?)
+      `).run(String(id), String(runnerId), String(agentPath), String(text), String(callerEmail || ""), now);
+    },
+    // Pull marks delivered in the same transaction that selects — a crash
+    // between select and update could redeliver; the runner-side turn is
+    // idempotent per task id (it settles by id), so at-least-once is safe.
+    mailboxPull(runnerId, now) {
+      const rows = db.prepare(`
+        SELECT id, agent_path, text FROM wanxing_mailbox
+        WHERE runner_id = ? AND status = 'queued' ORDER BY created_at LIMIT 32
+      `).all(String(runnerId));
+      if (rows.length === 0) return [];
+      db.prepare(`UPDATE wanxing_mailbox SET status = 'delivered', delivered_at = ? WHERE id IN (${rows.map(() => "?").join(",")})`)
+        .run(now, ...rows.map((r) => r.id));
+      return rows.map((r) => ({ taskId: r.id, agentPath: r.agent_path, text: r.text }));
+    },
+    mailboxSettle(id, runnerId, ok, text, now) {
+      const res = db.prepare(`
+        UPDATE wanxing_mailbox SET status = 'done', ok = ?, result_text = ?, done_at = ?
+        WHERE id = ? AND runner_id = ? AND status = 'delivered'
+      `).run(ok ? 1 : 0, text, now, String(id), String(runnerId));
+      return res.changes === 1;
+    },
+    mailboxGet(id) {
+      return db.prepare(`SELECT * FROM wanxing_mailbox WHERE id = ?`).get(String(id)) ?? null;
     },
 
     // ── Allowlist ───────────────────────────────────────────────────────────

@@ -412,6 +412,17 @@ export function createA2aFace({
         params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
       });
 
+      // Desktop-seat targets (add-desktop-fleet-runner ④): the turn is
+      // deposited in the seat's mailbox and answered with a queued-ack —
+      // the seat polls, runs, and settles the task asynchronously. Streaming
+      // is refused for seat targets: the seat is behind NAT and possibly
+      // cold-resident; a live SSE pipe is not a thing there.
+      const seatRunnerId = config.seatTargetFor ? await config.seatTargetFor(state.agentPath) : null;
+      if (seatRunnerId && method === "message/stream") {
+        finish("error");
+        return res.status(200).json(jsonRpcError(id, -32601, "desktop seat targets accept message/send only (async mailbox)"));
+      }
+
       try {
         if (method === "message/stream") {
           // Raw SSE passthrough: frames flow unmodified; the ledger closes
@@ -456,6 +467,23 @@ export function createA2aFace({
           slug,
           idemKey,
           exec: async () => {
+            if (seatRunnerId && config.mailboxEnqueue) {
+              const taskId = config.mailboxEnqueue({ runnerId: seatRunnerId, agentPath: state.agentPath, text, callerEmail: caller.email ?? "" });
+              return {
+                response: {
+                  jsonrpc: "2.0",
+                  id: id ?? null,
+                  result: {
+                    message_id: `m-${taskId}`,
+                    context_id: contextId,
+                    kind: "message",
+                    parts: [{ kind: "text", text: `任务已入桌面机位队列（taskId ${taskId}）——机位轮询执行，结果经任务查询端点取回` }],
+                    task_id: taskId,
+                    async: true,
+                  },
+                },
+              };
+            }
             const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
               method: "POST",
               headers: { ...forwardHeaders(), "Content-Type": "application/json" },

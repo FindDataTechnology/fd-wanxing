@@ -20,11 +20,13 @@ import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
 import { createDeviceFace } from "./devices.js";
+import { createMailboxFace, newTaskId } from "./mailbox.js";
 import { createMissionsFace } from "./missions.js";
 import { createSelfServiceFace } from "./selfservice.js";
 import { registerPrefsRoutes } from "./prefs.js";
 import { createCallbackDispatcher } from "./callbacks.js";
 import { createLogtoAuth } from "./logto-auth.js";
+import { createHash } from "node:crypto";
 import { createSub2apiClient } from "./lib/sub2api-admin.js";
 
 export function registerWanxingRoutes(app, {
@@ -211,6 +213,24 @@ export function registerWanxingRoutes(app, {
   });
   deviceFace.register(app);
 
+  // ── Desktop seat mailbox (add-desktop-fleet-runner ④) ─────────────────────
+  // Same per-seat credential the telemetry forward checks (the wxdesk- token
+  // handed out at pairing); the pull/result routes ride the fleet prefix so
+  // the seat's runner needs only the one base URL it already reports through.
+  const seatAuth = (req) => {
+    const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (!token.startsWith("wxdesk-")) return null;
+    const row = store.deviceByTokenHash(createHash("sha256").update(token).digest("hex"));
+    return row ? { runnerId: row.runner_id } : null;
+  };
+  const mailboxFace = createMailboxFace({
+    store,
+    gate: deviceGate,
+    seatAuth,
+    log: (m) => console.log(`[wanxing:mailbox] ${m}`),
+  });
+  mailboxFace.register(app);
+
   // Caller-preferences face (add-caller-preferences): caller-key authenticated
   // (the same billing gate the A2A door runs), and the completion-callback
   // dispatcher with its bounded retry ladder.
@@ -246,6 +266,25 @@ export function registerWanxingRoutes(app, {
       // Runtime route through the registry proxy (ADR-0004's distribution
       // plane) — the facade never addresses runner origins directly.
       agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
+      // Desktop-seat targets (add-desktop-fleet-runner ④): resolves the
+      // seat's runner id when the entry is marked desktop_seat — the A2A
+      // face then deposits the turn in the seat's mailbox instead of
+      // proxying to an origin that is unreachable by design.
+      seatTargetFor: async (agentPath) => {
+        try {
+          const r = await doFetch(`/api/agents${agentPath}`);
+          if (!r.ok) return null;
+          const entry = await r.json();
+          return entry?.metadata?.desktop_seat === true && entry?.metadata?.runner_id ? entry.metadata.runner_id : null;
+        } catch {
+          return null; // registry hiccup → the normal proxy path (which will fail loudly)
+        }
+      },
+      mailboxEnqueue: ({ runnerId, agentPath, text, callerEmail }) => {
+        const taskId = newTaskId();
+        store.mailboxEnqueue({ id: taskId, runnerId, agentPath, text, callerEmail, now: Date.now() });
+        return taskId;
+      },
     },
     ...(fetchImpl ? { upstreamFetch: fetchImpl } : {}),
     // Catalog signals (add-catalog-facets): the facet packs browse (public
