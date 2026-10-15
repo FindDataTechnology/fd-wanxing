@@ -19,6 +19,7 @@ import { createChatFace } from "./chat.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
 import { registerConsoleRoutes } from "./console.js";
+import { createDeviceFace } from "./devices.js";
 import { createMissionsFace } from "./missions.js";
 import { createSelfServiceFace } from "./selfservice.js";
 import { registerPrefsRoutes } from "./prefs.js";
@@ -169,6 +170,46 @@ export function registerWanxingRoutes(app, {
     })(),
     log: (m) => console.log(`[wanxing:console] ${m}`),
   });
+
+  // ── Desktop seat pairing (add-desktop-fleet-runner ③) ─────────────────────
+  // Same dual gate as the console face; the ingest forward builds its own
+  // observer POST (the console observerFetch is GET-shaped).
+  const deviceGate = async (req, res) => {
+    const t = consoleToken();
+    if (t && req.headers.authorization === `Bearer ${t}`) return true;
+    const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const ident = logtoAuth ? await logtoAuth.verifyIdToken(token).catch(() => null) : null;
+    if (ident) {
+      req.consoleIdentity = ident;
+      return true;
+    }
+    res.status(401).json({ error: "console credential or verified identity required" });
+    return false;
+  };
+  const observerPost = (() => {
+    const observerUrl = () => (env.FLEET_OBSERVER_URL || "").replace(/\/+$/, "");
+    const observerToken = () => env.FLEET_OBSERVER_TOKEN || "";
+    return async (p, init = {}) => {
+      const base = observerUrl();
+      const tok = observerToken();
+      if (!base || !tok) throw Object.assign(new Error("observer url/token not configured"), { status: 503 });
+      return (fetchImpl ?? fetch)(`${base}${p}`, {
+        ...init,
+        headers: {
+          ...(init.headers ?? {}),
+          Authorization: `Bearer ${tok}`,
+        },
+      });
+    };
+  })();
+  const deviceFace = createDeviceFace({
+    store,
+    gate: deviceGate,
+    observerCall: observerPost,
+    publicBase: () => (env.WANXING_PUBLIC_BASE_URL || "").replace(/\/+$/, ""),
+    log: (m) => console.log(`[wanxing:devices] ${m}`),
+  });
+  deviceFace.register(app);
 
   // Caller-preferences face (add-caller-preferences): caller-key authenticated
   // (the same billing gate the A2A door runs), and the completion-callback

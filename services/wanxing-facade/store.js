@@ -18,6 +18,19 @@ export function createWanxingStore({ file }) {
   const db = new Database(file);
   db.pragma("journal_mode = WAL");
 
+  // Desktop seat registry (add-desktop-fleet-runner ③): one row per paired
+  // seat — owner identity, display name, and the SHA-256 of the seat's fleet
+  // token (the plaintext is handed out exactly once at redeem). Deleting the
+  // row IS revocation: the ingest forward's lookup fails closed.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_devices (
+    runner_id TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    name TEXT,
+    token_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+
   // Private-agent caller allowlist: sub2api user ids per agent slug. The
   // deployer manages membership on the pack deploy surface; admission checks
   // membership for private agents only (public agents admit any solvent key).
@@ -223,6 +236,32 @@ export function createWanxingStore({ file }) {
   return {
     close() {
       db.close();
+    },
+
+    // ── Desktop seats (add-desktop-fleet-runner ③) ──────────────────────────
+    deviceUpsert({ runnerId, ownerEmail, name, tokenHash, now }) {
+      db.prepare(`
+        INSERT INTO wanxing_devices (runner_id, owner_email, name, token_hash, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(runner_id) DO UPDATE SET
+          owner_email = excluded.owner_email,
+          name = COALESCE(excluded.name, wanxing_devices.name),
+          token_hash = excluded.token_hash,
+          updated_at = excluded.updated_at
+      `).run(String(runnerId), String(ownerEmail), name ?? null, String(tokenHash), now, now);
+    },
+    deviceByTokenHash(tokenHash) {
+      return db.prepare(`SELECT runner_id, owner_email FROM wanxing_devices WHERE token_hash = ?`).get(String(tokenHash)) ?? null;
+    },
+    deviceListByEmail(email) {
+      return db.prepare(`
+        SELECT runner_id, name, created_at FROM wanxing_devices
+        WHERE owner_email = ? ORDER BY created_at DESC
+      `).all(String(email));
+    },
+    deviceDelete(runnerId, ownerEmail) {
+      const res = db.prepare(`DELETE FROM wanxing_devices WHERE runner_id = ? AND owner_email = ?`).run(String(runnerId), String(ownerEmail));
+      return res.changes === 1;
     },
 
     // ── Allowlist ───────────────────────────────────────────────────────────
