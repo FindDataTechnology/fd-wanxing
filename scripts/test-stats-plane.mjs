@@ -207,9 +207,10 @@ test("sub2api pull: follows pagination and honors the envelope code", async () =
     const fakeFetch = async (url) => {
       urls.push(url);
       const p = new URL(url).searchParams.get("page");
-      if (p === "1") return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 1 }], pages: 3 } }) };
-      if (p === "2") return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 2 }], pages: 3 } }) };
-      return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 4 }], pages: 3 } }) };
+      // Full-size pages so paging continues; the 3rd page is short and ends it.
+      const n = p === "3" ? 1 : 200;
+      const tok = p === "1" ? 1 : p === "2" ? 2 : 4;
+      return { ok: true, json: async () => ({ code: 0, data: { items: Array.from({ length: n }, () => ({ api_key_id: 1, input_tokens: tok })), pages: 3 } }) };
     };
     const obs = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: fakeFetch, sub2api: { baseUrl: "https://s2a", token: "adm" }, log: () => {} });
     await obs.sub2apiPull();
@@ -223,9 +224,33 @@ test("sub2api pull: follows pagination and honors the envelope code", async () =
     obs.close(); obs2.close();
     assert.ok(urls.some((u) => u.includes("page=2")), "second page must be fetched");
     assert.ok(urls.some((u) => u.includes("page=3")), "third page must be fetched");
-    assert.equal(rows[0].tokens_in, 7, "all pages must be summed");
+    assert.equal(rows[0].tokens_in, 200 * 1 + 200 * 2 + 1 * 4, "all pages must be summed");
     // The bad-envelope run wrote nothing new for its own days.
     assert.ok(after.length <= before + rows.length, "nonzero code must not record rows");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Measured 2026-10-19: /api/v1/admin/usage reports `total`/`pages` RELATIVE to
+// the requested page (p1→201, p2→401, p3→601), so trusting `pages` truncates
+// the day. The only sound stop is a short page.
+test("sub2api pull: keeps paging past a relative `pages` field", async () => {
+  const dir = tmpData();
+  try {
+    const pagesSeen = [];
+    // Six full pages then a short one: real volume exceeds what `pages` claims.
+    const fakeFetch = async (url) => {
+      const p = Number(new URL(url).searchParams.get("page"));
+      pagesSeen.push(p);
+      const n = p <= 6 ? 200 : 3;
+      return { ok: true, json: async () => ({ code: 0, data: { items: Array.from({ length: n }, () => ({ api_key_id: 7, input_tokens: 1, output_tokens: 1, total_cost: 0.01 })), total: p * 200 + 1, pages: p + 1 } }) };
+    };
+    const obs = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: fakeFetch, sub2api: { baseUrl: "https://s2a", token: "adm" }, log: () => {} });
+    await obs.sub2apiPull();
+    const rows = obs.statsStore.sub2apiDaily(0);
+    obs.close();
+    assert.ok(pagesSeen.includes(7), "must fetch the short page that ends the day");
+    assert.equal(rows[0].requests, 1203, "6×200 + 3 requests must all accrue");
+    assert.equal(rows[0].tokens_in, 1203);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

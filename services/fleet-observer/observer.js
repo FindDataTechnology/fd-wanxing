@@ -215,12 +215,18 @@ export function createObserver({
     // (day, bucket, kind) with a plain SET — so rows must be aggregated here
     // before writing, or each bucket would keep only its last request.
     const agg = new Map();
+    let seen = 0;
     for (let i = 0; i < days; i++) {
       const day = new Date(now() - i * 86_400_000).toISOString().slice(0, 10);
       let page = 1;
-      let pages = 1;
-      do {
-        const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}&page=${page}&page_size=200`;
+      // Measured 2026-10-19: this endpoint reports `total`/`pages` RELATIVE to
+      // the requested page (page 1 → total 201, page 2 → 401, page 3 → 601), so
+      // neither field is a real total. The only sound stop condition is an
+      // empty/short page; MAX_PAGES is a safety valve, not the window.
+      const PAGE_SIZE = 200;
+      const MAX_PAGES = 500; // 100k requests/day ceiling — far above today's volume
+      for (; page <= MAX_PAGES; page++) {
+        const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}&page=${page}&page_size=${PAGE_SIZE}`;
         let resp;
         try {
           // sub2api authenticates /api/v1/admin/* with x-api-key (not Bearer) —
@@ -237,7 +243,7 @@ export function createObserver({
         }
         const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : Array.isArray(body?.items) ? body.items : null;
         if (!items) { say(`sub2api pull unknown shape (${day}) — mapper needs a look`); return; }
-        pages = Number(body?.data?.pages ?? body?.pages) || 1;
+        seen += items.length;
         for (const it of items) {
           const r = mapSub2apiRow(it, day);
           const k = `${r.day}|${r.bucket}|${r.kind}`;
@@ -249,14 +255,19 @@ export function createObserver({
           const c = Number(r.cost);
           if (Number.isFinite(c)) prev.cost = String((Number(prev.cost) || 0) + c);
         }
-        page += 1;
-      } while (page <= pages && page <= 50); // hard cap: a runaway `pages` can't loop forever
+        if (items.length < PAGE_SIZE) break; // last page
+      }
+      if (page > MAX_PAGES) say(`sub2api pull hit the ${MAX_PAGES}-page ceiling (${day}) — daily volume exceeded the window`);
     }
     const rows = [...agg.values()];
-    if (rows.length) { statsStore.recordSub2apiDay(rows, now()); say(`sub2api pull ok: ${rows.length} bucket(s)`); }
+    if (rows.length) { statsStore.recordSub2apiDay(rows, now()); say(`sub2api pull ok: ${rows.length} bucket(s), ${seen} request row(s)`); }
   };
   const sub2apiTimer = setInterval(() => { sub2apiPull().catch((e) => say(`sub2api pull error: ${e.message}`)); }, 3600_000);
   sub2apiTimer.unref?.();
+  // Pull once at boot: an hourly-only schedule leaves the billed caliber empty
+  // for up to an hour after every rollover (observed 2026-10-19).
+  const bootPull = setTimeout(() => { sub2apiPull().catch((e) => say(`sub2api pull error: ${e.message}`)); }, 5_000);
+  bootPull.unref?.();
   let booted = false;
 
   // ── Observation API ───────────────────────────────────────────────────────
@@ -412,6 +423,7 @@ export function createObserver({
     close() {
       if (rollupTimer) clearInterval(rollupTimer);
       if (sub2apiTimer) clearInterval(sub2apiTimer);
+      if (bootPull) clearTimeout(bootPull);
       bookkeeper?.stop();
       store.close();
       statsStore.close();
