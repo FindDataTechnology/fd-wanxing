@@ -4,3 +4,6 @@ dist/
 *.db-shm
 *.db-wal
 .env
+
+# macOS Finder 元数据（不是源码，会污染工作区）
+.DS_Store
