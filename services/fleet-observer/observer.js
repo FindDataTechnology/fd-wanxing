@@ -224,7 +224,12 @@ export function createObserver({
       // neither field is a real total. The only sound stop condition is an
       // empty/short page; MAX_PAGES is a safety valve, not the window.
       const PAGE_SIZE = 200;
-      const MAX_PAGES = 500; // 100k requests/day ceiling — far above today's volume
+      // Measured 2026-10-19: production runs ~119k requests/day = 597 pages at
+      // this page size, and the volume keeps growing. The cap is a safety valve
+      // against a malformed `items` loop, not the expected window — a full
+      // 2-day sweep is ~1.2k requests (~3 min) once an hour, which the local
+      // admin API absorbs comfortably.
+      const MAX_PAGES = 2000; // 400k requests/day ceiling
       for (; page <= MAX_PAGES; page++) {
         const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}&page=${page}&page_size=${PAGE_SIZE}`;
         let resp;
@@ -258,6 +263,7 @@ export function createObserver({
         if (items.length < PAGE_SIZE) break; // last page
       }
       if (page > MAX_PAGES) say(`sub2api pull hit the ${MAX_PAGES}-page ceiling (${day}) — daily volume exceeded the window`);
+      else say(`sub2api pull ${day}: ${page - 1} page(s)`);
     }
     const rows = [...agg.values()];
     if (rows.length) { statsStore.recordSub2apiDay(rows, now()); say(`sub2api pull ok: ${rows.length} bucket(s), ${seen} request row(s)`); }
