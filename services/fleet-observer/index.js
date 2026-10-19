@@ -19,8 +19,11 @@ const observer = createObserver({
   // Stats plane (add-stats-plane-v1): collector token env-provision (hash at
   // boot), sub2api read-only pull credentials.
   collectorToken: process.env.FLEET_STATS_COLLECTOR_TOKEN || "",
-  sub2api: (process.env.FLEET_STATS_SUB2API_BASE && process.env.FLEET_STATS_SUB2API_TOKEN)
-    ? { baseUrl: process.env.FLEET_STATS_SUB2API_BASE, token: process.env.FLEET_STATS_SUB2API_TOKEN }
+  // The deployment manifest names the pair …_BASE_URL / …_TOKEN (matching
+  // wanxing-facade's SUB2API_BASE_URL); BASE_URL is canonical, bare BASE is
+  // the historical alias.
+  sub2api: ((process.env.FLEET_STATS_SUB2API_BASE_URL || process.env.FLEET_STATS_SUB2API_BASE) && process.env.FLEET_STATS_SUB2API_TOKEN)
+    ? { baseUrl: process.env.FLEET_STATS_SUB2API_BASE_URL || process.env.FLEET_STATS_SUB2API_BASE, token: process.env.FLEET_STATS_SUB2API_TOKEN }
     : null,
 });
 

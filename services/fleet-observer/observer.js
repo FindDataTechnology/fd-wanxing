@@ -211,24 +211,49 @@ export function createObserver({
     if (!sub2api?.baseUrl || !sub2api?.token) return;
     const fetchFn = fetchImpl ?? fetch;
     const days = 2; // re-pull the sliding window (idempotent upsert)
-    const rows = [];
+    // The endpoint is one row PER REQUEST, and the writer upserts on
+    // (day, bucket, kind) with a plain SET — so rows must be aggregated here
+    // before writing, or each bucket would keep only its last request.
+    const agg = new Map();
     for (let i = 0; i < days; i++) {
       const day = new Date(now() - i * 86_400_000).toISOString().slice(0, 10);
-      const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}`;
-      let resp;
-      try {
-        resp = await fetchFn(url, { headers: { authorization: `Bearer ${sub2api.token}` } });
-      } catch (e) {
-        say(`sub2api pull failed (${day}): ${e.message}`); return;
-      }
-      if (!resp.ok) { say(`sub2api pull ${resp.status} (${day}) — staying stale`); return; }
-      let body;
-      try { body = await resp.json(); } catch { say(`sub2api pull bad json (${day})`); return; }
-      const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : Array.isArray(body?.items) ? body.items : null;
-      if (!items) { say(`sub2api pull unknown shape (${day}) — mapper needs a look`); return; }
-      for (const it of items) rows.push(mapSub2apiRow(it, day));
+      let page = 1;
+      let pages = 1;
+      do {
+        const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}&page=${page}&page_size=200`;
+        let resp;
+        try {
+          // sub2api authenticates /api/v1/admin/* with x-api-key (not Bearer) —
+          // see wanxing-facade/lib/sub2api-admin.js; Bearer returns 401 INVALID_TOKEN.
+          resp = await fetchFn(url, { headers: { "x-api-key": sub2api.token } });
+        } catch (e) {
+          say(`sub2api pull failed (${day}): ${e.message}`); return;
+        }
+        if (!resp.ok) { say(`sub2api pull ${resp.status} (${day}) — staying stale`); return; }
+        let body;
+        try { body = await resp.json(); } catch { say(`sub2api pull bad json (${day})`); return; }
+        if (body && typeof body.code === "number" && body.code !== 0) {
+          say(`sub2api pull code ${body.code} (${day}): ${body.message ?? ""} — staying stale`); return;
+        }
+        const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : Array.isArray(body?.items) ? body.items : null;
+        if (!items) { say(`sub2api pull unknown shape (${day}) — mapper needs a look`); return; }
+        pages = Number(body?.data?.pages ?? body?.pages) || 1;
+        for (const it of items) {
+          const r = mapSub2apiRow(it, day);
+          const k = `${r.day}|${r.bucket}|${r.kind}`;
+          const prev = agg.get(k);
+          if (!prev) { agg.set(k, { ...r }); continue; }
+          prev.tokens_in += r.tokens_in;
+          prev.tokens_out += r.tokens_out;
+          prev.requests += r.requests;
+          const c = Number(r.cost);
+          if (Number.isFinite(c)) prev.cost = String((Number(prev.cost) || 0) + c);
+        }
+        page += 1;
+      } while (page <= pages && page <= 50); // hard cap: a runaway `pages` can't loop forever
     }
-    if (rows.length) statsStore.recordSub2apiDay(rows, now());
+    const rows = [...agg.values()];
+    if (rows.length) { statsStore.recordSub2apiDay(rows, now()); say(`sub2api pull ok: ${rows.length} bucket(s)`); }
   };
   const sub2apiTimer = setInterval(() => { sub2apiPull().catch((e) => say(`sub2api pull error: ${e.message}`)); }, 3600_000);
   sub2apiTimer.unref?.();
@@ -397,15 +422,23 @@ export function createObserver({
 
 // Tolerant row mapper for the sub2api admin usage endpoint. Field names vary
 // across shapes; unknown-but-200 shapes are logged upstream and skipped here.
+// Bucketed by api_key_id (stable billing identity) with the model appended, so
+// a day's rows stay attributable; per-request rows collapse via the PK upsert.
+// Cost is sub2api's own `total_cost` (billed caliber) — never recomputed here.
 function mapSub2apiRow(it, day) {
+  const key = it.api_key_id ?? it.key ?? it.key_label ?? it.user_id ?? "";
+  const model = it.model ? String(it.model) : "";
   return {
     day,
-    bucket: String(it.bucket ?? it.key ?? it.key_label ?? it.api_key_id ?? it.model ?? ""),
+    bucket: model ? `${key}:${model}` : String(key),
     kind: String(it.kind ?? "usage"),
     tokens_in: Number(it.input_tokens ?? it.prompt_tokens ?? it.tokens_in) || 0,
     tokens_out: Number(it.output_tokens ?? it.completion_tokens ?? it.tokens_out) || 0,
-    requests: Number(it.requests ?? it.count ?? it.call_count) || 0,
-    cost: it.cost ?? it.amount ?? it.quota ?? null,
-    currency: it.currency ?? (it.cost != null || it.amount != null ? "USD" : null),
+    // The admin usage endpoint is one row per request; there is no request
+    // counter field, so each row contributes 1 (summed by the upsert below is
+    // a plain set — the caller aggregates before writing).
+    requests: Number(it.requests ?? it.count ?? it.call_count ?? 1) || 0,
+    cost: it.total_cost ?? it.actual_cost ?? it.cost ?? it.amount ?? it.quota ?? null,
+    currency: it.currency ?? (it.total_cost != null || it.actual_cost != null || it.cost != null || it.amount != null ? "USD" : null),
   };
 }

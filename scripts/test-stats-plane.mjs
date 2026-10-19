@@ -155,6 +155,80 @@ test("sub2api pull: ok maps rows, failure leaves stale", async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Regression guards for the three defects found in production re-verification
+// (2026-10-19): Bearer instead of x-api-key, per-request rows overwriting each
+// other in the upsert, and a single-page pull silently truncating a day.
+
+test("sub2api pull: authenticates with x-api-key, not Bearer", async () => {
+  const dir = tmpData();
+  try {
+    const seen = [];
+    const fakeFetch = async (_url, init) => {
+      seen.push(init?.headers ?? {});
+      return { ok: true, json: async () => ({ code: 0, data: { items: [], pages: 1 } }) };
+    };
+    const obs = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: fakeFetch, sub2api: { baseUrl: "https://s2a", token: "admin-key" }, log: () => {} });
+    await obs.sub2apiPull();
+    obs.close();
+    assert.ok(seen.length > 0, "pull must issue at least one request");
+    for (const h of seen) {
+      assert.equal(h["x-api-key"], "admin-key", "admin plane needs the x-api-key header");
+      assert.equal(h.authorization, undefined, "Bearer is rejected by /api/v1/admin/*");
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sub2api pull: aggregates per-request rows instead of last-write-wins", async () => {
+  const dir = tmpData();
+  try {
+    // Real shape: one row per request, no `requests` counter, cost per row.
+    const page = (n) => ({ code: 0, data: { items: Array.from({ length: n }, (_, i) => ({
+      api_key_id: 31, model: "deepseek-v4.1-flash", input_tokens: 100, output_tokens: 20, total_cost: 0.5,
+    })), pages: 1 } });
+    const fakeFetch = async () => ({ ok: true, json: async () => page(3) });
+    const obs = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: fakeFetch, sub2api: { baseUrl: "https://s2a", token: "adm" }, log: () => {} });
+    await obs.sub2apiPull();
+    const rows = obs.statsStore.sub2apiDaily(0);
+    obs.close();
+    assert.ok(rows.length > 0);
+    const r = rows[0];
+    assert.equal(r.tokens_in, 300, "3 requests × 100 must accrue, not overwrite");
+    assert.equal(r.tokens_out, 60);
+    assert.equal(r.requests, 3, "each per-request row contributes 1");
+    assert.equal(Number(r.cost).toFixed(2), "1.50", "costs must sum, not last-write-wins");
+    assert.ok(String(r.bucket).includes("31"), "bucket keeps the billing identity");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sub2api pull: follows pagination and honors the envelope code", async () => {
+  const dir = tmpData();
+  try {
+    const urls = [];
+    const fakeFetch = async (url) => {
+      urls.push(url);
+      const p = new URL(url).searchParams.get("page");
+      if (p === "1") return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 1 }], pages: 3 } }) };
+      if (p === "2") return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 2 }], pages: 3 } }) };
+      return { ok: true, json: async () => ({ code: 0, data: { items: [{ api_key_id: 1, input_tokens: 4 }], pages: 3 } }) };
+    };
+    const obs = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: fakeFetch, sub2api: { baseUrl: "https://s2a", token: "adm" }, log: () => {} });
+    await obs.sub2apiPull();
+    const rows = obs.statsStore.sub2apiDaily(0);
+    // Failure path: nonzero envelope code must not be stored as success.
+    const badFetch = async () => ({ ok: true, json: async () => ({ code: 401, message: "Invalid token" }) });
+    const obs2 = createObserver({ dataRoot: dir, ingestToken: "tok", fetchImpl: badFetch, sub2api: { baseUrl: "https://s2a", token: "adm" }, log: () => {} });
+    const before = obs2.statsStore.sub2apiDaily(0).length;
+    await obs2.sub2apiPull();
+    const after = obs2.statsStore.sub2apiDaily(0);
+    obs.close(); obs2.close();
+    assert.ok(urls.some((u) => u.includes("page=2")), "second page must be fetched");
+    assert.ok(urls.some((u) => u.includes("page=3")), "third page must be fetched");
+    assert.equal(rows[0].tokens_in, 7, "all pages must be summed");
+    // The bad-envelope run wrote nothing new for its own days.
+    assert.ok(after.length <= before + rows.length, "nonzero code must not record rows");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("collector: incremental parse, no double-post, offset only advances on delivery", async () => {
   const dir = tmpData();
   try {
