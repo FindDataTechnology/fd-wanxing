@@ -25,5 +25,5 @@
 
 - [x] 5.1 出片（纪律门：先 `fd-build-channel` 判路；observer 与 wanxing-web 两镜像），verify：relay OK + skopeo digest + 台账记录
 - [x] 5.2 部署滚版（fd-infra-deploy 两清单 tag bump → ArgoCD）+ sub2api 凭据 secret，verify：rollout 绿 + stats API 出真数（fleet 口径对得上 board 回合计数）
-- [x] 5.3 验收四判据（①✓ ②◐首拉待 24h 复验 ③✓+24h 浸润复验 ④✓浏览器眼见待用户复验——reports/2026-10-19-prod-acceptance.md）：①fleet 口径 API 真数 ②sub2api 口径聚合一致 ③collector 本机 24h 后 local 口径出数 ④console 三口径分列浏览器眼见，verify：验收记录入本 change `reports/`
+- [x] 5.3 验收四判据（①✓ ②✓ ③✓ ④✓部署侧/浏览器眼见待用户——reports/2026-10-19-prod-acceptance.md 含复验追加）：①fleet 口径 API 真数 ②sub2api 口径聚合一致（复验发现 env 名/认证头/逐请求覆盖/分页假总量四缺陷，全修后生产实证 310 桶·238,786 请求·billed 口径出数）③collector 本机 24h 后 local 口径出数（launchd 曾误卸已重载）④console 三口径分列（门面代理 3080 实测 200），verify：验收记录入本 change `reports/`
 - [x] 5.4 台账与底稿收尾（registry-maintenance 记录 + explore 底稿切片③完结标记 + 记忆更新），verify：文档链接互达
