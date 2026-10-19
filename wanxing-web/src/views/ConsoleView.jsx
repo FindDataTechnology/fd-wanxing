@@ -10,11 +10,13 @@ import { FleetView } from "./console/FleetView.jsx";
 import { MissionsView } from "./console/MissionsView.jsx";
 import { OpsView } from "./console/OpsView.jsx";
 import { DevicesView } from "./console/DevicesView.jsx";
+import { StatsView } from "./console/StatsView.jsx";
 
 const TABS = [
   ["fleet", "我的舰队"],
   ["missions", "我的任务"],
   ["devices", "桌面机位"],
+  ["stats", "消耗"],
   ["ops", "运维面"],
 ];
 
@@ -27,7 +29,7 @@ export function ConsoleView({ focusSlug } = {}) {
   // Reserved sub-routes switch tabs; anything else is a deployment slug deep
   // link — the fleet tab opens with that slug's config panel.
   useEffect(() => {
-    if (focusSlug === "missions" || focusSlug === "ops" || focusSlug === "devices") setTab(focusSlug);
+    if (focusSlug === "missions" || focusSlug === "ops" || focusSlug === "devices" || focusSlug === "stats") setTab(focusSlug);
     else if (focusSlug) setTab("fleet");
   }, [focusSlug]);
 
@@ -70,7 +72,7 @@ export function ConsoleView({ focusSlug } = {}) {
     );
   }
 
-  const fleetSlug = tab === "fleet" && focusSlug && focusSlug !== "missions" && focusSlug !== "ops" && focusSlug !== "devices" ? focusSlug : null;
+  const fleetSlug = tab === "fleet" && focusSlug && focusSlug !== "missions" && focusSlug !== "ops" && focusSlug !== "devices" && focusSlug !== "stats" ? focusSlug : null;
 
   return (
     <div className="space-y-5" data-testid="console-shell">
@@ -95,6 +97,7 @@ export function ConsoleView({ focusSlug } = {}) {
       </div>
       {tab === "fleet" && <FleetView focusSlug={fleetSlug} />}
       {tab === "missions" && <MissionsView />}
+      {tab === "stats" && <StatsView />}
       {tab === "devices" && <DevicesView />}
       {tab === "ops" && <OpsView />}
     </div>

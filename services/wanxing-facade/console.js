@@ -155,6 +155,14 @@ export function registerConsoleRoutes(app, {
       const q = new URL(req.originalUrl, "http://local").search;
       return `/api/fleet/v1/agents/${encodeURIComponent(req.params.slug)}/timeline${q}`;
     }));
+    // Stats plane (add-stats-plane-v1): same console gate, same credential
+    // swap; caliber labels pass through verbatim — the console never merges.
+    for (const p of ["overview", "by-agent", "by-model", "daily"]) {
+      app.get(`/api/fleet/v1/stats/${p}`, fleetForward((req) => {
+        const q = new URL(req.originalUrl, "http://local").search;
+        return `/api/fleet/v1/stats/${p}${q}`;
+      }));
+    }
   }
 
   app.get("/api/wanxing/v1/console/deployments", async (req, res) => {
