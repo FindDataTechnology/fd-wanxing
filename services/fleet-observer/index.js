@@ -16,6 +16,12 @@ const observer = createObserver({
   rollupIntervalMs: num(process.env.FLEET_ROLLUP_SECS, 60) * 1000,
   retentionMs: num(process.env.FLEET_RETENTION_DAYS, 14) * 24 * 3600_000,
   log: (m) => console.log(`[fleet-observer] ${m}`),
+  // Stats plane (add-stats-plane-v1): collector token env-provision (hash at
+  // boot), sub2api read-only pull credentials.
+  collectorToken: process.env.FLEET_STATS_COLLECTOR_TOKEN || "",
+  sub2api: (process.env.FLEET_STATS_SUB2API_BASE && process.env.FLEET_STATS_SUB2API_TOKEN)
+    ? { baseUrl: process.env.FLEET_STATS_SUB2API_BASE, token: process.env.FLEET_STATS_SUB2API_TOKEN }
+    : null,
 });
 
 const port = num(process.env.FLEET_PORT, 3200);

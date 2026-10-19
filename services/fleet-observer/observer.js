@@ -10,6 +10,7 @@
 import express from "express";
 import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS } from "./store.js";
 import { createBookkeeper } from "./bookkeeper.js";
+import { createStatsStore, packOfAgent } from "./stats-store.js";
 import { ulid } from "./ulid.js";
 
 const hourKeyOf = (tsMs) => new Date(tsMs).toISOString().slice(0, 13) + ":00";
@@ -25,9 +26,22 @@ export function createObserver({
   rollupIntervalMs = 60_000,
   retentionMs = 14 * 24 * 3600_000,
   log = null,
+  // Stats plane (add-stats-plane-v1): sister DB, optional sub2api pull, and an
+  // env-provisioned collector token (hash lands in stats.db at boot; rotating
+  // the env + rolling re-provisions).
+  stats = null,
+  sub2api = null,
+  collectorToken = "",
 }) {
   const store = createEventStore({ file: `${dataRoot}/fleet-events.db` });
   const say = log ?? (() => {});
+  const statsStore = stats
+    ? stats
+    : createStatsStore({ file: `${dataRoot}/stats.db` });
+  if (collectorToken) {
+    try { statsStore.provisionCollectorToken(collectorToken, "env-provisioned"); } catch { /* already present */ }
+  }
+  let statsGaps = 0;
   const requireToken = (req, res) => {
     if (!ingestToken || req.headers.authorization !== `Bearer ${ingestToken}`) {
       res.status(401).json({ error: "fleet service credential required" });
@@ -62,7 +76,103 @@ export function createObserver({
       }
     }
     const inserted = store.insertMany(events, now());
+    // Stats double-write (add-stats-plane-v1 D2): observation stays the SLA;
+    // a stats failure counts a gap and never blocks the ingest response.
+    try {
+      const usageRows = [];
+      for (const e of events) {
+        if (e.kind !== "turn_ended" || !Number.isFinite(Number(e.payload?.tokens))) continue;
+        usageRows.push({
+          id: `evt:${e.id}`,
+          ts: Number(e.ts),
+          agent: e.agent,
+          pack: packOfAgent(e.agent),
+          model: "",
+          session: e.payload?.session ?? null,
+          harness: null,
+          source: "fleet",
+          basis: "estimated",
+          turn_kind: e.payload?.turn_kind ?? null,
+          outcome: e.payload?.outcome ?? null,
+          tokens_in: 0,
+          tokens_out: Number(e.payload.tokens) || 0,
+          cache_read: 0,
+          cache_write: 0,
+          duration_ms: Number.isFinite(Number(e.payload?.duration_ms)) ? Number(e.payload.duration_ms) : null,
+        });
+      }
+      if (usageRows.length) statsStore.recordUsage(usageRows);
+    } catch (e) {
+      statsGaps += 1;
+      say(`stats write gap #${statsGaps}: ${e.message}`);
+    }
     res.json({ accepted: inserted, duplicates: events.length - inserted });
+  });
+
+  // ── Local collector ingest: fsc_ token, stats-only (never touches the
+  // observation kind set). Events carry harness usage blocks, basis=estimated.
+  app.post("/ingest/local", (req, res) => {
+    const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!statsStore.verifyCollectorToken(token)) {
+      return res.status(401).json({ error: "collector token required" });
+    }
+    const events = req.body?.events;
+    if (!Array.isArray(events) || events.length === 0 || events.length > 5000) {
+      return res.status(400).json({ error: "events must be a non-empty array (≤5000)" });
+    }
+    const rows = [];
+    let skipped = 0;
+    for (const e of events) {
+      if (!e || !Number.isFinite(Number(e.ts)) || !Number.isFinite(Number(e.tokens_out ?? e.tokens_in))) { skipped += 1; continue; }
+      rows.push({
+        id: String(e.id ?? `loc:${e.ts}:${e.session ?? ""}:${rows.length}`),
+        ts: Number(e.ts),
+        agent: `local:${e.harness ?? "unknown"}`,
+        pack: "local",
+        model: String(e.model ?? ""),
+        session: e.session ?? null,
+        harness: String(e.harness ?? "unknown"),
+        source: "local",
+        basis: "estimated",
+        turn_kind: e.turn_kind ?? null,
+        outcome: e.outcome ?? null,
+        tokens_in: Number(e.tokens_in) || 0,
+        tokens_out: Number(e.tokens_out) || 0,
+        cache_read: Number(e.cache_read) || 0,
+        cache_write: Number(e.cache_write) || 0,
+        duration_ms: Number.isFinite(Number(e.duration_ms)) ? Number(e.duration_ms) : null,
+      });
+    }
+    let stored = 0;
+    try { stored = statsStore.recordUsage(rows); } catch (e) { return res.status(500).json({ error: "stats store failed" }); }
+    res.json({ stored, skipped });
+  });
+
+  // ── Stats API (add-stats-plane-v1): every figure carries (source, basis);
+  // the server never merges calibers into one number.
+  const statsSince = (req) => {
+    const days = Math.min(Math.max(Number.parseInt(String(req.query.days ?? "7"), 10) || 7, 1), 400);
+    return now() - days * 86_400_000;
+  };
+  app.get("/api/fleet/v1/stats/overview", (req, res) => {
+    if (!requireToken(req, res)) return;
+    res.json({ since: statsSince(req), ...statsStore.overview(statsSince(req)) });
+  });
+  app.get("/api/fleet/v1/stats/by-agent", (req, res) => {
+    if (!requireToken(req, res)) return;
+    res.json({ since: statsSince(req), source_basis_rule: "figures never merged across calibers", rows: statsStore.grouped(statsSince(req), "agent") });
+  });
+  app.get("/api/fleet/v1/stats/by-model", (req, res) => {
+    if (!requireToken(req, res)) return;
+    res.json({ since: statsSince(req), rows: statsStore.grouped(statsSince(req), "model") });
+  });
+  app.get("/api/fleet/v1/stats/daily", (req, res) => {
+    if (!requireToken(req, res)) return;
+    res.json({
+      since: statsSince(req),
+      fleet: statsStore.daily(statsSince(req)),
+      sub2api: { basis: "billed", rows: statsStore.sub2apiDaily(statsSince(req)) },
+    });
   });
 
   // ── Rollup pass: last 2 full hours + current hour (idempotent overwrite);
@@ -85,8 +195,43 @@ export function createObserver({
   const rollupTimer = setInterval(() => {
     try { rollupPass(); } catch (e) { say(`rollup failed: ${e.message}`); }
     try { store.retain(now(), retentionMs); } catch { /* next pass */ }
+    // Stats hygiene rides along: daily rollup for yesterday+today + detail prune.
+    try {
+      const dayNow = new Date(now()).toISOString().slice(0, 10);
+      statsStore.rollupDay(dayNow);
+      statsStore.rollupDay(new Date(now() - 86_400_000).toISOString().slice(0, 10));
+      statsStore.pruneDetail(now());
+    } catch (e) { say(`stats rollup failed: ${e.message}`); }
   }, rollupIntervalMs);
   rollupTimer.unref?.();
+
+  // ── sub2api pull (add-stats-plane-v1 D3): hourly, read-only admin API,
+  // billed caliber only. Failure = stale flag, never a block.
+  const sub2apiPull = async () => {
+    if (!sub2api?.baseUrl || !sub2api?.token) return;
+    const fetchFn = fetchImpl ?? fetch;
+    const days = 2; // re-pull the sliding window (idempotent upsert)
+    const rows = [];
+    for (let i = 0; i < days; i++) {
+      const day = new Date(now() - i * 86_400_000).toISOString().slice(0, 10);
+      const url = `${sub2api.baseUrl.replace(/\/+$/, "")}/api/v1/admin/usage?start=${day}&end=${day}`;
+      let resp;
+      try {
+        resp = await fetchFn(url, { headers: { authorization: `Bearer ${sub2api.token}` } });
+      } catch (e) {
+        say(`sub2api pull failed (${day}): ${e.message}`); return;
+      }
+      if (!resp.ok) { say(`sub2api pull ${resp.status} (${day}) — staying stale`); return; }
+      let body;
+      try { body = await resp.json(); } catch { say(`sub2api pull bad json (${day})`); return; }
+      const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : Array.isArray(body?.items) ? body.items : null;
+      if (!items) { say(`sub2api pull unknown shape (${day}) — mapper needs a look`); return; }
+      for (const it of items) rows.push(mapSub2apiRow(it, day));
+    }
+    if (rows.length) statsStore.recordSub2apiDay(rows, now());
+  };
+  const sub2apiTimer = setInterval(() => { sub2apiPull().catch((e) => say(`sub2api pull error: ${e.message}`)); }, 3600_000);
+  sub2apiTimer.unref?.();
   let booted = false;
 
   // ── Observation API ───────────────────────────────────────────────────────
@@ -232,15 +377,35 @@ export function createObserver({
   return {
     app,
     store,
+    statsStore,
     bookkeeper,
     rollupPass,
+    sub2apiPull,
     // Schedulers are explicit: the bootstrap (index.js) starts them; tests
     // drive polls/passes by hand.
     start() { bookkeeper?.start(); },
     close() {
       if (rollupTimer) clearInterval(rollupTimer);
+      if (sub2apiTimer) clearInterval(sub2apiTimer);
       bookkeeper?.stop();
       store.close();
+      statsStore.close();
     },
+  };
+}
+
+
+// Tolerant row mapper for the sub2api admin usage endpoint. Field names vary
+// across shapes; unknown-but-200 shapes are logged upstream and skipped here.
+function mapSub2apiRow(it, day) {
+  return {
+    day,
+    bucket: String(it.bucket ?? it.key ?? it.key_label ?? it.api_key_id ?? it.model ?? ""),
+    kind: String(it.kind ?? "usage"),
+    tokens_in: Number(it.input_tokens ?? it.prompt_tokens ?? it.tokens_in) || 0,
+    tokens_out: Number(it.output_tokens ?? it.completion_tokens ?? it.tokens_out) || 0,
+    requests: Number(it.requests ?? it.count ?? it.call_count) || 0,
+    cost: it.cost ?? it.amount ?? it.quota ?? null,
+    currency: it.currency ?? (it.cost != null || it.amount != null ? "USD" : null),
   };
 }
