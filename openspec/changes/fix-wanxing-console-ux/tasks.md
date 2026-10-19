@@ -31,3 +31,20 @@
 ## 5. 待查项（不在本次范围，确认后另立 change）
 
 - [ ] 5.1 确认 `FleetView.jsx:431` 调用者表格（5 列，同样无 `truncate`、无滚动兜底）是否存在同类溢出——记录结论；若同病则另立 change，不在本次改动
+
+## 6. 错误边界上线后暴露的后续崩溃（第二轮）
+
+错误边界把「整树静默崩溃」变成了「可见报错」，于是原本被遮蔽的第二个缺陷现形：
+`DeployWizard` 用 `useEffect` 却没 import，挂在「我的舰队」下使整个面板报错。
+
+- [x] 6.1 `DeployWizard.jsx:5` 补 `useEffect` 导入（缺陷自 `b215e08` 起就在，此前整树崩溃故不可见）——验证「我的舰队」不再出现 `useEffect is not defined`
+- [x] 6.2 同型审计：`MissionsView`（`missions.missions`、`doc.plan.steps`、`doc.history`）、`OpsView`（`plans.plans`）、`FleetView`（`callers.list`）补可选链，避免修掉一个只是把崩溃点后移——验证各 tab 逐个切换无边界报错
+- [x] 6.3 突变测试：撤掉 `useEffect` 导入后断言必须变红（证明 6.1 的断言不是假绿）——实测 2 项 FAIL，恢复后转绿
+
+## 7. 消耗表「信息看不到」（第二轮）
+
+- [x] 7.1 两张表从半宽 `grid md:grid-cols-2` 改为堆叠全宽——验证长 slug 不再被挤成前缀
+- [x] 7.2 agent 列去掉 `packs-` 公共前缀（`agentLabel`）并改 `break-all` 换行而非 `truncate`——验证 `packs-i262i...` 与 `packs-kkcie...` 一眼可分且完整尾串可见
+- [x] 7.3 两表加 `Pager`（每页 10 项 + 「共 N 项 · 第 x/y 页」+ 上/下一页），替换原 `slice(0, 20)` 的静默丢弃——验证 25 行时显示「共 25 项 · 第 1/3 页」，翻页取到第 11 行，末页按钮禁用
+- [x] 7.4 切时间窗（24h/7天/30天）重置页码——验证从第 3 页切窗后回到 1/3
+- [x] 7.5 突变测试：把 `PAGE_SIZE` 改回 999 后分页断言必须变红——实测 9 项 FAIL（三档视口 × 三项），恢复后 24/24 转绿

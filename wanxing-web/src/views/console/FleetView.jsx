@@ -388,8 +388,8 @@ export function FleetView({ focusSlug } = {}) {
         {callers && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
             <div className="font-mono text-xs">允许清单 · {callers.slug}（私有 agent 的调用者）</div>
-            {callers.list.length === 0 && <div className="text-xs text-slate-500">空——私有 agent 目前无人可调</div>}
-            {callers.list.map((c) => (
+            {(callers.list ?? []).length === 0 && <div className="text-xs text-slate-500">空——私有 agent 目前无人可调</div>}
+            {(callers.list ?? []).map((c) => (
               <div key={c.userId} className="flex items-center gap-3 text-xs">
                 <span className="font-mono">{c.userId}</span>
                 <span>{c.email}</span>

@@ -253,9 +253,9 @@ export function OpsView() {
               {planBusy ? "保存中…" : "发放/调整"}
             </button>
           </form>
-          {plans && plans.plans.length > 0 && (
+          {plans && (plans.plans ?? []).length > 0 && (
             <div className="text-xs space-y-1" data-testid="plans-list">
-              {plans.plans.map((p) => (
+              {(plans.plans ?? []).map((p) => (
                 <div key={p.planRef} className="flex gap-3">
                   <span className="font-mono text-slate-400 w-8">{p.userId}</span>
                   <span className="w-56 truncate">{p.email || "—"}</span>
@@ -265,7 +265,7 @@ export function OpsView() {
               ))}
             </div>
           )}
-          {plans && plans.plans.length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
+          {plans && (plans.plans ?? []).length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
           <div className="text-[10px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
         </div>
       </div>

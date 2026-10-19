@@ -138,9 +138,9 @@ export function MissionsView() {
           </button>
         </div>
       </form>
-      {missions && missions.missions.length > 0 && (
+      {missions && (missions.missions ?? []).length > 0 && (
         <div className="text-xs space-y-1" data-testid="missions-list">
-          {missions.missions.map((m) => (
+          {(missions.missions ?? []).map((m) => (
             <div key={m.id} className="flex gap-2 items-center flex-wrap">
               <span className={`px-1.5 py-0.5 rounded font-mono ${m.status === "reported" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : m.status === "failed" || m.status === "aborted" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{m.status}</span>
               <button onClick={() => openMission(m.id)} className="w-64 truncate text-left hover:underline">{m.goal || "—"}</button>
@@ -171,7 +171,7 @@ export function MissionsView() {
           </div>
           {mDetail.doc.plan && (
             <div className="space-y-0.5">
-              {mDetail.doc.plan.steps.map((st) => (
+              {(mDetail.doc.plan.steps ?? []).map((st) => (
                 <div key={st.id} className="flex gap-2">
                   <span className="font-mono text-slate-400">{st.id}</span>
                   <span className={`w-16 ${st.status === "done" ? "text-emerald-600" : st.status === "running" ? "text-sky-600" : "text-slate-400"}`}>{st.status}</span>
@@ -181,7 +181,7 @@ export function MissionsView() {
             </div>
           )}
           {mDetail.doc.report && <div className="whitespace-pre-wrap border-t border-slate-200 dark:border-slate-800 pt-1">{mDetail.doc.report.summary}</div>}
-          <div className="text-slate-400">{mDetail.doc.history.map((x) => `${x.to}(${x.by})`).join(" → ")}</div>
+          <div className="text-slate-400">{(mDetail.doc.history ?? []).map((x) => `${x.to}(${x.by})`).join(" → ")}</div>
         </div>
       )}
     </div>

@@ -2,7 +2,7 @@
 // Moved verbatim from ConsoleView in the IA refactor (M4④ 前置) — the deploy
 // panel's stepped flow. Draft state lives across steps; a refusal on the
 // billing step keeps everything entered.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // ── Deployment wizard (add-deploy-wizard, M4①) ──────────────────────────────
 //
@@ -222,7 +222,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
           <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-mono text-xs">已部署 v{result.version}</span>
           <button onClick={reset} className="ml-auto px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">再部署一个</button>
         </div>
-        {result.rows.map(({ agentId, slug, share }) => (
+        {(result.rows ?? []).map(({ agentId, slug, share }) => (
           <div key={slug} className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 space-y-2">
             <div className="text-xs space-y-1" data-testid="share-card">
               <div className="flex gap-2 items-center">

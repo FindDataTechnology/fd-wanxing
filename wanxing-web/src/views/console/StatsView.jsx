@@ -6,6 +6,14 @@ import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
 
 const DAY_CHOICES = [1, 7, 30, 90];
+const PAGE_SIZE = 10;
+
+// Agent ids are `packs-<packId>` slugs, so the raw string spends its first six
+// characters repeating the same prefix on every row — truncating at a fixed
+// width then leaves every row looking identical ("packs-i262i0tuwtf9…"), which
+// is the "can't tell them apart" problem this table had. Stripping the known
+// prefix is what makes the distinguishing part land inside the column.
+const agentLabel = (agent) => String(agent ?? "").replace(/^packs-/, "");
 
 const fmtTok = (n) => {
   const v = Number(n) || 0;
@@ -14,6 +22,36 @@ const fmtTok = (n) => {
   if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
   return String(v);
 };
+
+// Paged table footer: the view used to render `rows.slice(0, 20)` and silently
+// drop the rest, so a busy fleet looked complete while data was missing.
+function Pager({ page, setPage, total, testid }) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (total <= PAGE_SIZE) {
+    return <div className="mt-1 text-[11px] text-slate-400" data-testid={`${testid}-count`}>共 {total} 项</div>;
+  }
+  return (
+    <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500" data-testid={`${testid}-pager`}>
+      <span data-testid={`${testid}-count`}>共 {total} 项 · 第 {page + 1}/{pages} 页</span>
+      <button
+        onClick={() => setPage(Math.max(0, page - 1))}
+        disabled={page === 0}
+        className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-40"
+        data-testid={`${testid}-prev`}
+      >
+        上一页
+      </button>
+      <button
+        onClick={() => setPage(Math.min(pages - 1, page + 1))}
+        disabled={page >= pages - 1}
+        className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-40"
+        data-testid={`${testid}-next`}
+      >
+        下一页
+      </button>
+    </div>
+  );
+}
 
 function CaliberCard({ label, tone, children }) {
   const toneCls = tone === "billed"
@@ -36,6 +74,11 @@ export function StatsView() {
   const [byModel, setByModel] = useState(null);
   const [daily, setDaily] = useState(null);
   const [err, setErr] = useState(null);
+  const [agentPage, setAgentPage] = useState(0);
+  const [modelPage, setModelPage] = useState(0);
+
+  // A new window is a new dataset: stale page offsets would land past the end.
+  useEffect(() => { setAgentPage(0); setModelPage(0); }, [days]);
 
   useEffect(() => {
     let alive = true;
@@ -61,6 +104,10 @@ export function StatsView() {
   const fleetRows = overview?.fleet ?? [];
   const sub2api = overview?.sub2api ?? null;
   const stale = overview?.sub2api_stale_since ?? null;
+  const agentRows = byAgent?.rows ?? [];
+  const modelRows = byModel?.rows ?? [];
+  const agentSlice = agentRows.slice(agentPage * PAGE_SIZE, (agentPage + 1) * PAGE_SIZE);
+  const modelSlice = modelRows.slice(modelPage * PAGE_SIZE, (modelPage + 1) * PAGE_SIZE);
 
   return (
     <section className="space-y-4" data-testid="stats-view">
@@ -128,22 +175,24 @@ export function StatsView() {
         </CaliberCard>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-3">
+      {/* Stacked full-width, not a two-up grid: agent ids and model ids are
+          long slugs, and half a card was what forced them into unreadable
+          prefixes. These two tables are the ones people read row by row. */}
+      <div className="space-y-3">
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
           <div className="text-xs font-semibold text-slate-500 mb-2">按 agent（fleet/local 口径）</div>
+          {/* full-width scroll: the agent id is the one field that cannot be
+              shortened without losing meaning, so the table is allowed to be
+              wider than the half-column card and scroll horizontally instead
+              of squeezing that column to an unreadable prefix. */}
           <div className="overflow-x-auto">
-          {/* Column widths are fixed, not content-derived. Under the default
-              auto layout the widths track content even when every cell
-              truncates (measured: the 口径 column came out 195px vs 188px for
-              two value lengths, so headers and rows drifted apart), and a
-              colgroup alone does not fix it because an auto-layout table sizes
-              itself from content. table-fixed resolves the percentages against
-              the container instead. min-w keeps the whole table above the
-              width where 口径 could no longer show its value in full — below
-              that the wrap scrolls rather than compressing the text. */}
-          <table className="w-full min-w-[24rem] table-fixed text-sm tabular-nums" data-testid="stats-by-agent">
+          {/* table-fixed + colgroup: column widths must be a property of the
+              layout. Under auto layout they track content even when every cell
+              truncates (measured: 口径 came out 195px vs 188px for two value
+              lengths), which leaves headers and rows misaligned. */}
+          <table className="w-full min-w-[34rem] table-fixed text-sm tabular-nums" data-testid="stats-by-agent">
             <colgroup>
-              <col className="w-[33%]" /><col className="w-[17%]" /><col className="w-[22%]" /><col className="w-[10%]" /><col className="w-[18%]" />
+              <col className="w-[38%]" /><col className="w-[22%]" /><col className="w-[6rem]" /><col className="w-[4.5rem]" /><col className="w-[5.5rem]" />
             </colgroup>
             <thead>
               <tr className="text-left text-xs text-slate-400">
@@ -151,31 +200,34 @@ export function StatsView() {
               </tr>
             </thead>
             <tbody>
-              {(byAgent?.rows ?? []).slice(0, 20).map((r) => (
-                <tr key={`${r.agent}|${r.pack}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800">
-                  <td className="py-1 pr-2 truncate" title={r.agent}>{r.agent}</td>
-                  <td className="pr-2 text-slate-500 truncate" title={r.pack || ""}>{r.pack || "—"}</td>
-                  {/* 口径 keeps its full value: it is short and fixed-vocabulary,
-                      and truncating it is exactly the "can't read it" problem
-                      this view had. nowrap keeps it on one line. */}
+              {agentSlice.map((r) => (
+                <tr key={`${r.agent}|${r.pack}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800 align-top">
+                  {/* break-all: a long slug wraps inside the column so the
+                      distinguishing tail stays visible; truncate would hide it
+                      behind the shared `packs-` prefix. */}
+                  <td className="py-1 pr-2 font-mono text-xs break-all" title={r.agent}>{agentLabel(r.agent)}</td>
+                  <td className="pr-2 text-slate-500 font-mono text-xs break-all" title={r.pack || ""}>{r.pack || "—"}</td>
+                  {/* 口径 keeps its full value: short, fixed vocabulary, and
+                      truncating it reintroduces the unreadable-column problem. */}
                   <td className="pr-2 text-xs whitespace-nowrap" title={`${r.source}/${r.basis}`}>{r.source}/{r.basis}</td>
-                  <td className="text-right">{r.turns}</td>
-                  <td className="text-right">{fmtTok(r.tokens_in + r.tokens_out)}</td>
+                  <td className="text-right whitespace-nowrap">{r.turns}</td>
+                  <td className="text-right whitespace-nowrap">{fmtTok(r.tokens_in + r.tokens_out)}</td>
                 </tr>
               ))}
-              {(byAgent?.rows ?? []).length === 0 && (
+              {agentRows.length === 0 && (
                 <tr><td colSpan={5} className="py-2 text-slate-400">窗口内无数据</td></tr>
               )}
             </tbody>
           </table>
           </div>
+          <Pager page={agentPage} setPage={setAgentPage} total={agentRows.length} testid="stats-by-agent" />
         </div>
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
           <div className="text-xs font-semibold text-slate-500 mb-2">按模型</div>
           <div className="overflow-x-auto">
-          <table className="w-full min-w-[18rem] table-fixed text-sm tabular-nums" data-testid="stats-by-model">
+          <table className="w-full min-w-[26rem] table-fixed text-sm tabular-nums" data-testid="stats-by-model">
             <colgroup>
-              <col className="w-[44%]" /><col className="w-[26%]" /><col className="w-[12%]" /><col className="w-[18%]" />
+              <col className="w-[44%]" /><col className="w-[6.5rem]" /><col className="w-[4.5rem]" /><col className="w-[5.5rem]" />
             </colgroup>
             <thead>
               <tr className="text-left text-xs text-slate-400">
@@ -183,20 +235,21 @@ export function StatsView() {
               </tr>
             </thead>
             <tbody>
-              {(byModel?.rows ?? []).slice(0, 20).map((r) => (
-                <tr key={`${r.model}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800">
-                  <td className="py-1 pr-2 truncate" title={r.model || ""}>{r.model || "（fleet 事件未带模型）"}</td>
+              {modelSlice.map((r) => (
+                <tr key={`${r.model}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800 align-top">
+                  <td className="py-1 pr-2 font-mono text-xs break-all" title={r.model || ""}>{r.model || "（fleet 事件未带模型）"}</td>
                   <td className="pr-2 text-xs whitespace-nowrap" title={`${r.source}/${r.basis}`}>{r.source}/{r.basis}</td>
-                  <td className="text-right">{r.turns}</td>
-                  <td className="text-right">{fmtTok(r.tokens_in + r.tokens_out)}</td>
+                  <td className="text-right whitespace-nowrap">{r.turns}</td>
+                  <td className="text-right whitespace-nowrap">{fmtTok(r.tokens_in + r.tokens_out)}</td>
                 </tr>
               ))}
-              {(byModel?.rows ?? []).length === 0 && (
+              {modelRows.length === 0 && (
                 <tr><td colSpan={4} className="py-2 text-slate-400">窗口内无数据</td></tr>
               )}
             </tbody>
           </table>
           </div>
+          <Pager page={modelPage} setPage={setModelPage} total={modelRows.length} testid="stats-by-model" />
         </div>
       </div>
 
