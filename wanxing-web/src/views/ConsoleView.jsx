@@ -6,6 +6,7 @@
 // routes (deployment slugs carry the packs- prefix — no collision).
 import { useEffect, useState } from "react";
 import { loginLogto, setOpsToken, useAuth } from "../auth.js";
+import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { FleetView } from "./console/FleetView.jsx";
 import { MissionsView } from "./console/MissionsView.jsx";
 import { OpsView } from "./console/OpsView.jsx";
@@ -95,11 +96,16 @@ export function ConsoleView({ focusSlug } = {}) {
           ))}
         </div>
       </div>
-      {tab === "fleet" && <FleetView focusSlug={fleetSlug} />}
-      {tab === "missions" && <MissionsView />}
-      {tab === "stats" && <StatsView />}
-      {tab === "devices" && <DevicesView />}
-      {tab === "ops" && <OpsView />}
+      {/* fix-wanxing-console-ux: one panel's render error must not blank the
+          whole console — the boundary keeps the shell and the other tabs up.
+          resetKey re-arms it when the tab or focus slug changes. */}
+      <ErrorBoundary label="控制台" resetKey={`${tab}|${focusSlug ?? ""}`}>
+        {tab === "fleet" && <FleetView focusSlug={fleetSlug} />}
+        {tab === "missions" && <MissionsView />}
+        {tab === "stats" && <StatsView />}
+        {tab === "devices" && <DevicesView />}
+        {tab === "ops" && <OpsView />}
+      </ErrorBoundary>
     </div>
   );
 }

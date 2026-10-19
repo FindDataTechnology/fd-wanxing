@@ -425,7 +425,7 @@ export function FleetView({ focusSlug } = {}) {
               <span className="font-mono text-xs">调用记录 · {usage.slug}（近 30 天）</span>
               <button onClick={() => setUsage(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
             </div>
-            {(usage.doc.byCaller ?? []).length === 0 ? (
+            {(usage.doc?.byCaller ?? []).length === 0 ? (
               <div className="text-xs text-slate-500">暂无调用。</div>
             ) : (
               <table className="w-full text-xs">
@@ -435,7 +435,7 @@ export function FleetView({ focusSlug } = {}) {
                   </tr>
                 </thead>
                 <tbody>
-                  {usage.doc.byCaller.map((r, i) => (
+                  {(usage.doc?.byCaller ?? []).map((r, i) => (
                     <tr key={`${r.channel}-${r.email}-${i}`} className="border-b border-slate-100 dark:border-slate-900">
                       <td className="py-1.5 px-2 font-mono">{r.email || "（匿名/无邮箱）"}</td>
                       <td className="px-2">{channelLabel(r.channel)}</td>
@@ -449,8 +449,8 @@ export function FleetView({ focusSlug } = {}) {
             )}
             <div className="text-xs text-slate-500 space-y-1">
               <div className="font-semibold text-slate-600 dark:text-slate-300">最近活动</div>
-              {(usage.doc.activity ?? []).length === 0 && <div>无。</div>}
-              {(usage.doc.activity ?? []).map((a, i) => (
+              {(usage.doc?.activity ?? []).length === 0 && <div>无。</div>}
+              {(usage.doc?.activity ?? []).map((a, i) => (
                 <div key={i} className="flex gap-3">
                   <span className="text-slate-400 w-36 shrink-0 font-mono">{new Date(a.at).toLocaleString("zh-CN", { hour12: false })}</span>
                   <span className="px-1.5 rounded bg-slate-100 dark:bg-slate-800">{channelLabel(a.channel)}</span>
@@ -469,8 +469,8 @@ export function FleetView({ focusSlug } = {}) {
               <button onClick={() => setAllowance(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
             </div>
             <div className="text-xs text-slate-500">
-              当前上限 <b>{allowance.doc.limitMinutes ?? 0}</b> 分钟 · 剩余 <b>{allowance.doc.remainingMinutes ?? 0}</b> 分钟
-              {allowance.doc.updatedBy ? ` · 上次由 ${allowance.doc.updatedBy} 设置` : ""}
+              当前上限 <b>{allowance.doc?.limitMinutes ?? 0}</b> 分钟 · 剩余 <b>{allowance.doc?.remainingMinutes ?? 0}</b> 分钟
+              {allowance.doc?.updatedBy ? ` · 上次由 ${allowance.doc.updatedBy} 设置` : ""}
             </div>
             <form
               onSubmit={(e) => {
@@ -510,7 +510,7 @@ export function FleetView({ focusSlug } = {}) {
               <div>暂无套餐——API 调用按调用键余额计费。</div>
             )}
             <div>
-              套餐结算 <b>{stmt.usage.planMinutes}</b> 分钟（{stmt.usage.planTurns} 回合） · 余额路径 <b>{stmt.usage.legacyMinutes}</b> 分钟（{stmt.usage.legacyTurns} 回合）
+              套餐结算 <b>{stmt.usage?.planMinutes ?? 0}</b> 分钟（{stmt.usage?.planTurns ?? 0} 回合） · 余额路径 <b>{stmt.usage?.legacyMinutes ?? 0}</b> 分钟（{stmt.usage?.legacyTurns ?? 0} 回合）
             </div>
           </div>
         )}
@@ -519,10 +519,10 @@ export function FleetView({ focusSlug } = {}) {
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="deploy-panel">
         <h3 className="font-semibold">部署我的 agent <a href="#/collections" className="ml-2 text-xs font-normal text-sky-600 dark:text-sky-400 hover:underline" data-testid="collections-entry-link">我的集合 →</a></h3>
         {myPacksErr && <div className="text-xs text-amber-600 dark:text-amber-400">{myPacksErr}</div>}
-        {myPacks && myPacks.packs.length === 0 && (
+        {myPacks && (myPacks.packs?.length ?? 0) === 0 && (
           <div className="text-xs text-slate-500">名下暂无已发布的 pack——先在壹座「设置 → 功能集」发布（含 serving 契约的 agent 才可部署）。</div>
         )}
-        {myPacks && myPacks.packs.length > 0 && (
+        {myPacks && (myPacks.packs?.length ?? 0) > 0 && (
           <DeployWizard packs={myPacks.packs} loadMyPacks={loadMyPacks} authFetch={authFetch} />
         )}
         <div className="text-xs border-t border-slate-200 dark:border-slate-800 pt-2 space-y-1" data-testid="earnings-section">
@@ -535,14 +535,14 @@ export function FleetView({ focusSlug } = {}) {
           {earn && (
             <div className="space-y-1" data-testid="earnings-body">
               <div>
-                已入账 <b className="text-emerald-600 dark:text-emerald-400">${(earn.totals.settledUsd ?? 0).toFixed(4)}</b>
-                {" · "}待入账 <b>${(earn.totals.pendingUsd ?? 0).toFixed(4)}</b>
-                {" · "}共 {earn.totals.turns ?? 0} 笔（外部真金回合的分成，入账即抵扣平台消耗，暂不支持提现）
+                已入账 <b className="text-emerald-600 dark:text-emerald-400">${(earn.totals?.settledUsd ?? 0).toFixed(4)}</b>
+                {" · "}待入账 <b>${(earn.totals?.pendingUsd ?? 0).toFixed(4)}</b>
+                {" · "}共 {earn.totals?.turns ?? 0} 笔（外部真金回合的分成，入账即抵扣平台消耗，暂不支持提现）
               </div>
               {(earn.rows ?? []).length === 0 && <div className="text-slate-500">暂无分成记录——外部调用者经 API 车道付费调用你的 agent 时产生。</div>}
               {(earn.rows ?? []).length > 0 && (
                 <div className="space-y-0.5" data-testid="earnings-rows">
-                  {earn.rows.map((r) => (
+                  {(earn.rows ?? []).map((r) => (
                     <div key={r.usageId} className="flex gap-2 items-center flex-wrap">
                       <span className={`px-1.5 py-0.5 rounded font-mono ${r.status === "settled" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>{r.status === "settled" ? "已入账" : "待入账"}</span>
                       <span className="font-mono">{r.agentSlug}</span>

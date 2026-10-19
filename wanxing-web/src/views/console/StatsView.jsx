@@ -131,7 +131,20 @@ export function StatsView() {
       <div className="grid md:grid-cols-2 gap-3">
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
           <div className="text-xs font-semibold text-slate-500 mb-2">按 agent（fleet/local 口径）</div>
-          <table className="w-full text-sm tabular-nums" data-testid="stats-by-agent">
+          <div className="overflow-x-auto">
+          {/* Column widths are fixed, not content-derived. Under the default
+              auto layout the widths track content even when every cell
+              truncates (measured: the 口径 column came out 195px vs 188px for
+              two value lengths, so headers and rows drifted apart), and a
+              colgroup alone does not fix it because an auto-layout table sizes
+              itself from content. table-fixed resolves the percentages against
+              the container instead. min-w keeps the whole table above the
+              width where 口径 could no longer show its value in full — below
+              that the wrap scrolls rather than compressing the text. */}
+          <table className="w-full min-w-[24rem] table-fixed text-sm tabular-nums" data-testid="stats-by-agent">
+            <colgroup>
+              <col className="w-[33%]" /><col className="w-[17%]" /><col className="w-[22%]" /><col className="w-[10%]" /><col className="w-[18%]" />
+            </colgroup>
             <thead>
               <tr className="text-left text-xs text-slate-400">
                 <th className="py-1">agent</th><th>pack</th><th>口径</th><th className="text-right">回合</th><th className="text-right">tokens</th>
@@ -140,9 +153,12 @@ export function StatsView() {
             <tbody>
               {(byAgent?.rows ?? []).slice(0, 20).map((r) => (
                 <tr key={`${r.agent}|${r.pack}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800">
-                  <td className="py-1 pr-2 truncate max-w-[14rem]">{r.agent}</td>
-                  <td className="pr-2 text-slate-500 truncate max-w-[8rem]">{r.pack || "—"}</td>
-                  <td className="pr-2 text-xs">{r.source}/{r.basis}</td>
+                  <td className="py-1 pr-2 truncate" title={r.agent}>{r.agent}</td>
+                  <td className="pr-2 text-slate-500 truncate" title={r.pack || ""}>{r.pack || "—"}</td>
+                  {/* 口径 keeps its full value: it is short and fixed-vocabulary,
+                      and truncating it is exactly the "can't read it" problem
+                      this view had. nowrap keeps it on one line. */}
+                  <td className="pr-2 text-xs whitespace-nowrap" title={`${r.source}/${r.basis}`}>{r.source}/{r.basis}</td>
                   <td className="text-right">{r.turns}</td>
                   <td className="text-right">{fmtTok(r.tokens_in + r.tokens_out)}</td>
                 </tr>
@@ -152,10 +168,15 @@ export function StatsView() {
               )}
             </tbody>
           </table>
+          </div>
         </div>
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
           <div className="text-xs font-semibold text-slate-500 mb-2">按模型</div>
-          <table className="w-full text-sm tabular-nums" data-testid="stats-by-model">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[18rem] table-fixed text-sm tabular-nums" data-testid="stats-by-model">
+            <colgroup>
+              <col className="w-[44%]" /><col className="w-[26%]" /><col className="w-[12%]" /><col className="w-[18%]" />
+            </colgroup>
             <thead>
               <tr className="text-left text-xs text-slate-400">
                 <th className="py-1">model</th><th>口径</th><th className="text-right">回合</th><th className="text-right">tokens</th>
@@ -164,8 +185,8 @@ export function StatsView() {
             <tbody>
               {(byModel?.rows ?? []).slice(0, 20).map((r) => (
                 <tr key={`${r.model}|${r.source}|${r.basis}`} className="border-t border-slate-100 dark:border-slate-800">
-                  <td className="py-1 pr-2 truncate max-w-[16rem]">{r.model || "（fleet 事件未带模型）"}</td>
-                  <td className="pr-2 text-xs">{r.source}/{r.basis}</td>
+                  <td className="py-1 pr-2 truncate" title={r.model || ""}>{r.model || "（fleet 事件未带模型）"}</td>
+                  <td className="pr-2 text-xs whitespace-nowrap" title={`${r.source}/${r.basis}`}>{r.source}/{r.basis}</td>
                   <td className="text-right">{r.turns}</td>
                   <td className="text-right">{fmtTok(r.tokens_in + r.tokens_out)}</td>
                 </tr>
@@ -175,6 +196,7 @@ export function StatsView() {
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 
