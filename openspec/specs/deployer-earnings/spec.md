@@ -1,7 +1,12 @@
 # deployer-earnings Specification
 
 ## Purpose
-TBD - created by archiving change add-deployer-revenue-share. Update Purpose after archive.
+
+How a deployer's share of revenue is earned, credited, and shown: the facade
+records a revenue-share row for an externally-settled paid turn, credits the
+deployer's external key balance idempotently, and surfaces the resulting
+earnings (rate, minutes, amounts) in the deployer console so the deployer can
+see what they have earned and why.
 
 ## Requirements
 
