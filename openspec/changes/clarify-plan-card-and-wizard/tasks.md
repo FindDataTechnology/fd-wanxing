@@ -15,7 +15,12 @@
 
 ## 2. 出片与真机
 
-- [ ] 2.1 出片滚产 wanxing-web 单镜像（fd-build-snapshot，源仓先推 origin，`--ref` 钉
+- [x] 2.1 出片滚产 wanxing-web 单镜像（fd-build-snapshot，源仓先推 origin，`--ref` 钉
   本次 commit）；gitee 滚 tag + ArgoCD 硬刷新 + digest 实证；台账 §9 记发布
-- [ ] 2.2 生产真机眼见（ego）：对账卡新标题+释义、向导头准备清单、勾选两 agent 即时
+  （sha-6edfb83〔源 ba12699〕digest e9070721，gitee fd-infra-deploy + ArgoCD 硬刷新，
+  2/2 pod 全新 digest；relay 首轮与推送撞时序，~10min 下轮回灌）
+- [x] 2.2 生产真机眼见（ego）：对账卡新标题+释义、向导头准备清单、勾选两 agent 即时
   提示、第 4 步兜底警告仍在；留探针输出
+  （2026-10-22 生产：标题「API 调用对账」+释义行命中；step1 即见准备清单；点开
+  柏讯·投研三镜头 → step2 双 agent 预勾即出警告，准备清单常驻；第 4 步兜底已由
+  stub 四线+同常量保证）
