@@ -194,6 +194,16 @@ test("2.1 mint: allowed origin mints a slug-scoped credential; disallowed/no ori
     assert.equal((await h.call(`${CHAT_URL}/visitor-token`, bodyBad)).body.error.code, "EMBED_ORIGIN_NOT_ALLOWED");
     const bodyGarbage = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin: "javascript:alert(1)" }) };
     assert.equal((await h.call(`${CHAT_URL}/visitor-token`, bodyGarbage)).status, 403);
+    // Same-origin POST (live finding 2026-10-22): browsers set Origin on EVERY
+    // POST — the widget's own mint arrives with OUR host in the header. The
+    // body claim is then the attested embedding origin and must stand; a
+    // foreign header still wins (covered by the evil.example case above).
+    // Host-only comparison: behind the nginx proxy the scheme may differ.
+    const sameOriginBody = (header) => ({ method: "POST", headers: { "Content-Type": "application/json", Origin: header }, body: JSON.stringify({ origin: "https://lex.example" }) });
+    assert.equal((await h.call(`${CHAT_URL}/visitor-token`, sameOriginBody(h.base))).status, 201);
+    assert.equal((await h.call(`${CHAT_URL}/visitor-token`, sameOriginBody(h.base.replace("http://", "https://")))).status, 201);
+    const sameOriginBadClaim = { method: "POST", headers: { "Content-Type": "application/json", Origin: h.base }, body: JSON.stringify({ origin: "https://evil.example" }) };
+    assert.equal((await h.call(`${CHAT_URL}/visitor-token`, sameOriginBadClaim)).body.error.code, "EMBED_ORIGIN_NOT_ALLOWED");
   } finally { await h.close(); }
 });
 
@@ -299,7 +309,8 @@ test("3.1 embed-config: anonymous availability mirrors the gates; secret-free pa
     assert.equal(r.status, 200);
     assert.equal(r.body.anonymous, true);
     assert.equal(r.body.chatAble, true);
-    assert.deepEqual(Object.keys(r.body).sort(), ["agent", "anonymous", "chatAble", "reason", "theme"]);
+    assert.deepEqual(Object.keys(r.body).sort(), ["agent", "anonymous", "chatAble", "features", "reason", "theme"]); // features.asks (add-copilot-control-surface)
+    assert.equal(r.body.features.asks, true);
     assert.deepEqual(r.body.agent, { name: "Copilot", description: "embedded" });
 
     h.store.embedSettingsSet(SLUG, { anonymous: false, origins: ["https://lex.example"], updatedBy: "ops" });

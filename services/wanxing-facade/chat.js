@@ -388,13 +388,20 @@ export function createChatFace({
       if (state.paused) {
         return res.status(423).json({ error: { code: "AGENT_PAUSED", message: "this agent is paused" } });
       }
-      // Same-origin widget fetches carry no browser Origin header (it is
-      // same-origin by construction), so the widget passes its attested
-      // embedding origin in the body; a browser-set Origin header, when
-      // present (cross-origin direct calls), always wins over the claim.
+      // The widget passes its attested embedding origin in the body; a
+      // FOREIGN browser-set Origin header (a cross-origin direct call)
+      // always wins over the claim. But browsers set Origin on EVERY POST —
+      // including the widget's own same-origin mint (live finding 2026-10-22:
+      // the old "same-origin carries no Origin header" premise was wrong and
+      // blocked every widget-minted anonymous credential). The widget's own
+      // origin is our trusted code, so when the header's host equals this
+      // request's host the call is same-origin and the body claim stands.
       const headerOrigin = String(req.headers.origin || "").trim().toLowerCase().replace(/\/+$/, "");
+      const headerHost = (() => { try { return new URL(headerOrigin).host; } catch { return null; } })();
+      const sameOriginCall = Boolean(headerOrigin) && headerHost === String(req.headers.host || "").toLowerCase();
+      const trustedHeader = headerOrigin && !sameOriginCall ? headerOrigin : "";
       const claimedOrigin = String(req.body?.origin || "").trim().toLowerCase().replace(/\/+$/, "");
-      const origin = headerOrigin || (/^https?:\/\/[a-z0-9.-]+(:\d+)?$/.test(claimedOrigin) ? claimedOrigin : "");
+      const origin = trustedHeader || (/^https?:\/\/[a-z0-9.-]+(:\d+)?$/.test(claimedOrigin) ? claimedOrigin : "");
       if (!origin || !embedOriginsFor(slug).has(origin)) {
         note("refused", slug, { stage: "mint", code: "EMBED_ORIGIN_NOT_ALLOWED", origin: origin || "(none)" });
         return res.status(403).json({ error: { code: "EMBED_ORIGIN_NOT_ALLOWED", message: "this origin is not allowed to embed that agent" } });
