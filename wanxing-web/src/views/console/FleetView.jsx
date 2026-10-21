@@ -317,6 +317,12 @@ export function FleetView({ focusSlug } = {}) {
             名下暂无部署——在下方「部署我的 agent」选一个自己的 pack，或经「目录可部署」部署他人发布的 pack。
           </div>
         )}
+        {/* Orphan refusal (deep link to a foreign slug): the card that
+            launched the load isn't in the scoped list, so the per-card note
+            has nowhere to hang — surface it at section level instead. */}
+        {cardErr && !((deps?.deployments ?? []).some((d) => cardErr.key.startsWith(`${d.slug}:`))) && (
+          <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="fleet-orphan-err">{cardErr.text}</div>
+        )}
         {deps && (
           <div className="grid gap-3 sm:grid-cols-2" data-testid="fleet-cards">
             {(deps.deployments ?? []).map((d) => {
