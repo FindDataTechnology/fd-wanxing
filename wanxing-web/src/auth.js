@@ -13,6 +13,14 @@ const VERIFIER_KEY = "wx-pkce-verifier";
 const STATE_KEY = "wx-pkce-state";
 const GATE_KEY = "wx-login-gate"; // "console" (default) | "chat" — the exchange's allowlist mode
 const RETURN_KEY = "wx-login-return"; // hash to land on after the callback
+// Embed popup login (add-embed-copilot-lane D4): set by the embed view in the
+// IFRAME's sessionStorage before window.open — the auxiliary window inherits
+// a copy, so the callback can see the mode and the embedding origin to
+// postMessage the credential back to. The popup's own storage is the
+// UNPARTITIONED wanxing bucket; writing there would fake a console login.
+export const EMBED_MODE_KEY = "wx-embed-mode";
+export const EMBED_PARENT_KEY = "wx-embed-parent";
+export const EMBED_AUTH_MESSAGE = "wx-embed-auth";
 const LOCK_NAME = "wanxing-auth-refresh"; // serializes rotation across tabs
 const EXPIRED_NOTICE = "登录已过期，请重新登录";
 
@@ -54,6 +62,14 @@ const b64u = (buf) => btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").repl
 // WITHOUT the console allowlist (the chat lane admits any tenant identity);
 // returnTo lands the callback back on that hash instead of the console.
 export async function loginLogto({ gate = "console", returnTo = null } = {}) {
+  window.location.href = await prepareLogin({ gate, returnTo });
+}
+
+// Build the PKCE authorize URL and park the one-shot state in sessionStorage
+// (the callback reads it back). Shared by the redirect login above and the
+// embed popup login (D4): embedParent marks embed mode so the callback
+// postMessages the credential to its opener instead of persisting it.
+export async function prepareLogin({ gate = "console", returnTo = null, embedParent = null } = {}) {
   const cfg = await fetch("/api/wanxing/v1/console/auth/config").then(async (r) => {
     if (!r.ok) throw new Error("identity not configured on this deployment");
     return r.json();
@@ -62,6 +78,13 @@ export async function loginLogto({ gate = "console", returnTo = null } = {}) {
   sessionStorage.setItem(VERIFIER_KEY, verifier);
   sessionStorage.setItem(GATE_KEY, gate === "chat" ? "chat" : "console");
   sessionStorage.setItem(RETURN_KEY, returnTo ?? "#/console");
+  if (embedParent) {
+    sessionStorage.setItem(EMBED_MODE_KEY, "1");
+    sessionStorage.setItem(EMBED_PARENT_KEY, embedParent);
+  } else {
+    sessionStorage.removeItem(EMBED_MODE_KEY);
+    sessionStorage.removeItem(EMBED_PARENT_KEY);
+  }
   const challenge = b64u(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const state = String(Math.random()).slice(2, 10);
   sessionStorage.setItem(STATE_KEY, state);
@@ -74,7 +97,7 @@ export async function loginLogto({ gate = "console", returnTo = null } = {}) {
   u.searchParams.set("state", state);
   u.searchParams.set("code_challenge", challenge);
   u.searchParams.set("code_challenge_method", "S256");
-  window.location.href = u.toString();
+  return u.toString();
 }
 
 // /console-callback landing: exchange through the facade proxy, keep the
@@ -87,10 +110,15 @@ export async function handleConsoleCallback() {
   const state = sessionStorage.getItem(STATE_KEY);
   const gate = sessionStorage.getItem(GATE_KEY) === "chat" ? "chat" : "console";
   const returnTo = sessionStorage.getItem(RETURN_KEY) || "#/console";
+  // Embed popup mode (D4): inherited sessionStorage copy from the iframe.
+  const embedMode = sessionStorage.getItem(EMBED_MODE_KEY) === "1";
+  const embedParent = sessionStorage.getItem(EMBED_PARENT_KEY) || "";
   sessionStorage.removeItem(VERIFIER_KEY);
   sessionStorage.removeItem(STATE_KEY);
   sessionStorage.removeItem(GATE_KEY);
   sessionStorage.removeItem(RETURN_KEY);
+  sessionStorage.removeItem(EMBED_MODE_KEY);
+  sessionStorage.removeItem(EMBED_PARENT_KEY);
   window.wxLoginReturnTo = returnTo; // main.jsx lands there after this settles
   if (!code || !verifier || !state || q.get("state") !== state) return;
   const r = await fetch("/api/wanxing/v1/console/auth/exchange", {
@@ -100,6 +128,22 @@ export async function handleConsoleCallback() {
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
   const d = await r.json();
+  if (embedMode) {
+    // Hand the credential to the opener (the embed iframe) and never touch
+    // this window's storage: the popup lives in the unpartitioned bucket, the
+    // iframe in its partitioned one — only postMessage bridges them. The
+    // target origin is the IFRAME's origin (ours): the iframe is the opener.
+    window.wxEmbedDone = true;
+    try {
+      window.opener?.postMessage(
+        { type: EMBED_AUTH_MESSAGE, id_token: d.id_token, refresh_token: d.refresh_token ?? null, email: d.email ?? "", parent: embedParent },
+        window.location.origin,
+      );
+    } catch { /* an opener that went away leaves the user with the notice below */ }
+    document.body.innerHTML = '<p style="font-family:system-ui,sans-serif;padding:24px;color:#334155">登录成功——本窗口即将自动关闭。</p>';
+    setTimeout(() => window.close(), 600);
+    return;
+  }
   localStorage.setItem(TOKEN_KEY, d.id_token);
   localStorage.setItem(EMAIL_KEY, d.email);
   if (d.refresh_token) localStorage.setItem(REFRESH_KEY, d.refresh_token);

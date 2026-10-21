@@ -1,4 +1,5 @@
-// ── Wanxing facade, chat lane face (add-agent-chat-lane D1/D4/D7) ───────────
+// ── Wanxing facade, chat lane face (add-agent-chat-lane D1/D4/D7;
+//    add-embed-copilot-lane D1/D2) ───────────────────────────────────────────
 //
 // The browser conversation surface: logged-in visitors (tenant identity,
 // no console allowlist) chat with chatable public agents, billed by the
@@ -8,12 +9,53 @@
 // Admission, slots, idempotency, and forwarding reuse the same kernel as the
 // API lane; the differences are the credential class (ID token vs sk- key),
 // the tighter chat-only rate bound, and the settler-resolved ledger rows.
+//
+// Embed lane (add-embed-copilot-lane): the same turn surface additionally
+// accepts two credential shapes — facade-minted ephemeral tokens (anonymous
+// visitors, per-agent slug-scoped, HMAC-signed; their own tighter daily
+// allowance, NEVER the host allowance, settled by the platform subsidy key)
+// and tenant ID tokens from product-line clients on the embed audience
+// allowlist (host-relayed identity). verifyVisitor stays the single seam:
+// everything downstream keys on visitorSub, with visitor_tier separating the
+// two daily buckets in the ledger.
 
 import express from "express";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 const sha256 = (v) => createHash("sha256").update(String(v)).digest("hex");
 const oneShotTail = () => randomBytes(8).toString("hex");
+
+// ── Ephemeral visitor credentials (embed lane D1) ───────────────────────────
+// Stateless HMAC: base64url(payload).base64url(hmac-sha256). The secret is a
+// facade env (rotation = new secret; in-flight tokens fail closed and the
+// widget re-mints). The payload is slug-scoped — one anonymous identity is
+// replayable on exactly the agent it was minted for, so a cleared-storage
+// refresh costs scale per-agent, not globally.
+const b64uJson = (v) => Buffer.from(JSON.stringify(v), "utf8").toString("base64url");
+
+export function signEphemeral(payload, secret) {
+  const body = b64uJson(payload);
+  const mac = createHmac("sha256", String(secret)).update(body).digest("base64url");
+  return `${body}.${mac}`;
+}
+
+export function verifyEphemeral(token, secret, now = Date.now()) {
+  if (!secret || typeof token !== "string") return null;
+  const [body, mac] = token.split(".");
+  if (!body || !mac) return null;
+  const expect = createHmac("sha256", String(secret)).update(body).digest();
+  let got;
+  try { got = Buffer.from(mac, "base64url"); } catch { return null; }
+  if (got.length !== expect.length || !timingSafeEqual(got, expect)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!p || typeof p.vid !== "string" || typeof p.slug !== "string") return null;
+    if (!Number.isFinite(p.exp) || p.exp <= now) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
 
 // Visitors have no sub2api user id, but the kernel's RPM/slot/idempotency
 // machinery keys on a numeric caller id — derive a stable 48-bit one from the
@@ -53,14 +95,26 @@ export function createChatFace({
   sub2api = null, // the platform's admin client — subsidy settlement resolves WANXING_SUBSIDY_KEY's holder
   subsidyKey = "", // the platform settlement key value (env; never logged)
   subsidyUserId = null, // dedicated subsidy account id (env WANXING_SUBSIDY_USER_ID — wins over the key: the dedicated account needs no key credential at all, upstream has no admin-side key minting)
-  chat = {}, // { subsidyEnabled, subsidyDailyMinutes, rpmMax }
+  chat = {}, // { subsidyEnabled, subsidyDailyMinutes, rpmMax, embed: {...} }
   report = null,
   upstreamFetch = fetch,
 }) {
+  const embed = chat.embed ?? {};
   const cfg = {
     subsidyEnabled: chat.subsidyEnabled ?? false,
     subsidyDailyMinutes: chat.subsidyDailyMinutes ?? 10,
     rpmMax: chat.rpmMax ?? 6,
+    // Embed lane (add-embed-copilot-lane D1/D2/D5): anonymous is double-gated
+    // (this global switch AND the per-agent deployer switch), settles on the
+    // platform subsidy machinery under its own tighter daily allowance, and
+    // its credential minting is origin-gated. No embedSecret = the whole
+    // anonymous shape is inert (mint refuses, ephemeral tokens unverifiable).
+    anonEnabled: embed.anonEnabled ?? false,
+    anonDailyMinutes: embed.anonDailyMinutes ?? 3,
+    embedSecret: embed.embedSecret || "",
+    embedOrigins: [...new Set((embed.embedOrigins ?? []).map((o) => String(o).trim().toLowerCase().replace(/\/+$/, "")).filter(Boolean))],
+    embedTtlMs: embed.embedTtlMs ?? 24 * 3600_000,
+    mintRpmMax: embed.mintRpmMax ?? 10,
   };
 
   const note = (kind, agent, payload = {}, id = null) => {
@@ -83,7 +137,29 @@ export function createChatFace({
   const subsidyRemainingToday = (visitorSub) => {
     if (!subsidyOpen()) return 0;
     const [from, to] = shDayWindow();
-    return Math.max(0, cfg.subsidyDailyMinutes - store.chatSubsidyUsed(visitorSub, from, to));
+    return Math.max(0, cfg.subsidyDailyMinutes - store.chatSubsidyUsed(visitorSub, from, to, "tenant"));
+  };
+
+  // ── Anonymous admission (embed lane D2) ────────────────────────────────────
+  // Settlement readiness mirrors subsidyOpen's wiring check but WITHOUT the
+  // tenant subsidy switch — anonymous has its own global gate. The per-agent
+  // switch is deployer-managed (store); both default closed.
+  const anonSettleReady = () =>
+    Boolean(cfg.embedSecret) && Boolean(subsidyUserId || subsidyKey) && Boolean(sub2api && !sub2api.degraded());
+  const anonOpenFor = (slug) =>
+    cfg.anonEnabled && anonSettleReady() && store.embedSettingsGet(slug)?.anonymous === true;
+  // The anon daily bucket needs both the slug (per-agent gate) and the sub —
+  // callers from the routes always have both.
+  const anonRemainingFor = (slug, visitorSub) => {
+    if (!anonOpenFor(slug)) return 0;
+    const [from, to] = shDayWindow();
+    return Math.max(0, cfg.anonDailyMinutes - store.chatSubsidyUsed(visitorSub, from, to, "anon"));
+  };
+  // Origins allowed to mint for an agent: the deployer's per-agent list ∪ the
+  // platform fallback list. Unconfigured = closed (fail-closed by shape).
+  const embedOriginsFor = (slug) => {
+    const perAgent = store.embedSettingsGet(slug)?.origins ?? [];
+    return new Set([...perAgent.map((o) => String(o).toLowerCase()), ...cfg.embedOrigins]);
   };
 
   const chatable = (state) =>
@@ -178,14 +254,38 @@ export function createChatFace({
     return false;
   }
 
+  // The single identity seam (embed lane D1/D3): a bearer is a tenant ID
+  // token (console client OR an embed-allowlist product-line client) or a
+  // facade-minted ephemeral token. Tenant shape wins when both could apply.
+  // The ephemeral's slug travels with the credential — the routes check it
+  // against the addressed agent (cross-agent replay refuses).
   async function verifyVisitor(req) {
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-    if (!bearer || !logto?.configured) return null;
-    try {
-      return await logto.verifyIdToken(bearer, { allowlist: false });
-    } catch {
-      return null;
+    if (!bearer) return null;
+    if (logto?.configured) {
+      try {
+        const ident = await logto.verifyIdToken(bearer, { allowlist: false, acceptEmbedAudiences: true });
+        if (ident) return { ...ident, tier: "tenant" };
+      } catch { /* allowlist diagnostics never apply on this call shape */ }
     }
+    const anon = verifyEphemeral(bearer, cfg.embedSecret);
+    if (anon) return { email: "", sub: `anon:${anon.vid}`, tier: "anon", slug: anon.slug };
+    return null;
+  }
+
+  // Mint-rate bound per source (origin × peer IP): a hostile page must not
+  // be able to churn anonymous identities. Rolling 60s, same shape as the
+  // chat RPM bucket.
+  const mintBuckets = new Map();
+  function checkMintRpm(source) {
+    const nowTs = Date.now();
+    let b = mintBuckets.get(source);
+    if (!b || nowTs - b.windowStart >= 60_000) {
+      b = { windowStart: nowTs, count: 0 };
+      mintBuckets.set(source, b);
+    }
+    b.count += 1;
+    return b.count <= cfg.mintRpmMax;
   }
 
   function register(app) {
@@ -211,11 +311,93 @@ export function createChatFace({
       };
       const visitor = await verifyVisitor(req);
       if (!visitor) return res.json(out);
+      if (visitor.tier === "anon") {
+        return res.json({
+          ...out,
+          tier: "anon",
+          // An anonymous credential scoped to another agent still answers
+          // status (read-only) — the turn surface is where scope refuses.
+          anonymousRemainingToday: visitor.slug === slug ? anonRemainingFor(slug, visitor.sub) : 0,
+        });
+      }
       res.json({
         ...out,
+        tier: "tenant",
         subsidyRemainingToday: subsidyRemainingToday(visitor.sub),
         hostPoolRemaining: hostRemaining(slug),
       });
+    });
+
+    // ── Embed cold-start config (embed lane D5): the widget's first fetch.
+    // Public and secret-free — chatability, anonymous availability, agent
+    // display fields. No quota internals, no subsidy state, no keys.
+    app.get("/api/wanxing/v1/chat/:agentSlug/embed-config", async (req, res) => {
+      let state;
+      try {
+        state = await agentState(req.params.agentSlug);
+      } catch (e) {
+        return res.status(503).json({ error: { code: "DEPLOYMENT_SOURCE_UNAVAILABLE", message: `deployment source unreachable (${String(e?.message || e)})` } });
+      }
+      if (!state.exists || state.visibility === "private") {
+        return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
+      }
+      res.json({
+        chatAble: chatable(state),
+        reason: state.paused ? "agent_paused" : (!subsidyOpen() && hostRemaining(state.slug) <= 0 ? "chat_not_open" : null),
+        anonymous: anonOpenFor(state.slug),
+        agent: { name: state.entry?.name ?? state.slug, description: state.entry?.description ?? "" },
+        theme: {},
+      });
+    });
+
+    // ── Ephemeral visitor-token mint (embed lane D1): origin-gated, source
+    // rate-bounded, slug-scoped. The mint refuses (rather than issues-then-
+    // fails-at-turn) when the anonymous lane is closed — the widget reads
+    // that as "show login" instead of "anonymous then 403".
+    app.post("/api/wanxing/v1/chat/:agentSlug/visitor-token", express.json({ limit: "4kb" }), async (req, res) => {
+      const slug = req.params.agentSlug;
+      if (!cfg.embedSecret) {
+        return res.status(503).json({ error: { code: "EMBED_NOT_CONFIGURED", message: "the embed lane is not configured on this facade" } });
+      }
+      let state;
+      try {
+        state = await agentState(slug);
+      } catch (e) {
+        return res.status(503).json({ error: { code: "DEPLOYMENT_SOURCE_UNAVAILABLE", message: `deployment source unreachable (${String(e?.message || e)})` } });
+      }
+      if (!state.exists || state.visibility === "private") {
+        return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
+      }
+      if (state.paused) {
+        return res.status(423).json({ error: { code: "AGENT_PAUSED", message: "this agent is paused" } });
+      }
+      // Same-origin widget fetches carry no browser Origin header (it is
+      // same-origin by construction), so the widget passes its attested
+      // embedding origin in the body; a browser-set Origin header, when
+      // present (cross-origin direct calls), always wins over the claim.
+      const headerOrigin = String(req.headers.origin || "").trim().toLowerCase().replace(/\/+$/, "");
+      const claimedOrigin = String(req.body?.origin || "").trim().toLowerCase().replace(/\/+$/, "");
+      const origin = headerOrigin || (/^https?:\/\/[a-z0-9.-]+(:\d+)?$/.test(claimedOrigin) ? claimedOrigin : "");
+      if (!origin || !embedOriginsFor(slug).has(origin)) {
+        note("refused", slug, { stage: "mint", code: "EMBED_ORIGIN_NOT_ALLOWED", origin: origin || "(none)" });
+        return res.status(403).json({ error: { code: "EMBED_ORIGIN_NOT_ALLOWED", message: "this origin is not allowed to embed that agent" } });
+      }
+      if (!anonOpenFor(slug)) {
+        note("refused", slug, { stage: "mint", code: "ANON_NOT_OPEN", origin });
+        return res.status(403).json({
+          error: { code: "ANON_NOT_OPEN", message: "anonymous conversations are not enabled for this agent", hint: "login to continue", loginUpgrade: true },
+        });
+      }
+      const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || "";
+      if (!checkMintRpm(`${origin}|${ip}`)) {
+        note("refused", slug, { stage: "mint", code: "RATE_LIMITED", origin });
+        return res.status(429).json({ error: { code: "RATE_LIMITED", message: "visitor credential mint rate limit exceeded" } });
+      }
+      const vid = randomBytes(16).toString("hex");
+      const exp = Date.now() + cfg.embedTtlMs;
+      const token = signEphemeral({ vid, slug, iat: Date.now(), exp }, cfg.embedSecret);
+      note("minted", slug, { origin, tier: "anon" });
+      res.status(201).json({ token, tier: "anon", expiresAt: exp, anonymousDailyMinutes: cfg.anonDailyMinutes });
     });
 
     // ── The chat turn surface. Same admission order as the API lane with the
@@ -227,6 +409,12 @@ export function createChatFace({
       if (!visitor) {
         note("refused", slug, { stage: "visitor", code: "VISITOR_AUTH_REQUIRED" });
         return res.status(401).json({ error: { code: "VISITOR_AUTH_REQUIRED", message: "a verified tenant login is required to chat" } });
+      }
+      // Ephemeral credentials are slug-scoped (embed lane D1): a token minted
+      // for one agent never opens another's lane.
+      if (visitor.tier === "anon" && visitor.slug !== slug) {
+        note("refused", slug, { stage: "visitor", code: "VISITOR_AUTH_REQUIRED", tier: "anon" });
+        return res.status(401).json({ error: { code: "VISITOR_AUTH_REQUIRED", message: "this visitor credential was not minted for that agent" } });
       }
       const caller = { userId: visitorCallerId(visitor.sub), email: visitor.email, visitorSub: visitor.sub };
 
@@ -255,7 +443,25 @@ export function createChatFace({
         note("refused", slug, { stage: "admission", code: "AGENT_PAUSED", channel: "chat", caller: visitor.email || visitor.sub });
         return res.status(423).json({ error: { code: "AGENT_PAUSED", message: "this agent is paused" } });
       }
-      if (!chatable(state)) {
+
+      // Tier-split admission (embed lane D2): anonymous visitors never draw
+      // the host allowance — their only settler is the (tighter) anonymous
+      // subsidy bucket, and every refusal names the login-upgrade path.
+      // Tenant visitors keep the chatability gate and waterfall unchanged.
+      let settler = null;
+      if (visitor.tier === "anon") {
+        if (!anonOpenFor(slug)) {
+          note("refused", slug, { stage: "admission", code: "ANON_NOT_OPEN", channel: "chat", tier: "anon" });
+          return res.status(403).json({
+            error: {
+              code: "ANON_NOT_OPEN",
+              message: "anonymous conversations are not enabled for this agent",
+              hint: "login to continue this conversation",
+              loginUpgrade: true,
+            },
+          });
+        }
+      } else if (!chatable(state)) {
         note("refused", slug, { stage: "admission", code: "CHAT_NOT_OPEN", channel: "chat", caller: visitor.email || visitor.sub });
         return res.status(403).json({ error: { code: "CHAT_NOT_OPEN", message: "this agent is not open for conversations (no subsidy and no host allowance)" } });
       }
@@ -266,10 +472,22 @@ export function createChatFace({
       }
 
       // Settler resolves BEFORE the slot: an exhausted waterfall must not
-      // even occupy the concurrency machinery (and must answer 402 with the
-      // own-key bridge hint).
-      const settler = settlerFor(slug, visitor.sub);
+      // even occupy the concurrency machinery. Anonymous resolves to the
+      // subsidy settler only (host money is never spent on anonymous
+      // traffic); exhaustion answers the login-upgrade 402.
+      settler = visitor.tier === "anon" ? (anonRemainingFor(slug, visitor.sub) > 0 ? "subsidy" : null) : settlerFor(slug, visitor.sub);
       if (!settler) {
+        if (visitor.tier === "anon") {
+          note("refused", slug, { stage: "settler", code: "ANON_ALLOWANCE_EXHAUSTED", channel: "chat", tier: "anon" });
+          return res.status(402).json({
+            error: {
+              code: "ANON_ALLOWANCE_EXHAUSTED",
+              message: "the anonymous daily allowance for this agent is used up",
+              hint: "login to continue with a full allowance",
+              loginUpgrade: true,
+            },
+          });
+        }
         note("refused", slug, { stage: "settler", code: "CHAT_ALLOWANCE_EXHAUSTED", channel: "chat", caller: visitor.email || visitor.sub });
         return res.status(402).json({
           error: {
@@ -303,11 +521,11 @@ export function createChatFace({
         ? String(supplied)
         : `wx:chat-${idemKey ? sha256(idemKey).slice(0, 16) : oneShotTail()}`;
       const startedAt = Date.now();
-      if (prior !== "done") note("admitted", slug, { caller: visitor.email || visitor.sub, idem_key: idemKey || "", transport: method, channel: "chat", settler });
+      if (prior !== "done") note("admitted", slug, { caller: visitor.email || visitor.sub, idem_key: idemKey || "", transport: method, channel: "chat", settler, ...(visitor.tier === "anon" ? { tier: "anon" } : {}) });
 
       const finish = (outcome) => {
         core.releaseSlot(caller.userId, slug);
-        const row = core.recordUsage({ caller, slug, idemKey, startedAt, endedAt: Date.now(), outcome, channel: "chat", settler, visitorSub: visitor.sub });
+        const row = core.recordUsage({ caller, slug, idemKey, startedAt, endedAt: Date.now(), outcome, channel: "chat", settler, visitorSub: visitor.sub, visitorTier: visitor.tier });
         if (row.settlementStatus === "waived") {
           note("settled", slug, { minutes_billed: 0, usd: 0, settlement_status: "waived", outcome, channel: "chat", settler }, `facade-${row.id}`);
           return;
@@ -403,5 +621,5 @@ export function createChatFace({
     });
   }
 
-  return { register, chatable, hostRemaining, subsidyRemainingToday, settlerFor, settleChatRow, subsidyOpen };
+  return { register, chatable, hostRemaining, subsidyRemainingToday, settlerFor, settleChatRow, subsidyOpen, anonOpenFor, anonRemainingFor, verifyVisitor };
 }

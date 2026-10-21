@@ -29,6 +29,12 @@ export function FleetView({ focusSlug } = {}) {
   const [alwDraft, setAlwDraft] = useState("");
   const [alwNote, setAlwNote] = useState("");
   const [alwBusy, setAlwBusy] = useState(false);
+  // Embed settings (add-embed-copilot-lane 5.1): per-agent anonymous switch +
+  // allowed embedding origins, and the copy-paste embed snippet.
+  const [embedS, setEmbedS] = useState(null); // { slug, doc }
+  const [embedDraft, setEmbedDraft] = useState({ anonymous: false, origins: "" });
+  const [embedNote, setEmbedNote] = useState("");
+  const [embedBusy, setEmbedBusy] = useState(false);
   // Serving plans (add-serving-plans): the caller's own statement.
   const [stmt, setStmt] = useState(null);
   const [stmtErr, setStmtErr] = useState("");
@@ -255,6 +261,42 @@ export function FleetView({ focusSlug } = {}) {
       .finally(() => setAlwBusy(false));
   };
 
+  // Embed settings (add-embed-copilot-lane 5.1): the origins textarea is one
+  // origin per line; the panel carries the copy-paste snippet so the flow
+  // from "开关" to "贴进产品线" never leaves this card.
+  const loadEmbed = (slug) => {
+    setEmbedNote("");
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/embed-settings`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `embed HTTP ${r.status}`);
+        setEmbedS({ slug, doc: d });
+        setEmbedDraft({ anonymous: d.anonymous === true, origins: (d.origins ?? []).join("\n") });
+      })
+      .catch((e) => setEmbedNote(String(e?.message || e)));
+  };
+  const saveEmbed = (slug) => {
+    setEmbedNote("");
+    const origins = embedDraft.origins.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (origins.length > 20) return setEmbedNote("至多 20 个允许源");
+    if (origins.some((o) => !/^https?:\/\/[^\s/]+$/.test(o.replace(/\/+$/, "")))) return setEmbedNote("每行一个源，形如 https://example.com");
+    setEmbedBusy(true);
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/embed-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anonymous: embedDraft.anonymous, origins }),
+    })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+        setEmbedS({ slug, doc: d });
+        setEmbedDraft({ anonymous: d.anonymous === true, origins: (d.origins ?? []).join("\n") });
+        setEmbedNote("已保存——下一次匿名凭据铸发起生效");
+      })
+      .catch((e) => setEmbedNote(String(e?.message || e)))
+      .finally(() => setEmbedBusy(false));
+  };
+
   return (
     <div className="space-y-5">
       <div className="space-y-3">
@@ -316,6 +358,7 @@ export function FleetView({ focusSlug } = {}) {
                     <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
                     <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
                     <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
+                    <button onClick={() => loadEmbed(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
                     <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
                     <details className="text-[11px] text-slate-400 ml-auto self-center">
                       <summary className="cursor-pointer select-none">slug</summary>
@@ -492,6 +535,52 @@ export function FleetView({ focusSlug } = {}) {
               {alwNote && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote}</span>}
             </form>
             <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
+          </div>
+        )}
+        {embedS && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`embed-panel-${embedS.slug}`}>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs">嵌入助手（副驾 widget） · {embedS.slug}</span>
+              <button onClick={() => setEmbedS(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={embedDraft.anonymous}
+                onChange={(e) => setEmbedDraft((d) => ({ ...d, anonymous: e.target.checked }))}
+                data-testid={`embed-anon-toggle-${embedS.slug}`}
+              />
+              开放匿名对话（访客免登录，按平台匿名日额计费；关闭后仅登录访客可聊）
+            </label>
+            <div className="space-y-1">
+              <div className="text-xs text-slate-500">允许嵌入的网页源（每行一个，形如 https://lex.finddatatech.cloud）——匿名凭据只对这些源铸发。</div>
+              <textarea
+                value={embedDraft.origins}
+                onChange={(e) => setEmbedDraft((d) => ({ ...d, origins: e.target.value }))}
+                rows={3}
+                spellCheck={false}
+                className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+                placeholder={"https://lex.finddatatech.cloud\nhttps://wire.finddatatech.cloud"}
+              />
+            </div>
+            <div className="flex gap-2 items-center">
+              <button
+                disabled={embedBusy}
+                onClick={() => saveEmbed(embedS.slug)}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+              >
+                {embedBusy ? "保存中…" : "保存"}
+              </button>
+              {embedNote && <span className="text-xs text-amber-600 dark:text-amber-400">{embedNote}</span>}
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-slate-500">嵌入代码（贴进产品线页面；宿主上下文/身份递送见文档「嵌入车道」）：</div>
+              <pre className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-900 p-2 text-[10px] font-mono text-slate-600 dark:text-slate-300">{`<iframe src="${window.location.origin}/#/embed/${embedS.slug}?open=1"
+  style="position:fixed;bottom:0;right:0;width:420px;height:640px;border:0;
+  background:transparent;z-index:2147483000"
+  allow="clipboard-write" title="助手"></iframe>`}</pre>
+              <div className="text-[10px] text-slate-400">弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。</div>
+            </div>
           </div>
         )}
       </div>

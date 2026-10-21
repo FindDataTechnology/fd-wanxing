@@ -455,3 +455,25 @@ test("exchange gate: chat logins admit off-allowlist identities; console keeps r
   const chatTry = await a.exchangeCode({ code: stranger.code, verifier: "v", redirectUri: "https://web/console-callback", allowlist: false }).catch((e) => e.status);
   assert.notEqual(chatTry, 403);
 });
+
+// ── Embed audience allowlist (add-embed-copilot-lane 1.2) ─────────────────────
+// Product-line SPA clients of the same tenant: their ID tokens open the chat
+// lane (host-relayed identity) only when the client is on WANXING_EMBED_AUDIENCES
+// AND the caller explicitly opted into embed audiences. The console shape and
+// unconfigured instances stay single-audience.
+
+test("embed D3: audience allowlist admits product-line clients on the chat shape only", async () => {
+  const a = make({ embedAudiences: "app-lex,app-wire" });
+  const lexTok = sign(claims({ aud: "app-lex" }));
+  assert.deepEqual(await a.verifyIdToken(lexTok, { allowlist: false, acceptEmbedAudiences: true }), { email: "ops@x.test", sub: "u1" });
+  // Same token on the default shape (console): refused — the list never widens the console gate.
+  assert.equal(await a.verifyIdToken(lexTok, { allowlist: false }), null);
+  assert.equal(await a.verifyIdToken(lexTok), null);
+  // Off-list client: refused even on the chat shape.
+  assert.equal(await a.verifyIdToken(sign(claims({ aud: "app-unknown" })), { allowlist: false, acceptEmbedAudiences: true }), null);
+  // Unconfigured embedAudiences: env 未配时新 aud 拒（回归——行为逐字节同旧）。
+  const b = make();
+  assert.equal(await b.verifyIdToken(lexTok, { allowlist: false, acceptEmbedAudiences: true }), null);
+  // The console client itself still passes on the chat shape (regression).
+  assert.deepEqual(await a.verifyIdToken(sign(claims()), { allowlist: false, acceptEmbedAudiences: true }), { email: "ops@x.test", sub: "u1" });
+});

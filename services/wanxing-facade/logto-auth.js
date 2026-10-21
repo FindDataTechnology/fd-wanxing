@@ -11,13 +11,23 @@ import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 const b64u = (s) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, now = () => Date.now() }) {
+export function createLogtoAuth({ endpoint, appId, allowlist, embedAudiences = "", fetchImpl = null, now = () => Date.now() }) {
   const base = endpoint.replace(/\/+$/, "");
   const jwksUri = `${base}/oidc/jwks`;
   const allowed = new Set(
     String(allowlist || "")
       .split(",")
       .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  // Embed audience allowlist (add-embed-copilot-lane D3): product-line SPA
+  // clients of the SAME tenant whose ID tokens the chat lane additionally
+  // accepts (host-relayed identity). Never applies to the console gate —
+  // only the explicit { acceptEmbedAudiences: true } call shape (chat lane).
+  const embedAuds = new Set(
+    String(embedAudiences || "")
+      .split(",")
+      .map((s) => s.trim())
       .filter(Boolean),
   );
   let jwks = null;
@@ -39,8 +49,11 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
   // allowlist applies by default (the console gate); the chat lane calls
   // with { allowlist: false } — any verified tenant identity may chat, sub
   // is the identity, and an absent email claim degrades to "" (the visitor
-  // is still fully identified by sub).
-  async function verifyIdToken(token, { allowlist = true } = {}) {
+  // is still fully identified by sub). acceptEmbedAudiences (embed lane D3)
+  // additionally admits ID tokens whose aud is a product-line client on the
+  // embed audience allowlist — the host-relayed identity shape. It is never
+  // combined with allowlist:true: the console gate stays single-audience.
+  async function verifyIdToken(token, { allowlist = true, acceptEmbedAudiences = false } = {}) {
     if (!configured || typeof token !== "string") return null;
     try {
       const [h, p, s] = token.split(".");
@@ -77,7 +90,7 @@ export function createLogtoAuth({ endpoint, appId, allowlist, fetchImpl = null, 
       const iss = `${base}/oidc`;
       if (!okSig) return null;
       if (payload.iss !== iss) return null;
-      if (payload.aud !== appId) return null;
+      if (payload.aud !== appId && !(acceptEmbedAudiences && embedAuds.has(payload.aud))) return null;
       if (Number(payload.exp) * 1000 <= now()) return null;
       const email = String(payload.email ?? "").toLowerCase();
       const sub = String(payload.sub ?? "");

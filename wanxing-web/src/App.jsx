@@ -14,11 +14,12 @@ import { ConsoleView } from "./views/ConsoleView.jsx";
 import { ChatView } from "./views/ChatView.jsx";
 import { CollectionsView } from "./views/CollectionsView.jsx";
 import { BundleView } from "./views/BundleView.jsx";
+import { EmbedView } from "./views/EmbedView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
 import { loginLogto, signOut, useAuth } from "./auth.js";
 
-const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView };
+const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView, "#/embed": EmbedView };
 
 const CONTACT_EMAIL = "1253774197@qq.com";
 const CONTACT_PHONE = "17753221425";
@@ -130,12 +131,17 @@ export function App() {
   // Deep link (agent-service-config / add-agent-chat-lane): `#/console/<slug>`
   // lands on the console with that deployment's service-config panel open
   // (the 壹座 pack detail's "去配置" points here); `#/chat/<slug>` is the
-  // visitor conversation page.
+  // visitor conversation page; `#/embed/<slug>` is the embeddable copilot
+  // widget (add-embed-copilot-lane) — its slug may carry a ?query of theme
+  // parameters, which the view parses itself.
   const [viewKey, focusSlug] = (() => {
-    const m = hash.match(/^(#\/(?:console|catalog|docs|chat|collections|bundle))(\/(.+))?$/);
+    const m = hash.match(/^(#\/(?:console|catalog|docs|chat|collections|bundle|embed))(\/([^?]+))?/);
     return m ? [m[1], m[3] ? decodeURIComponent(m[3]) : null] : [hash, null];
   })();
   const View = VIEWS[viewKey] ?? IntroView;
+  // The embed widget is a bare surface: no site header, nav, or footer — the
+  // host page owns the chrome and the iframe owns only the widget.
+  if (viewKey === "#/embed") return <EmbedView focusSlug={focusSlug} />;
   const tab = (h, label) => (
     <a
       href={h}

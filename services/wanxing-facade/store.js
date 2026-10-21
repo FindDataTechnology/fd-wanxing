@@ -103,6 +103,13 @@ export function createWanxingStore({ file }) {
   if (!usageCols.has("channel")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN channel TEXT NOT NULL DEFAULT 'api'`);
   if (!usageCols.has("settler")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN settler TEXT`);
   if (!usageCols.has("visitor_sub")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN visitor_sub TEXT`);
+  // Embed lane tier marker (add-embed-copilot-lane D2): distinguishes
+  // anonymous (ephemeral) visitors from tenant visitors on chat rows. The
+  // daily-allowance derivations filter on it — anonymous minutes draw their
+  // own (tighter) bucket and can never collide with a tenant's subsidy.
+  // Existing rows are tenant rows by construction (the embed lane did not
+  // exist when they landed); ALTER's DEFAULT backfills them as such.
+  if (!usageCols.has("visitor_tier")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN visitor_tier TEXT NOT NULL DEFAULT 'tenant'`);
   // Serving-plan audit reference (add-serving-plans D5): which plan a
   // plan-settled row was recorded under. Derivation keys on caller identity
   // (settler='plan' AND caller_id), so this column is the audit trail, not
@@ -121,6 +128,17 @@ export function createWanxingStore({ file }) {
     agent_slug TEXT PRIMARY KEY,
     limit_minutes INTEGER NOT NULL,
     updated_by TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+
+  // Embed settings (add-embed-copilot-lane D2/D5): per-agent embed policy —
+  // the anonymous switch (deployer opt-in, both gates default off) and the
+  // allowed embedding origins enforced at the ephemeral-mint gate.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_embed_settings (
+    agent_slug TEXT PRIMARY KEY,
+    anonymous INTEGER NOT NULL DEFAULT 0,
+    origins TEXT NOT NULL DEFAULT '[]',
+    updated_by TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   )`);
 
@@ -348,9 +366,9 @@ export function createWanxingStore({ file }) {
 
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
-      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, plan_ref, mission_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.planRef ?? null, row.missionId ?? null);
+      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, visitor_tier, plan_ref, mission_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.visitorTier || "tenant", row.planRef ?? null, row.missionId ?? null);
     },
     usageMarkSettled(id) {
       db.prepare(`UPDATE wanxing_usage SET settlement_status = 'settled', settled_at = ? WHERE id = ?`).run(now(), id);
@@ -363,11 +381,14 @@ export function createWanxingStore({ file }) {
     },
     // Chat-lane allowance derivation (D3): no counters, the ledger IS the
     // source. Subsidy per visitor per day window [fromMs, toMs); host usage
-    // is all-time for the agent (the cap is one-time).
-    chatSubsidyUsed(visitorSub, fromMs, toMs) {
+    // is all-time for the agent (the cap is one-time). tier ('tenant' by
+    // default, 'anon' for embed-lane ephemeral visitors, add-embed-copilot-lane
+    // D2) separates the two daily buckets — anonymous minutes never draw the
+    // tenant subsidy allowance and vice versa.
+    chatSubsidyUsed(visitorSub, fromMs, toMs, tier = "tenant") {
       const r = db.prepare(`SELECT COALESCE(SUM(minutes_billed), 0) AS m FROM wanxing_usage
-        WHERE channel = 'chat' AND settler = 'subsidy' AND visitor_sub = ? AND started_at >= ? AND started_at < ?`)
-        .get(visitorSub, fromMs, toMs);
+        WHERE channel = 'chat' AND settler = 'subsidy' AND visitor_sub = ? AND visitor_tier = ? AND started_at >= ? AND started_at < ?`)
+        .get(visitorSub, tier, fromMs, toMs);
       return r.m;
     },
     hostAllowanceUsed(agentSlug) {
@@ -436,6 +457,27 @@ export function createWanxingStore({ file }) {
       db.prepare(`INSERT INTO wanxing_host_allowance (agent_slug, limit_minutes, updated_by, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(agent_slug) DO UPDATE SET limit_minutes = excluded.limit_minutes, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
         .run(agentSlug, Number(limitMinutes), String(updatedBy || ""), now());
+    },
+
+    // ── Embed settings (add-embed-copilot-lane D2/D5) ───────────────────────
+    // Origins normalize to origin-shaped strings (scheme://host[:port],
+    // lowercase, no trailing slash); a corrupt list reads empty — writes
+    // always re-serialize, so the failure mode is "closed", never "open".
+    embedSettingsGet(agentSlug) {
+      const r = db.prepare(`SELECT anonymous, origins, updated_by, updated_at FROM wanxing_embed_settings WHERE agent_slug = ?`).get(agentSlug);
+      if (!r) return null;
+      let origins = [];
+      try { origins = JSON.parse(r.origins) ?? []; } catch { origins = []; }
+      return { anonymous: r.anonymous === 1, origins: origins.map((o) => String(o)), updatedBy: r.updated_by, updatedAt: r.updated_at };
+    },
+    embedSettingsSet(agentSlug, { anonymous, origins, updatedBy }) {
+      const cur = this.embedSettingsGet(agentSlug) ?? { anonymous: false, origins: [] };
+      const nextAnon = anonymous === undefined ? cur.anonymous : anonymous === true;
+      const nextOrigins = origins === undefined ? cur.origins : [...new Set((Array.isArray(origins) ? origins : []).map((o) => String(o).trim().toLowerCase().replace(/\/+$/, "")).filter(Boolean))];
+      db.prepare(`INSERT INTO wanxing_embed_settings (agent_slug, anonymous, origins, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(agent_slug) DO UPDATE SET anonymous = excluded.anonymous, origins = excluded.origins, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+        .run(agentSlug, nextAnon ? 1 : 0, JSON.stringify(nextOrigins), String(updatedBy || cur.updatedBy || ""), now());
+      return this.embedSettingsGet(agentSlug);
     },
 
     // ── Serving plans (add-serving-plans D1/D5) ─────────────────────────────

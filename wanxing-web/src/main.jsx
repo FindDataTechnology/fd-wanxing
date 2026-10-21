@@ -8,10 +8,13 @@ import { handleConsoleCallback } from "./auth.js";
 // path via try_files) — state-checked exchange through the facade proxy
 // (console or chat gate), token pair persisted by the auth module, land on
 // the hash the login asked for (chat logins return to their conversation).
+// Embed popup logins (add-embed-copilot-lane D4) hand the credential to the
+// opener and close themselves — no landing redirect.
 if (window.location.pathname === "/console-callback") {
   handleConsoleCallback()
     .catch((e) => console.error("[wanxing] login failed:", e))
     .finally(() => {
+      if (window.wxEmbedDone) return;
       window.location.replace(window.location.origin + (window.wxLoginReturnTo || "/#/console"));
     });
 }

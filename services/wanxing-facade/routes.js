@@ -140,6 +140,10 @@ export function registerWanxingRoutes(app, {
     endpoint: env.WANXING_LOGTO_ENDPOINT || "",
     appId: env.WANXING_LOGTO_APP_ID || "",
     allowlist: env.WANXING_CONSOLE_ALLOWLIST || "",
+    // Embed lane (add-embed-copilot-lane D3): product-line SPA clients of the
+    // same tenant whose host-relayed ID tokens the chat lane additionally
+    // accepts. Console gates never use this list.
+    embedAudiences: env.WANXING_EMBED_AUDIENCES || "",
     fetchImpl: fetchImpl ?? undefined,
   });
   registerConsoleRoutes(app, {
@@ -325,6 +329,17 @@ export function registerWanxingRoutes(app, {
       subsidyEnabled: /^(1|true|yes)$/i.test(String(env.WANXING_CHAT_SUBSIDY_ENABLED || "")),
       subsidyDailyMinutes: Number(env.WANXING_CHAT_SUBSIDY_DAILY_MINUTES || 10),
       rpmMax: Number(env.WANXING_CHAT_RPM || 6),
+      // Embed lane (add-embed-copilot-lane): anonymous is double-gated — this
+      // global switch AND the per-agent deployer switch (wanxing_embed_settings,
+      // managed on the console face). No embedSecret = anonymous inert.
+      embed: {
+        anonEnabled: /^(1|true|yes)$/i.test(String(env.WANXING_CHAT_ANON_ENABLED || "")),
+        anonDailyMinutes: Number(env.WANXING_CHAT_ANON_DAILY_MINUTES || 3),
+        embedSecret: env.WANXING_EMBED_SECRET || "",
+        embedOrigins: String(env.WANXING_EMBED_ORIGINS || "").split(","),
+        embedTtlMs: Number(env.WANXING_EMBED_TTL_MS || 24 * 3600_000),
+        mintRpmMax: Number(env.WANXING_EMBED_MINT_RPM || 10),
+      },
     },
     report: (ev) => fleetReporter.report(ev),
     config: {

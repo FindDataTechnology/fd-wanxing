@@ -366,6 +366,47 @@ export function registerConsoleRoutes(app, {
     });
   });
 
+  // ── Embed settings (add-embed-copilot-lane 3.2): the per-agent embed
+  // policy — the anonymous switch (deployer opt-in; the platform's global
+  // switch must ALSO be on for anonymous to open) and the allowed embedding
+  // origins enforced at the ephemeral-mint gate. Same deployer-or-ops gate
+  // as the host allowance.
+  const originShape = /^https?:\/\/[a-z0-9.-]+(:\d+)?$/;
+  app.get("/api/wanxing/v1/console/deployments/:slug/embed-settings", async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const s = store.embedSettingsGet(req.params.slug);
+    return ok(res, {
+      anonymous: s?.anonymous ?? false,
+      origins: s?.origins ?? [],
+      updatedBy: s?.updatedBy ?? null,
+      updatedAt: s?.updatedAt ?? null,
+    });
+  });
+
+  app.put("/api/wanxing/v1/console/deployments/:slug/embed-settings", express.json({ limit: "8kb" }), async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const { anonymous, origins } = req.body ?? {};
+    if (anonymous !== undefined && typeof anonymous !== "boolean") {
+      return res.status(400).json({ error: "anonymous must be a boolean" });
+    }
+    let nextOrigins;
+    if (origins !== undefined) {
+      if (!Array.isArray(origins) || origins.length > 20 || origins.some((o) => typeof o !== "string" || o.length > 200)) {
+        return res.status(400).json({ error: "origins must be an array of at most 20 origin strings" });
+      }
+      nextOrigins = origins.map((o) => o.trim().toLowerCase().replace(/\/+$/, ""));
+      if (nextOrigins.some((o) => !originShape.test(o))) {
+        return res.status(400).json({ error: "each origin must be scheme://host[:port] (http/https)" });
+      }
+    }
+    const by = who.isOps ? "ops" : req.consoleIdentity.email;
+    const s = store.embedSettingsSet(req.params.slug, { anonymous, origins: nextOrigins, updatedBy: by });
+    say(`console: ${req.params.slug} embed settings (anonymous=${s.anonymous}, origins=${s.origins.length}) by ${by}`);
+    return ok(res, { anonymous: s.anonymous, origins: s.origins, updatedBy: s.updatedBy, updatedAt: s.updatedAt });
+  });
+
   // ── Serving plans (add-serving-plans 3.1) — ops credential only ───────────
   // Plans are caller-side money policy on the API lane: issued and adjusted
   // by the ops credential alone; any verified console identity (deployer or

@@ -192,7 +192,7 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   // Minutes round UP — a 5-second turn bills one minute unit (the rate table
   // is per started minute). outcome=error rows are recorded but waived: the
   // caller is never charged for a turn that produced nothing.
-  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null, missionId = null }) {
+  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null, visitorTier = null, missionId = null }) {
     const durationMs = Math.max(0, endedAt - startedAt);
     const billable = outcome === "ok";
     const minutesBilled = billable ? Math.max(1, Math.ceil(durationMs / 60_000)) : 0;
@@ -224,9 +224,13 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
       rateUsd: cfg.ratePerMin,
       settlementStatus: billable ? "pending" : "waived",
       // Chat-lane dimensions (add-agent-chat-lane D3); api rows keep nulls.
+      // visitor_tier (add-embed-copilot-lane D2): 'anon' for embed-lane
+      // ephemeral visitors, 'tenant' for logged-in ones; null = tenant (the
+      // store default covers API-era and tenant rows alike).
       ...(channel ? { channel } : {}),
       ...(settler ? { settler } : {}),
       ...(visitorSub ? { visitorSub } : {}),
+      ...(visitorSub && visitorTier ? { visitorTier } : {}),
       planRef,
       ...(missionId ? { missionId } : {}),
     };
