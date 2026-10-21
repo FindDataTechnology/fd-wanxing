@@ -28,8 +28,15 @@
 
 ## 3. 真机验收与出片
 
-- [ ] 3.1 真机三线走查（ego/等价 harness）：账号 A（名下有部署）只见本人卡、全按钮
+- [x] 3.1 真机三线走查（ego/等价 harness）：账号 A（名下有部署）只见本人卡、全按钮
   绿；他人部署路径直打 API 403 且页面对应文案；ops 令牌实探列表全量与 pause/白名单
   动作不变。留证据截图/探针输出
-- [ ] 3.2 出片与滚产：facade + web 两镜像同车（fd-build-snapshot，源仓先推 origin），
+  （2026-10-22 生产实证：aloadtree 只见本人 5 卡〔识律/宏观/估值/Planner/一键流〕，
+  本人卡配置+记录面板 200 开；他人 slug callers GET 403；深链他人 slug→孤儿区级
+  「配置未打开——这不是你部署的 agent…」文案命中；ops 令牌全量 15 条与 DB 对账一致。
+  截图因 ego 窗口最小化未拍，DOM 文本断言为证）
+- [x] 3.2 出片与滚产：facade + web 两镜像同车（fd-build-snapshot，源仓先推 origin），
   滚版后复跑 3.1 三线；台账（docs/registry-maintenance.md §9）记发布
+  （testaction005 通用池；facade 修复由姊妹 change 的 sha-6f5331d〔源 0c8c5c0，父=
+  本 change 5f10e4e〕承运上产 digest 8515e54f，自有片 c3e76f7 留作回滚位；web
+  sha-d5aa0be〔源 de73bc4〕digest 2ed27bca，gitee d149953/bed0460 + ArgoCD 硬刷新）
