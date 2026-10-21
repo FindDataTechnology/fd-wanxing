@@ -68,18 +68,39 @@ export function createSelfServiceFace({
       .filter((a) => a?.serving)
       .map((a) => ({ id: a.id, name: a.name, ...(a.serving.modelWhitelist ? { modelWhitelist: a.serving.modelWhitelist } : {}) }));
 
-  // Directory detail cache (add-catalog-facets): pack id → deployable agents,
-  // 60s TTL — the per-pack detail fetch is the same call my/packs makes per
-  // request; the directory source makes it once per window instead.
-  const dirCache = new Map(); // packId → { at, agents }
-  const directoryAgents = async (identity, packId) => {
+  // The pack's cluster declaration (add-cluster-catalog-grouping), read off
+  // the same detail: informational for the wizard (pre-check defaults, label
+  // optionals) — deployability stays `agents[].serving` above, so a declared
+  // member without a serving contract is still not deployable.
+  const clusterOf = (detail) => {
+    const c = detail?.manifest?.cluster;
+    if (!c || typeof c !== "object" || !Array.isArray(c.defaultAgents) || c.defaultAgents.length === 0) return null;
+    return {
+      name: String(c.name || detail?.manifest?.name || ""),
+      description: String(c.description ?? ""),
+      defaultAgents: c.defaultAgents.map(String),
+      optionalAgents: Array.isArray(c.optionalAgents) ? c.optionalAgents.map(String) : [],
+    };
+  };
+
+  // Directory detail cache (add-catalog-facets): pack id → deployable agents
+  // (+ the cluster declaration), 60s TTL — the per-pack detail fetch is the
+  // same call my/packs makes per request; the directory source makes it once
+  // per window instead.
+  const dirCache = new Map(); // packId → { at, agents, cluster }
+  const directoryDetail = async (identity, packId) => {
     const cached = dirCache.get(packId);
-    if (cached && Date.now() - cached.at < 60_000) return cached.agents;
-    const agents = await facetCall(identity, `/api/packs/${encodeURIComponent(packId)}`)
-      .then(async (r) => (r.ok ? deployableAgentsOf(await r.json()) : []))
-      .catch(() => []); // detail failure lists the pack as not-deployable
-    dirCache.set(packId, { at: Date.now(), agents });
-    return agents;
+    if (cached && Date.now() - cached.at < 60_000) return cached;
+    const hit = await facetCall(identity, `/api/packs/${encodeURIComponent(packId)}`)
+      .then(async (r) => {
+        if (!r.ok) return { agents: [], cluster: null };
+        const detail = await r.json();
+        return { agents: deployableAgentsOf(detail), cluster: clusterOf(detail) };
+      })
+      .catch(() => ({ agents: [], cluster: null })); // detail failure lists the pack as not-deployable
+    const entry = { at: Date.now(), ...hit };
+    dirCache.set(packId, entry);
+    return entry;
   };
 
   // Chatability verdict for the share card: public + unpaused + the chat
@@ -290,7 +311,7 @@ export function createSelfServiceFace({
       const pack = byId.get(e.packId) ?? null;
       let agentName = null;
       if (pack) {
-        const agents = await directoryAgents(identity, e.packId).catch(() => []);
+        const { agents } = await directoryDetail(identity, e.packId).catch(() => ({ agents: [] }));
         agentName = e.agentId ? (agents.find((a) => a.id === e.agentId)?.name ?? null) : null;
       }
       out.push({
@@ -331,14 +352,18 @@ export function createSelfServiceFace({
       }
       const mine = (browse?.packs ?? []).filter((p) => String(p.authorEmail || "").toLowerCase() === who.email);
 
-      // Serving-agent summary needs each pack's manifest (agents[].serving).
+      // Serving-agent summary needs each pack's manifest (agents[].serving);
+      // the cluster declaration rides off the same read.
       const out = [];
       for (const p of mine) {
         let agents = [];
+        let cluster = null;
         try {
           const r = await facetCall(who.identity, `/api/packs/${encodeURIComponent(p.id)}`);
           if (r.ok) {
-            agents = deployableAgentsOf(await r.json());
+            const detail = await r.json();
+            agents = deployableAgentsOf(detail);
+            cluster = clusterOf(detail);
           }
         } catch { /* detail failure lists the pack as not-deployable */ }
         out.push({
@@ -346,6 +371,7 @@ export function createSelfServiceFace({
           unlisted: p.unlisted === true, updatedAt: p.publishedAt ?? p.createdAt ?? null,
           deployableAgents: agents,
           deployable: agents.length > 0,
+          ...(cluster ? { cluster } : {}),
         });
       }
       res.json({ packs: out });
@@ -384,7 +410,7 @@ export function createSelfServiceFace({
 
       const out = [];
       for (const p of packs) {
-        const agents = await directoryAgents(who.identity, p.id);
+        const { agents, cluster } = await directoryDetail(who.identity, p.id);
         out.push({
           id: p.id,
           name: p.name,
@@ -394,6 +420,7 @@ export function createSelfServiceFace({
           deployableAgents: agents,
           deployable: agents.length > 0,
           deployed: inService.has(p.id),
+          ...(cluster ? { cluster } : {}),
         });
       }
       res.json({ packs: out });

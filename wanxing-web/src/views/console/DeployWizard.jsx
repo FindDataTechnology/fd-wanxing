@@ -82,8 +82,13 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
   const choosePack = (p) => {
     setPackId(p.id);
     setVersion("");
-    setPicked(new Set((p.deployableAgents ?? []).map((a) => a.id)));
-    setCfg(Object.fromEntries((p.deployableAgents ?? []).map((a) => [a.id, { model: "", budget: "", rhythmKey: "none", rhythmJson: "" }])));
+    // A cluster declaration pre-checks its default members only; optional
+    // members stay available (add-cluster-catalog-grouping). No declaration
+    // keeps the full pre-check.
+    const deployable = p.deployableAgents ?? [];
+    const defaults = p.cluster?.defaultAgents ?? null;
+    setPicked(new Set(deployable.filter((a) => !defaults || defaults.includes(a.id)).map((a) => a.id)));
+    setCfg(Object.fromEntries(deployable.map((a) => [a.id, { model: "", budget: "", rhythmKey: "none", rhythmJson: "" }])));
     setErr("");
     setStep(2);
   };
@@ -348,6 +353,14 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
       {step === 2 && pack && (
         <div className="space-y-2">
           <div className="text-xs text-slate-500">{pack.name} —— 勾选要部署为服务的 agent（至少一个）：</div>
+          {pack.cluster && (
+            <div className="rounded-lg border border-violet-200 dark:border-violet-900 bg-violet-50/40 dark:bg-violet-950/20 px-3 py-2 text-xs" data-testid="wizard-cluster-note">
+              <span className="px-1.5 py-0.5 rounded bg-violet-600 text-white mr-2">集群</span>
+              <span className="font-medium">{pack.cluster.name}</span>
+              {pack.cluster.description && <span className="text-slate-500"> —— {pack.cluster.description}</span>}
+              <div className="text-slate-500 mt-1">已预勾默认成员；可选成员按需勾上。部署后成员各自成为独立服务，目录按集群分组展示。</div>
+            </div>
+          )}
           <div className="space-y-1">
             {agents.map((a) => (
               <label key={a.id} className="flex gap-2 items-center text-xs">
@@ -359,6 +372,9 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                 />
                 <span className="font-medium">{a.name ?? a.id}</span>
                 <span className="text-slate-400 font-mono">{a.id}</span>
+                {pack.cluster && !(pack.cluster.defaultAgents ?? []).includes(a.id) && (
+                  <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500" data-testid={`wizard-optional-${a.id}`}>可选</span>
+                )}
                 {a.modelWhitelist && <span className="text-slate-400">模型域：{a.modelWhitelist.join(" · ")}</span>}
               </label>
             ))}

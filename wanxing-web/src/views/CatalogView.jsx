@@ -1,11 +1,44 @@
 // Public catalog: the facade's catalog API with slice-① pagination, M4②
 // server-side facets (search/category/featured through query params), and
 // the curation presentation — category chips from the facets summary, a
-// featured leading group, per-card category/activity badges. Error states
-// are explicit — an unreachable catalog never renders as "no agents".
+// featured leading group, per-card category/activity badges. Cluster members
+// (add-cluster-catalog-grouping) render grouped under their cluster header
+// within each presentation group; the header narrows the catalog to the
+// cluster. Error states are explicit — an unreachable catalog never renders
+// as "no agents".
 import { useEffect, useMemo, useState } from "react";
 
 const PAGE_SIZE = 12;
+
+// Split a page into render segments: runs of ungrouped agents stay flat in
+// their order; entries carrying a cluster marker collect under one segment
+// per cluster at the position of the first member, default members first.
+// Grouping is a presentation over THIS page — a cluster split across a page
+// boundary shows a partial group, and the header says so.
+export function segmentsOf(list) {
+  const segs = [];
+  const byId = new Map();
+  for (const a of list ?? []) {
+    const c = a?.cluster;
+    if (c?.id) {
+      let seg = byId.get(c.id);
+      if (!seg) {
+        seg = { kind: "cluster", id: c.id, name: c.name, members: c.members, url: c.url ?? null, items: [] };
+        byId.set(c.id, seg);
+        segs.push(seg);
+      }
+      seg.items.push(a);
+      if (!seg.url && c.url) seg.url = c.url;
+    } else {
+      const last = segs[segs.length - 1];
+      if (last && last.kind === "flat") last.items.push(a);
+      else segs.push({ kind: "flat", items: [a] });
+    }
+  }
+  const rank = (a) => (a.cluster?.role === "default" ? 0 : 1);
+  for (const s of segs) if (s.kind === "cluster") s.items.sort((x, y) => rank(x) - rank(y));
+  return segs;
+}
 
 export function CatalogView() {
   const [page, setPage] = useState(1);
@@ -18,6 +51,8 @@ export function CatalogView() {
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("");
   const [featured, setFeatured] = useState(false);
+  // Cluster narrowing: { id, name } or null; the name only labels the chip.
+  const [cluster, setCluster] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -38,6 +73,7 @@ export function CatalogView() {
       ...(q ? { q } : {}),
       ...(category ? { category } : {}),
       ...(featured ? { featured: "1" } : {}),
+      ...(cluster ? { cluster: cluster.id } : {}),
     });
     fetch(`/api/wanxing/v1/agents?${params}`)
       .then(async (r) => {
@@ -50,7 +86,7 @@ export function CatalogView() {
     return () => {
       live = false;
     };
-  }, [page, q, category, featured]);
+  }, [page, q, category, featured, cluster]);
 
   const total = doc?.total ?? doc?.agents?.length ?? 0;
   const pages = doc?.page_size ? Math.max(1, Math.ceil(total / doc.page_size)) : 1;
@@ -58,11 +94,19 @@ export function CatalogView() {
   const pickCategory = (c) => {
     setCategory(c);
     setFeatured(false);
+    setCluster(null);
     setPage(1);
   };
   const pickFeatured = () => {
     setFeatured((f) => !f);
     setCategory("");
+    setCluster(null);
+    setPage(1);
+  };
+  const pickCluster = (id, name) => {
+    setCluster(id ? { id, name } : null);
+    setCategory("");
+    setFeatured(false);
     setPage(1);
   };
 
@@ -80,6 +124,11 @@ export function CatalogView() {
         <span className="font-semibold">{a.name ?? a.slug}</span>
         <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
         {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
+        {a.cluster && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" data-testid={`cluster-role-${a.slug}`}>
+            {a.cluster.role === "default" ? "默认成员" : "可选成员"}
+          </span>
+        )}
         {a.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" data-testid={`category-badge-${a.slug}`}>{a.category}</span>}
         {a.turns7d > 0 && (
           <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`activity-badge-${a.slug}`}>
@@ -128,6 +177,45 @@ export function CatalogView() {
     </div>
   );
 
+  // A presentation group (featured / rest) rendered as segments: flat runs
+  // in a grid, each cluster under its own header. The header's count is
+  // honest about pagination — members on this page over declared members.
+  const renderSegments = (list) =>
+    segmentsOf(list).map((seg, i) => {
+      if (seg.kind === "flat") {
+        return (
+          <div key={`flat-${i}`} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-4">{seg.items.map(card)}</div>
+        );
+      }
+      const defaults = seg.items.filter((a) => a.cluster?.role === "default").length;
+      const optionals = seg.items.length - defaults;
+      return (
+        <div
+          key={`cluster-${seg.id}`}
+          data-testid={`cluster-group-${seg.id}`}
+          className="rounded-xl border border-violet-200 dark:border-violet-900 bg-violet-50/40 dark:bg-violet-950/20 p-3 mb-4"
+        >
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <span className="text-xs px-1.5 py-0.5 rounded bg-violet-600 text-white">集群</span>
+            <span className="font-semibold" data-testid={`cluster-name-${seg.id}`}>{seg.name}</span>
+            <span className="text-xs text-slate-500" data-testid={`cluster-count-${seg.id}`}>
+              {seg.items.length} / {seg.members} 在本页 · 默认 {defaults} · 可选 {optionals}
+            </span>
+            {cluster?.id !== seg.id && (
+              <button
+                onClick={() => pickCluster(seg.id, seg.name)}
+                data-testid={`cluster-filter-${seg.id}`}
+                className="text-xs underline text-violet-700 dark:text-violet-300"
+              >
+                只看这个集群
+              </button>
+            )}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{seg.items.map(card)}</div>
+        </div>
+      );
+    });
+
   return (
     <div>
       <h1 className="text-xl font-semibold mb-1">公共目录</h1>
@@ -147,7 +235,7 @@ export function CatalogView() {
       <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="catalog-chips">
         <button
           onClick={() => pickCategory("")}
-          className={`text-xs px-2.5 py-1 rounded-full border ${!category && !featured ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
+          className={`text-xs px-2.5 py-1 rounded-full border ${!category && !featured && !cluster ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
           data-testid="chip-all"
         >
           全部{facets ? ` ${facets.total}` : ""}
@@ -169,6 +257,19 @@ export function CatalogView() {
             {c.name} {c.count}
           </button>
         ))}
+        {cluster && (
+          <button
+            onClick={() => pickCluster(null)}
+            className="text-xs px-2.5 py-1 rounded-full border bg-violet-600 text-white border-transparent"
+            data-testid="chip-cluster"
+            title="清除集群筛选"
+          >
+            集群：{cluster.name} ×
+          </button>
+        )}
+        {!cluster && facets?.clusters > 0 && (
+          <span className="text-xs text-slate-400" data-testid="facets-clusters">含 {facets.clusters} 个集群</span>
+        )}
       </div>
 
       {err ? (
@@ -182,13 +283,13 @@ export function CatalogView() {
           {featuredAgents.length > 0 && (
             <div className="mb-5" data-testid="featured-group">
               <div className="text-sm font-semibold text-amber-600 dark:text-amber-400 mb-2">★ 精选</div>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{featuredAgents.map(card)}</div>
+              {renderSegments(featuredAgents)}
             </div>
           )}
           {restAgents.length > 0 && (
             <div className={featuredAgents.length > 0 ? "pt-1 border-t border-slate-200 dark:border-slate-800" : ""}>
               {featuredAgents.length > 0 && <div className="text-sm font-semibold text-slate-500 mt-3 mb-2">其余</div>}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{restAgents.map(card)}</div>
+              {renderSegments(restAgents)}
             </div>
           )}
         </>

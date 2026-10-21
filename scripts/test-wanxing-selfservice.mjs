@@ -548,3 +548,48 @@ test("non-seat runnerId passes through untouched (fleet-table path)", async () =
     await facet.close();
   }
 });
+
+// ── add-cluster-catalog-grouping: the cluster declaration rides the pack lists ──
+
+test("A my/packs + catalog/packs carry the cluster declaration; a declaration never implies deployability", async () => {
+  const declared = { name: "投研三镜头", description: "三镜头并行审读", defaultAgents: ["m", "v"], optionalAgents: ["ic"] };
+  const facet = await stubFacet({
+    packs: [
+      pack({
+        id: "c1",
+        name: "集群包·可部署",
+        manifest: {
+          agents: [
+            { id: "m", name: "宏观", serving: { protocol: "a2a" } },
+            { id: "v", name: "估值", serving: { protocol: "a2a" } },
+            { id: "ic", name: "投委会", serving: { protocol: "a2a" } },
+          ],
+          cluster: declared,
+        },
+      }),
+      pack({
+        id: "c2",
+        name: "集群包·无 serving",
+        manifest: { agents: [{ id: "m", name: "宏观" }, { id: "v", name: "估值" }], cluster: { ...declared, optionalAgents: [] } },
+      }),
+      pack(), // p1: no declaration
+    ],
+  });
+  const h = await harness({ facet });
+  try {
+    for (const route of ["/api/wanxing/v1/console/my/packs", "/api/wanxing/v1/console/catalog/packs"]) {
+      const r = await h.asDeployer(route);
+      assert.equal(r.status, 200, route);
+      const byId = Object.fromEntries(r.body.packs.map((p) => [p.id, p]));
+      assert.deepEqual(byId.c1.cluster, declared, `${route}: declaration rides verbatim`);
+      assert.deepEqual(byId.c1.deployableAgents.map((a) => a.id), ["m", "v", "ic"]);
+      assert.deepEqual(byId.c2.cluster, { ...declared, optionalAgents: [] });
+      assert.equal(byId.c2.deployable, false, `${route}: a declaration without serving contracts is still not deployable`);
+      assert.deepEqual(byId.c2.deployableAgents, []);
+      assert.equal("cluster" in byId.p1, false, `${route}: no declaration, no field`);
+    }
+  } finally {
+    await h.close();
+    await facet.close();
+  }
+});

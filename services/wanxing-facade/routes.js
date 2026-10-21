@@ -118,7 +118,7 @@ export function registerWanxingRoutes(app, {
   const resolveDeployment = (slug) => (slug ? bookkeeping.resolve(slug) : Promise.resolve(null));
   resolveDeploymentRef = resolveDeployment;
   const listDeployments = async () =>
-    (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath, packId: d.packId }));
+    (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath, packId: d.packId, agentId: d.agentId }));
 
   // Cross-process fleet reporting (add-fleet-event-backbone 6.3): the facade
   // reports admission/settlement toward the Wanxing observer while it still
@@ -295,6 +295,10 @@ export function registerWanxingRoutes(app, {
     // listed view — private packs never enter the catalog) and the facade's
     // own usage ledger read back as the 7-day activity count.
     packsBrowseFetch: async () => (await packsInternalFetch("/api/packs?pageSize=100")).packs ?? [],
+    // Cluster index (add-cluster-catalog-grouping): the public pack detail,
+    // fetched only for multi-agent browse rows — the `cluster` declaration
+    // lives in the manifest, which the browse row does not carry.
+    packsDetailFetch: (id) => packsInternalFetch(`/api/packs/${encodeURIComponent(id)}`),
     usageTurnsByAgent: (sinceMs) => store.usageTurnsByAgent(sinceMs),
   });
   face.register(app);

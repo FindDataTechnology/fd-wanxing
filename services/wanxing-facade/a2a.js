@@ -53,6 +53,33 @@ export function contextIdFor(message, idemKey, reapMinutes = null) {
   return `${prefix}${randomBytes(8).toString("hex")}`;
 }
 
+// The cluster index entry of one pack (add-cluster-catalog-grouping): null
+// unless the manifest declares `cluster`. The team is the declaration —
+// defaultAgents ∪ optionalAgents — not the pack's agent list; names come
+// from the agent list for presentation. Pure: the cluster unit (sibling
+// change add-cluster-service-unit) resolves against the same entry shape.
+export function clusterEntryOf(pack, detail) {
+  const manifest = detail?.manifest;
+  const c = manifest?.cluster;
+  if (!c || typeof c !== "object") return null;
+  const ids = (list) => (Array.isArray(list) ? list.map((v) => String(v)) : []);
+  const defaultAgents = ids(c.defaultAgents);
+  if (defaultAgents.length === 0) return null;
+  const optionalAgents = ids(c.optionalAgents).filter((id) => !defaultAgents.includes(id));
+  const names = new Map((Array.isArray(manifest.agents) ? manifest.agents : []).map((a) => [String(a?.id), a?.name ?? String(a?.id)]));
+  const policy = c.schedulingPolicy && typeof c.schedulingPolicy === "object" ? c.schedulingPolicy : {};
+  return {
+    id: String(pack.id),
+    version: pack.version,
+    name: String(c.name || pack.name || pack.id),
+    description: String(c.description ?? ""),
+    defaultAgents,
+    optionalAgents,
+    agentNames: Object.fromEntries([...defaultAgents, ...optionalAgents].map((id) => [id, names.get(id) ?? id])),
+    policy: Number.isInteger(policy.maxConcurrentRuns) && policy.maxConcurrentRuns > 0 ? { maxConcurrentRuns: policy.maxConcurrentRuns } : {},
+  };
+}
+
 export function createA2aFace({
   core,
   resolveDeployment, // async (slug) → { agentPath } | null
@@ -73,6 +100,11 @@ export function createA2aFace({
   // slug → external turns. Both optional — absent or failing degrades to
   // no signal, never blocks the catalog.
   packsBrowseFetch = null,
+  // Cluster index (add-cluster-catalog-grouping): packsDetailFetch(id)
+  // returns the facet pack detail ({manifest: {cluster?, agents}}); fetched
+  // only for browse rows with agentCount > 1. Optional — absent means no
+  // grouping, never a failure.
+  packsDetailFetch = null,
   usageTurnsByAgent = null,
 }) {
   const note = (kind, agent, payload = {}, id = null) => {
@@ -87,6 +119,19 @@ export function createA2aFace({
   const pausedTtlMs = 15_000;
   const entryCache = new Map(); // slug → { at, entry }
 
+  // One browse fetch feeds both the curation join and the cluster index on
+  // the entry cache's cadence; a failure throws to the caller, which keeps
+  // its own last-known map.
+  const browseCache = { at: 0, rows: null };
+  const browseRows = async () => {
+    if (!packsBrowseFetch) return [];
+    if (browseCache.rows && Date.now() - browseCache.at < entryTtlMs) return browseCache.rows;
+    const rows = (await packsBrowseFetch()) ?? [];
+    browseCache.rows = rows;
+    browseCache.at = Date.now();
+    return rows;
+  };
+
   // Curation join (add-catalog-facets): the facet packs browse mapped
   // pack-id → {category, featured}, cached on the entry cache's cadence. A
   // browse that fails or omits a pack leaves that entry signal-less (it
@@ -96,13 +141,67 @@ export function createA2aFace({
     if (!packsBrowseFetch) return curationCache.map;
     if (Date.now() - curationCache.at < entryTtlMs) return curationCache.map;
     try {
-      const packs = (await packsBrowseFetch()) ?? [];
+      const packs = await browseRows();
       const map = new Map();
       for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
       curationCache.map = map;
       curationCache.at = Date.now();
     } catch { /* unreachable join degrades to the last-known map */ }
     return curationCache.map;
+  };
+
+  // Cluster index (add-cluster-catalog-grouping D1/D2): a pack groups only
+  // when its manifest DECLARES `cluster` — the author's declaration is the
+  // team signal (a multi-agent pack without one is a bag of roles), the same
+  // rule the Yizuo catalog applies. The declaration lives in the detail, so
+  // multi-agent browse rows are detailed once per (pack, version); a
+  // republish changes the key and re-reads. A failed detail keeps whatever
+  // the previous index knew about that pack; a failed browse keeps the whole
+  // previous index — the catalog never blocks on this join.
+  const clusterCache = { at: 0, map: new Map(), details: new Map() }; // details: `${id}@${version}` → entry | null
+  const clusterMap = async () => {
+    if (!packsBrowseFetch || !packsDetailFetch) return clusterCache.map;
+    if (Date.now() - clusterCache.at < entryTtlMs) return clusterCache.map;
+    try {
+      const packs = await browseRows();
+      const next = new Map();
+      const details = new Map();
+      for (const p of packs) {
+        if (!(Number(p.agentCount) > 1)) continue;
+        const key = `${p.id}@${p.version}`;
+        let entry = clusterCache.details.get(key);
+        if (entry === undefined) {
+          try {
+            entry = clusterEntryOf(p, await packsDetailFetch(p.id));
+          } catch {
+            const prev = clusterCache.map.get(p.id);
+            if (prev) {
+              next.set(p.id, prev);
+              details.set(`${prev.id}@${prev.version}`, prev);
+            }
+            continue;
+          }
+        }
+        details.set(key, entry);
+        if (entry) next.set(p.id, entry);
+      }
+      clusterCache.map = next;
+      clusterCache.details = details;
+      clusterCache.at = Date.now();
+    } catch { /* browse failure keeps the last-known index */ }
+    return clusterCache.map;
+  };
+  // The marker a deployment carries when it is a declared member of an
+  // indexed pack: role from the declaration, `members` the declared team
+  // size. An agent the declaration does not name is not a member — it
+  // carries nothing, so `x / N` on the page stays honest.
+  const clusterMarkerFor = (dep, clusters) => {
+    const c = dep?.packId != null ? clusters.get(dep.packId) : null;
+    if (!c || !dep.agentId) return null;
+    const id = String(dep.agentId);
+    const role = c.defaultAgents.includes(id) ? "default" : c.optionalAgents.includes(id) ? "optional" : null;
+    if (!role) return null;
+    return { id: c.id, name: c.name, role, members: c.defaultAgents.length + c.optionalAgents.length };
   };
   // Activity signal: per-slug external turns over the trailing 7 days, both
   // lanes — the facade's own usage ledger read back (M4② 热度口径: featured
@@ -164,6 +263,8 @@ export function createA2aFace({
       paused: entry?.metadata?.paused === true,
       entry,
       agentPath: dep.agentPath,
+      packId: dep.packId ?? null,
+      agentId: dep.agentId ?? null,
     };
   }
 
@@ -203,12 +304,14 @@ export function createA2aFace({
         return sourceUnavailable(res, String(e?.message || e));
       }
       // Signals (add-catalog-facets): curation by pack id, activity by slug —
-      // both cached 60s, both degrading honestly.
-      const [curation, turns] = await Promise.all([curationMap(), turns7dMap()]);
+      // both cached 60s, both degrading honestly. The cluster index rides the
+      // same cadence (add-cluster-catalog-grouping).
+      const [curation, turns, clusters] = await Promise.all([curationMap(), turns7dMap(), clusterMap()]);
       for (const dep of deps) {
         const entry = await entryFor(dep.slug, dep);
         if (!entry || entry.visibility === "private") continue;
         const cur = dep.packId != null ? curation.get(dep.packId) : null;
+        const cluster = clusterMarkerFor(dep, clusters);
         out.push({
           slug: dep.slug,
           name: entry.name,
@@ -226,6 +329,9 @@ export function createA2aFace({
           ...(cur?.category ? { category: cur.category } : {}),
           ...(cur?.featured ? { featured: true } : {}),
           turns7d: turns.get(dep.slug) ?? 0,
+          // Cluster marker (additive): only declared members of a
+          // cluster-declaring pack carry it.
+          ...(cluster ? { cluster } : {}),
         });
       }
       // Server-side facets (add-catalog-facets): filtering happens BEFORE
@@ -234,7 +340,7 @@ export function createA2aFace({
       // keeps the legacy full-list shape — only the additive entry fields
       // above differ, which JSON consumers ignore.
       const q = req.query ?? {};
-      const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined;
+      const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined || q.cluster !== undefined;
       const wantsFacets = q.facets === "1" || q.facets === "true";
       if (q.page === undefined && q.page_size === undefined && !hasFilter && !wantsFacets) {
         return res.json({ agents: out });
@@ -243,6 +349,7 @@ export function createA2aFace({
       let list = out;
       if (q.category !== undefined) list = list.filter((a) => (a.category ?? "") === String(q.category));
       if (q.featured !== undefined && !["", "0", "false"].includes(String(q.featured))) list = list.filter((a) => a.featured === true);
+      if (q.cluster !== undefined) list = list.filter((a) => a.cluster?.id === String(q.cluster));
       if (needle) {
         list = list.filter((a) =>
           [a.name, a.description, a.slug, ...(a.tags ?? [])].join(" ").toLowerCase().includes(needle),
@@ -273,6 +380,8 @@ export function createA2aFace({
                 )
                   .map(([name, count]) => ({ name, count }))
                   .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name)),
+                // Distinct clusters over the unfiltered public list.
+                clusters: new Set(out.filter((a) => a.cluster).map((a) => a.cluster.id)).size,
               },
             }
           : {}),
@@ -291,9 +400,11 @@ export function createA2aFace({
       if (!state.exists || state.visibility === "private") {
         return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
       }
+      const cluster = clusterMarkerFor(state, await clusterMap());
       res.json({
         ...publicCard(req.params.agentSlug, state.entry, req),
         ...(chatability?.(state) ? { chatable: true } : {}),
+        ...(cluster ? { cluster } : {}),
       });
     });
 
@@ -514,5 +625,5 @@ export function createA2aFace({
     });
   }
 
-  return { register, entryFor, agentState };
+  return { register, entryFor, agentState, clusterMap, clusterMarkerFor };
 }
