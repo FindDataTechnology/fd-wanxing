@@ -163,6 +163,28 @@ export function createWanxingStore({ file }) {
     updated_at INTEGER NOT NULL
   )`);
 
+  // Plan requests (add-plan-requests-and-move-statement D1): a caller's ask
+  // for a plan as its own lifecycle (pending → approved | rejected), kept
+  // apart from wanxing_plans on purpose — a request never IS a plan
+  // (rejections issue nothing, repeats queue up), so adjudication state must
+  // not leak into issuance semantics. Approval issues through planSet like
+  // any hand-issued plan; the row here only records that it happened. email
+  // is the verified identity's (lowercased) and is the self-scoping key: the
+  // caller's own list needs no billing-plane round trip.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_plan_requests (
+    ref TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    limit_minutes INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+    decided_by TEXT,
+    decided_note TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS wanxing_plan_requests_email ON wanxing_plan_requests (email, created_at)`);
+
   // Caller debt state: consecutive settlement failures; a non-null
   // suspended_reason refuses admission until the billing gate passes again.
   db.exec(`CREATE TABLE IF NOT EXISTS wanxing_caller_state (
@@ -274,6 +296,8 @@ export function createWanxingStore({ file }) {
   )`);
 
   const now = () => Date.now();
+  const PLAN_REQUEST_COLS = `ref, user_id AS userId, email, limit_minutes AS limitMinutes, note, status,
+    decided_by AS decidedBy, decided_note AS decidedNote, created_at AS createdAt, decided_at AS decidedAt`;
 
   return {
     close() {
@@ -535,6 +559,35 @@ export function createWanxingStore({ file }) {
         COALESCE(SUM(CASE WHEN channel = 'api' AND settler IS NULL THEN 1 ELSE 0 END), 0) AS legacyTurns
         FROM wanxing_usage WHERE caller_id = ?`).get(Number(userId));
       return r;
+    },
+
+    // ── Plan requests (add-plan-requests-and-move-statement D1–D3) ──────────
+    planRequestAdd(userId, email, limitMinutes, note = "") {
+      const ref = `wpr_${randomBytes(6).toString("hex")}`;
+      db.prepare(`INSERT INTO wanxing_plan_requests (ref, user_id, email, limit_minutes, note, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?)`)
+        .run(ref, Number(userId), String(email || "").toLowerCase(), Number(limitMinutes), String(note || ""), now());
+      return this.planRequestGet(ref);
+    },
+    planRequestGet(ref) {
+      return db.prepare(`SELECT ${PLAN_REQUEST_COLS} FROM wanxing_plan_requests WHERE ref = ?`).get(String(ref)) ?? null;
+    },
+    // An email scopes to that identity's own rows; no email = the ops queue
+    // (every caller). pending first, newest first within each group (rowid
+    // breaks same-millisecond ties so the order is stable).
+    planRequestList({ email = null } = {}) {
+      return db.prepare(`SELECT ${PLAN_REQUEST_COLS} FROM wanxing_plan_requests ${email ? "WHERE email = ?" : ""}
+        ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC, rowid DESC`)
+        .all(...(email ? [String(email).toLowerCase()] : []));
+    },
+    // Only a pending row can be decided: a decided one returns null so the
+    // route refuses (409) instead of silently re-stamping — and a failed
+    // issue before this call leaves the request pending and re-approvable.
+    planRequestDecide(ref, status, by, note = "") {
+      if (status !== "approved" && status !== "rejected") throw new Error(`plan request status must be approved|rejected, got ${status}`);
+      const r = db.prepare(`UPDATE wanxing_plan_requests SET status = ?, decided_by = ?, decided_note = ?, decided_at = ?
+        WHERE ref = ? AND status = 'pending'`).run(status, String(by || ""), String(note || ""), now(), String(ref));
+      return r.changes ? this.planRequestGet(ref) : null;
     },
 
     // ── Caller debt state ───────────────────────────────────────────────────

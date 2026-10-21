@@ -494,4 +494,79 @@ export function registerConsoleRoutes(app, {
       usage,
     });
   });
+
+  // ── Plan requests (add-plan-requests-and-move-statement) ─────────────────
+  // "Ask ops for a plan" as a console queue instead of an out-of-band shout.
+  // A verified identity submits for itself and lists only its own rows
+  // (scoped by the identity's email — the my/statement seam; there is no
+  // other-caller parameter on this surface); the ops credential lists the
+  // whole queue and is the ONLY adjudicator. Approval issues through planSet
+  // exactly like a hand-issued plan, so a request by itself never grants a
+  // minute; rejection records the note and issues nothing.
+  const PLAN_REQUEST_MIN = 60;
+  const PLAN_REQUEST_MAX = 1_000_000;
+
+  app.post("/api/wanxing/v1/console/plan-requests", express.json({ limit: "4kb" }), async (req, res) => {
+    if (!(await gate(req, res))) return;
+    const email = String(req.consoleIdentity?.email || "").toLowerCase();
+    if (!email) return res.status(403).json({ error: "the ops token has no identity — a plan request is submitted by the caller themself" });
+    const limitMinutes = Number(req.body?.limitMinutes);
+    const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 200) : "";
+    if (!Number.isInteger(limitMinutes) || limitMinutes < PLAN_REQUEST_MIN || limitMinutes > PLAN_REQUEST_MAX) {
+      return res.status(400).json({ error: `limitMinutes must be an integer in [${PLAN_REQUEST_MIN}, ${PLAN_REQUEST_MAX}]` });
+    }
+    // The request is keyed on the caller's sub2api account up front — that is
+    // what the eventual plan hangs off — so an identity without one learns
+    // it now (the allowlist-shaped 404) rather than at approval time.
+    if (!sub2api || sub2api.degraded()) return res.status(503).json({ error: "billing plane not configured — plans are inactive" });
+    let account;
+    try {
+      account = await sub2api.findUserByEmail(email);
+    } catch (e) {
+      return res.status(502).json({ error: `billing account lookup failed: ${e.message}` });
+    }
+    if (!account) {
+      return res.status(404).json({
+        error: "no sub2api account for your identity yet — sign in once at the billing panel (Logto) to create it, then request a plan",
+        code: "NO_SUB2API_ACCOUNT",
+      });
+    }
+    const request = store.planRequestAdd(account.userId, email, limitMinutes, note);
+    say(`console: plan request ${request.ref} by ${email} for ${limitMinutes} min`);
+    return ok(res, { request });
+  });
+
+  app.get("/api/wanxing/v1/console/plan-requests", async (req, res) => {
+    if (!(await gate(req, res))) return;
+    const requests = req.consoleIdentity
+      ? store.planRequestList({ email: String(req.consoleIdentity.email || "").toLowerCase() })
+      : store.planRequestList();
+    return ok(res, { requests, pending: requests.filter((r) => r.status === "pending").length });
+  });
+
+  app.put("/api/wanxing/v1/console/plan-requests/:ref", express.json({ limit: "4kb" }), async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    const status = req.body?.status;
+    const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 200) : "";
+    if (status !== "approved" && status !== "rejected") return res.status(400).json({ error: "status must be approved or rejected" });
+    const existing = store.planRequestGet(req.params.ref);
+    if (!existing) return res.status(404).json({ error: "plan request not found" });
+    if (existing.status !== "pending") return res.status(409).json({ error: `plan request already ${existing.status}` });
+    let plan = null;
+    if (status === "approved") {
+      // Issue FIRST, stamp second: a failed issue leaves the request pending
+      // and re-approvable, and planSet's upsert makes the retry idempotent.
+      // The plan's note falls back to the request ref so the plans list
+      // still says where the cap came from.
+      plan = store.planSet(existing.userId, existing.limitMinutes, "ops", note || `申请 ${existing.ref}`, existing.email);
+    }
+    const request = store.planRequestDecide(existing.ref, status, "ops", note);
+    if (!request) return res.status(409).json({ error: "plan request was decided concurrently" });
+    say(`console: plan request ${existing.ref} ${status} by ops${plan ? ` (plan ${plan.planRef} → ${plan.limitMinutes} min for ${existing.email})` : ""}`);
+    const used = plan ? store.planUsed(existing.userId) : 0;
+    return ok(res, {
+      request,
+      plan: plan ? { ...plan, usedMinutes: used, remainingMinutes: Math.max(0, plan.limitMinutes - used) } : null,
+    });
+  });
 }

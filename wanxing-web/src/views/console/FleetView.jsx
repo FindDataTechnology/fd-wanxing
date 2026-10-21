@@ -1,8 +1,9 @@
 // 我的舰队 (refactor-console-ia, M4④ 前置): the deployer's fleet — the
 // deployments table with its management panels (config / allowlist / usage /
-// allowance), the plan statement, and the deploy wizard with earnings.
-// Moved verbatim from the ConsoleView monolith; behavior and testids
-// unchanged. The ④b cockpit visualization lands ON this skeleton.
+// allowance) and the deploy wizard with earnings. Moved verbatim from the
+// ConsoleView monolith; behavior and testids unchanged. The ④b cockpit
+// visualization lands ON this skeleton. The caller-side statement card
+// (API 调用对账) lives in the 消耗 view (add-plan-requests-and-move-statement).
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
 import { DeployWizard } from "./DeployWizard.jsx";
@@ -35,9 +36,6 @@ export function FleetView({ focusSlug } = {}) {
   const [embedDraft, setEmbedDraft] = useState({ anonymous: false, origins: "" });
   const [embedNote, setEmbedNote] = useState("");
   const [embedBusy, setEmbedBusy] = useState(false);
-  // Serving plans (add-serving-plans): the caller's own statement.
-  const [stmt, setStmt] = useState(null);
-  const [stmtErr, setStmtErr] = useState("");
   // Deployer self-service (add-deployer-self-service M3① → add-deploy-wizard
   // M4①): my packs feed the stepped deployment wizard.
   const [myPacks, setMyPacks] = useState(null);
@@ -70,23 +68,6 @@ export function FleetView({ focusSlug } = {}) {
     if (focusSlug) loadConfig(focusSlug);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSlug]);
-
-  // My serving-plan statement (add-serving-plans 4.1): identity-scoped on the
-  // server — this fetch can only ever read the signed-in caller's own rows.
-  useEffect(() => {
-    let live = true;
-    authFetch("/api/wanxing/v1/console/my/statement")
-      .then(async (r) => {
-        if (r.status === 403) throw new Error("ops 令牌没有身份——套餐对账请用登录身份查看");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => live && (setStmt(d), setStmtErr("")))
-      .catch((e) => live && setStmtErr(String(e?.message || e)));
-    return () => {
-      live = false;
-    };
-  }, []);
 
   // My earnings (add-deployer-revenue-share): same identity scoping — a 402/502
   // style failure is shown as an explicit error, never as "no earnings".
@@ -611,27 +592,6 @@ export function FleetView({ focusSlug } = {}) {
                 弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。
                 问询卡随对话自动出现；宿主若想让助手执行页面动作（如 navigate/refresh），在 init 消息里声明 <span className="font-mono">intents</span> 动词列表并监听 <span className="font-mono">wx-copilot-intent</span> 回结果——见文档「宿主意图」。
               </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Serving plans (add-serving-plans 4.1): my statement */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="my-statement-panel">
-        <h3 className="font-semibold">API 调用对账</h3>
-        <div className="text-[10px] text-slate-400">即原「我的套餐」——你作为 API 调用方的对账单：套餐是平台发放的包月额度（找运维开通），无套餐时按调用键余额逐分钟实扣。</div>
-        {stmtErr && <div className="text-xs text-amber-600 dark:text-amber-400">{stmtErr}</div>}
-        {stmt && (
-          <div className="text-xs text-slate-500 space-y-1" data-testid="my-statement-body">
-            {stmt.plan ? (
-              <div>
-                套餐上限 <b>{stmt.plan.limitMinutes}</b> 分钟 · 已用 <b>{stmt.plan.usedMinutes}</b> · 剩余 <b className="text-slate-900 dark:text-slate-100">{stmt.plan.remainingMinutes}</b>
-              </div>
-            ) : (
-              <div>暂无套餐——API 调用按调用键余额计费。</div>
-            )}
-            <div>
-              套餐结算 <b>{stmt.usage?.planMinutes ?? 0}</b> 分钟（{stmt.usage?.planTurns ?? 0} 回合） · 余额路径 <b>{stmt.usage?.legacyMinutes ?? 0}</b> 分钟（{stmt.usage?.legacyTurns ?? 0} 回合）
             </div>
           </div>
         )}

@@ -1,10 +1,14 @@
 // 运维面 (refactor-console-ia, M4④ 前置): the ops surfaces — the fleet board
-// (30s poll while this tab is shown), the per-agent timeline drill-down, and
-// the ops plan manager. Moved verbatim from the ConsoleView monolith; the ops
-// token's management gate is unchanged (logged-in identities read).
+// (30s poll while this tab is shown), the per-agent timeline drill-down, the
+// ops plan manager, and the plan-request queue it adjudicates
+// (add-plan-requests-and-move-statement). Moved verbatim from the ConsoleView
+// monolith; the ops token's management gate is unchanged (logged-in
+// identities read).
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
-import { fmtAgo, fmtMs } from "./shared.jsx";
+import { fmtAgo, fmtMs, planRequestBadge } from "./shared.jsx";
+
+const fmtWhen = (ms) => (ms ? new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false }) : "");
 
 export function OpsView() {
   const [board, setBoard] = useState(null);
@@ -17,6 +21,14 @@ export function OpsView() {
   const [planErr, setPlanErr] = useState("");
   const [planDraft, setPlanDraft] = useState({ email: "", limit: "", note: "" });
   const [planBusy, setPlanBusy] = useState(false);
+  // Plan-request queue (add-plan-requests-and-move-statement 2.3): loaded
+  // only once the plans list proved the ops credential — a logged-in
+  // identity would get its OWN rows back from the same GET, and a queue
+  // whose buttons can only 403 is worse than none.
+  const [queue, setQueue] = useState(null); // { requests, pending }
+  const [queueErr, setQueueErr] = useState("");
+  const [qNotes, setQNotes] = useState({}); // ref → decision note draft
+  const [qBusy, setQBusy] = useState(""); // ref in flight
 
   useEffect(() => {
     let live = true;
@@ -52,6 +64,15 @@ export function OpsView() {
     };
   }, [agent]);
 
+  const loadQueue = () =>
+    authFetch("/api/wanxing/v1/console/plan-requests")
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => (setQueue(d), setQueueErr("")))
+      .catch((e) => setQueueErr(String(e?.message || e)));
+
   const loadPlans = () =>
     authFetch("/api/wanxing/v1/console/plans")
       .then(async (r) => {
@@ -59,13 +80,39 @@ export function OpsView() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((d) => (setPlans(d), setPlanErr("")))
+      .then((d) => (setPlans(d), setPlanErr(""), loadQueue()))
       .catch((e) => setPlanErr(String(e?.message || e)));
 
   useEffect(() => {
     loadPlans();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Adjudicate one request; a success reloads BOTH lists (approval lands as
+  // a plan row below). The error reads at the queue, next to the buttons.
+  const decideRequest = async (ref, status) => {
+    setQBusy(ref);
+    try {
+      const r = await authFetch(`/api/wanxing/v1/console/plan-requests/${encodeURIComponent(ref)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note: qNotes[ref] || "" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setQNotes((p) => {
+        const next = { ...p };
+        delete next[ref];
+        return next;
+      });
+      setQueueErr("");
+      await loadPlans();
+    } catch (err) {
+      setQueueErr(String(err?.message || err));
+    } finally {
+      setQBusy("");
+    }
+  };
 
   const savePlan = async (e) => {
     e.preventDefault();
@@ -96,6 +143,10 @@ export function OpsView() {
   // 短期执行 (add-fleet-cell-views): cell 遥测段——board.cells 缺席=observer 未升级。
   const cells = Object.entries(board?.cells ?? {});
   const st = board?.shortterm ?? null;
+  const queueRows = queue?.requests ?? [];
+  const pendingRows = queueRows.filter((r) => r.status === "pending");
+  const decidedRows = queueRows.filter((r) => r.status !== "pending");
+  const qInputCls = "px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs";
 
   return (
     <div className="space-y-6">
@@ -225,6 +276,72 @@ export function OpsView() {
             ))}
           </div>
         )}
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plan-requests-queue">
+          <h3 className="font-semibold">
+            套餐申请 · 待审
+            {queue && (
+              <span
+                className={`ml-2 text-xs font-normal px-2 py-0.5 rounded-full ${queue.pending > 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`}
+                data-testid="plan-requests-pending-count"
+              >
+                {queue.pending} 待审
+              </span>
+            )}
+          </h3>
+          {queueErr && <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="plan-requests-queue-error">{queueErr}</div>}
+          {!queue && !queueErr && <div className="text-xs text-slate-400">{planErr ? "审批需要 ops 服务令牌。" : "加载中…"}</div>}
+          {queue && pendingRows.length === 0 && <div className="text-xs text-slate-400">没有待审申请。</div>}
+          {pendingRows.map((r) => (
+            <div key={r.ref} className="text-xs flex gap-2 items-center flex-wrap border-t border-slate-100 dark:border-slate-800 pt-2" data-testid="plan-request-queue-row" data-ref={r.ref}>
+              <span className="w-52 truncate" title={r.email}>{r.email || "—"}</span>
+              <span>申请 <b>{r.limitMinutes}</b> 分钟</span>
+              {r.note ? <span className="text-slate-400">「{r.note}」</span> : null}
+              <span className="text-slate-400">{fmtWhen(r.createdAt)}</span>
+              <input
+                value={qNotes[r.ref] ?? ""}
+                onChange={(e) => setQNotes({ ...qNotes, [r.ref]: e.target.value })}
+                maxLength={200}
+                placeholder="审批备注（可选）"
+                className={`w-40 ${qInputCls}`}
+                data-testid="plan-request-decide-note"
+              />
+              <button
+                disabled={qBusy === r.ref}
+                onClick={() => decideRequest(r.ref, "approved")}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white disabled:opacity-40"
+                data-testid="plan-request-approve"
+              >
+                {qBusy === r.ref ? "处理中…" : "批准"}
+              </button>
+              <button
+                disabled={qBusy === r.ref}
+                onClick={() => decideRequest(r.ref, "rejected")}
+                className="px-2.5 py-1 rounded-lg border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 disabled:opacity-40"
+                data-testid="plan-request-reject"
+              >
+                驳回
+              </button>
+            </div>
+          ))}
+          {decidedRows.length > 0 && (
+            <details className="text-xs">
+              <summary className="cursor-pointer select-none text-slate-500">最近已处理（{decidedRows.length}）</summary>
+              <div className="pt-1 space-y-1" data-testid="plan-requests-decided">
+                {decidedRows.slice(0, 20).map((r) => (
+                  <div key={r.ref} className="flex gap-2 items-center flex-wrap" data-ref={r.ref} data-status={r.status}>
+                    {planRequestBadge(r.status)}
+                    <span className="w-52 truncate" title={r.email}>{r.email || "—"}</span>
+                    <span>{r.limitMinutes} 分钟</span>
+                    {r.decidedNote ? <span className="text-slate-400">「{r.decidedNote}」</span> : null}
+                    <span className="text-slate-400">{fmtWhen(r.decidedAt)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          <div className="text-[10px] text-slate-400">批准=经套餐发放路径落上限（与下方手动发放是同一条路，列表随即出现/更新）；驳回只记录备注、不发放。</div>
+        </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plans-panel">
           <h3 className="font-semibold">套餐管理 · ops</h3>

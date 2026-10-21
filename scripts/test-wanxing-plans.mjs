@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// ── Serving-plan tests (add-serving-plans tasks 1.1–1.2, 2.1–2.3, 3.1, 4.1–4.2) ─
+// ── Serving-plan tests (add-serving-plans tasks 1.1–1.2, 2.1–2.3, 3.1, 4.1–4.2;
+//    add-plan-requests-and-move-statement 1.1–1.2 as section 5) ──────────────
 //
 // The plan layer end to end: the store's plans table and ledger derivation,
 // the kernel's plan solvency gate and settlement election (settler='plan'
 // settles locally — no sub2api call), the console's ops-only management
-// routes, the caller self-statement, and the full issue → turn → exhaust →
-// adjust → restore chain against a listening app.
+// routes, the caller self-statement, the full issue → turn → exhaust →
+// adjust → restore chain against a listening app, and the caller-initiated
+// ops-adjudicated plan-request queue.
 //
 //   node --test scripts/test-wanxing-plans.mjs
 
@@ -27,10 +29,11 @@ const { registerConsoleRoutes } = await import("../services/wanxing-facade/conso
 
 const OPS_TOKEN = "ops-secret";
 
-function stubSub2api({ userId = 7, email = "caller@finddata.tech" } = {}) {
+function stubSub2api({ userId = 7, email = "caller@finddata.tech", others = [] } = {}) {
   return {
     userId,
     email,
+    others, // extra { userId, email } accounts the email lookup also knows
     adjustCalls: [],
     degraded: () => false,
     async probeKeyLiveness() {
@@ -40,7 +43,8 @@ function stubSub2api({ userId = 7, email = "caller@finddata.tech" } = {}) {
       return { userId: this.userId, email: this.email };
     },
     async findUserByEmail(mail) {
-      return mail === this.email ? { userId: this.userId, email: this.email } : null;
+      if (mail === this.email) return { userId: this.userId, email: this.email };
+      return this.others.find((o) => o.email === mail) ?? null;
     },
     async adjustBalance(args) {
       this.adjustCalls.push(args);
@@ -58,8 +62,10 @@ function coreHarness({ sub = stubSub2api(), store = freshStore() } = {}) {
 }
 
 // The listening app: the A2A face + the console routes on one express
-// instance, wired like production (index.js shape).
-function appHarness({ sub = stubSub2api(), store = freshStore() } = {}) {
+// instance, wired like production (index.js shape). `identities` maps id
+// tokens to the verified email they resolve to (default: one caller).
+function appHarness({ sub = stubSub2api(), store = freshStore(), identities = null } = {}) {
+  const idents = identities ?? { "good-id-token": sub.email };
   const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1, rpmMax: 100 } });
   const face = createA2aFace({
     core,
@@ -78,7 +84,7 @@ function appHarness({ sub = stubSub2api(), store = freshStore() } = {}) {
     requireToken: (req) => String(req.headers["x-ops-token"] || "") === OPS_TOKEN,
     logtoAuth: {
       configured: true,
-      verifyIdToken: async (token) => (token === "good-id-token" ? { email: sub.email } : null),
+      verifyIdToken: async (token) => (idents[token] ? { email: idents[token] } : null),
     },
     bookkeeping: { rows: async () => [], resolve: async () => null },
     store,
@@ -268,5 +274,166 @@ test("4.2 issue → turn → exhaust → PLAN_EXHAUSTED at the door → adjust �
   const t3 = await h.send(key);
   assert.equal(t3.status, 200);
   assert.equal(h.store.planUsed(h.sub.userId), 2);
+  await h.close();
+});
+
+// ── 5. plan requests (add-plan-requests-and-move-statement 1.1–1.2) ──────────
+//
+// The caller-initiated, ops-adjudicated queue: the store's own lifecycle
+// (pending-first listing, decide only from pending), the self-service POST
+// with its range gate, the two-perspective GET (identity = own rows only,
+// ops = everyone), and the ops-only PUT where approval issues the plan
+// through planSet BEFORE stamping the request, and rejection issues nothing.
+
+const json = (method, body, headers) => ({ method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+const REQ_PATH = "/api/wanxing/v1/console/plan-requests";
+
+test("5.1 plan-request store: add/get, list pending-first newest-first, self-scope, decide only from pending", () => {
+  const s = freshStore();
+  const a = s.planRequestAdd(7, "Caller@Finddata.tech", 500, "first");
+  assert.match(a.ref, /^wpr_[0-9a-f]{12}$/);
+  assert.equal(a.status, "pending");
+  assert.equal(a.email, "caller@finddata.tech"); // stored lowercased: the scoping key
+  assert.equal(a.limitMinutes, 500);
+  assert.equal(a.note, "first");
+  assert.equal(a.decidedAt, null);
+  const b = s.planRequestAdd(7, "caller@finddata.tech", 2000, "second");
+  const c = s.planRequestAdd(8, "other@finddata.tech", 100, "");
+  assert.equal(s.planRequestDecide(a.ref, "approved", "ops", "ok").status, "approved");
+  // pending (newest first) above decided
+  assert.deepEqual(s.planRequestList().map((r) => r.ref), [c.ref, b.ref, a.ref]);
+  assert.deepEqual(s.planRequestList({ email: "caller@finddata.tech" }).map((r) => r.ref), [b.ref, a.ref]);
+  // a decided row is final
+  assert.equal(s.planRequestDecide(a.ref, "rejected", "ops", "again"), null);
+  const got = s.planRequestGet(a.ref);
+  assert.equal(got.status, "approved");
+  assert.equal(got.decidedBy, "ops");
+  assert.equal(got.decidedNote, "ok");
+  assert.ok(got.decidedAt > 0);
+  assert.throws(() => s.planRequestDecide(b.ref, "bogus", "ops"));
+  assert.equal(s.planRequestGet("wpr_nope"), null);
+  s.close();
+});
+
+test("5.2 POST/GET: identity submits for itself (range-gated) and lists only its own; ops lists all pending-first", async () => {
+  const sub = stubSub2api({ others: [{ userId: 9, email: "peer@finddata.tech" }] });
+  const h = appHarness({
+    sub,
+    identities: { "good-id-token": sub.email, "peer-id-token": "peer@finddata.tech", "stranger-id-token": "stranger@finddata.tech" },
+  });
+  const ME = { Authorization: "Bearer good-id-token" };
+  const PEER = { Authorization: "Bearer peer-id-token" };
+  const OPS = { "x-ops-token": OPS_TOKEN };
+  const post = (body, headers) => h.call(REQ_PATH, json("POST", body, headers));
+  // The ops token has no identity to request for.
+  assert.equal((await post({ limitMinutes: 500 }, OPS)).status, 403);
+  // Range + shape gate.
+  assert.equal((await post({ limitMinutes: 59 }, ME)).status, 400);
+  assert.equal((await post({ limitMinutes: 1_000_001 }, ME)).status, 400);
+  assert.equal((await post({ limitMinutes: 500.5 }, ME)).status, 400);
+  assert.equal((await post({ limitMinutes: "abc" }, ME)).status, 400);
+  // An identity without a sub2api account gets the allowlist-shaped 404.
+  const stranger = await post({ limitMinutes: 500 }, { Authorization: "Bearer stranger-id-token" });
+  assert.equal(stranger.status, 404);
+  assert.equal(stranger.body.code, "NO_SUB2API_ACCOUNT");
+  // Submit: note trimmed; the row is pending and bound to the identity.
+  const r1 = await post({ limitMinutes: 5000, note: "  for the Q4 pipeline  " }, ME);
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.request.status, "pending");
+  assert.equal(r1.body.request.limitMinutes, 5000);
+  assert.equal(r1.body.request.note, "for the Q4 pipeline");
+  assert.equal(r1.body.request.email, sub.email);
+  assert.equal(r1.body.request.userId, sub.userId);
+  // A pending request does not block another (the queue is not a slot).
+  const r2 = await post({ limitMinutes: 500 }, ME);
+  assert.equal(r2.status, 200);
+  const p1 = await post({ limitMinutes: 2000, note: "peer" }, PEER);
+  assert.equal(p1.status, 200);
+  // Identity perspective: own rows only, never the peer's.
+  const mine = await h.call(REQ_PATH, { headers: ME });
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.body.requests.map((r) => r.ref), [r2.body.request.ref, r1.body.request.ref]);
+  assert.equal(mine.body.pending, 2);
+  const peers = await h.call(REQ_PATH, { headers: PEER });
+  assert.deepEqual(peers.body.requests.map((r) => r.ref), [p1.body.request.ref]);
+  // Ops perspective: everyone, pending counted.
+  const all = await h.call(REQ_PATH, { headers: OPS });
+  assert.equal(all.body.requests.length, 3);
+  assert.equal(all.body.pending, 3);
+  await h.close();
+});
+
+test("5.3 PUT approve: ops-only; issues the plan via planSet (stamped ops) then marks approved; decided is final", async () => {
+  const h = appHarness();
+  const ME = { Authorization: "Bearer good-id-token" };
+  const OPS = { "x-ops-token": OPS_TOKEN };
+  const submitted = await h.call(REQ_PATH, json("POST", { limitMinutes: 5000, note: "please" }, ME));
+  const ref = submitted.body.request.ref;
+  assert.equal(h.store.planGet(h.sub.userId), null); // the request alone grants nothing
+  const decide = (r, status, note, headers) => h.call(`${REQ_PATH}/${r}`, json("PUT", { status, note }, headers));
+  // A non-ops identity — even the requester — cannot adjudicate; nothing moves.
+  const denied = await decide(ref, "approved", "", ME);
+  assert.equal(denied.status, 403);
+  assert.equal(h.store.planRequestGet(ref).status, "pending");
+  assert.equal(h.store.planGet(h.sub.userId), null);
+  assert.equal((await decide(ref, "maybe", "", OPS)).status, 400);
+  assert.equal((await decide("wpr_nope", "approved", "", OPS)).status, 404);
+  // Approve: plan lands through the issuance path, request reads approved.
+  const approved = await decide(ref, "approved", "welcome", OPS);
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.request.status, "approved");
+  assert.equal(approved.body.request.decidedBy, "ops");
+  assert.equal(approved.body.request.decidedNote, "welcome");
+  assert.ok(approved.body.request.decidedAt > 0);
+  assert.equal(approved.body.plan.limitMinutes, 5000);
+  assert.equal(approved.body.plan.updatedBy, "ops");
+  assert.equal(approved.body.plan.remainingMinutes, 5000);
+  const plan = h.store.planGet(h.sub.userId);
+  assert.equal(plan.limitMinutes, 5000);
+  assert.equal(plan.updatedBy, "ops");
+  assert.equal(plan.note, "welcome");
+  assert.equal(plan.email, h.sub.email);
+  // The caller's statement now carries it.
+  const mine = await h.call("/api/wanxing/v1/console/my/statement", { headers: ME });
+  assert.equal(mine.body.plan.limitMinutes, 5000);
+  // A decided request is final (409); the plan is untouched.
+  assert.equal((await decide(ref, "rejected", "nope", OPS)).status, 409);
+  assert.equal(h.store.planGet(h.sub.userId).limitMinutes, 5000);
+  assert.equal(h.store.planRequestGet(ref).status, "approved");
+  // A later request approved ADJUSTS the same plan (stable plan_ref); with no
+  // decision note the plan's note points back at the request.
+  const s2 = await h.call(REQ_PATH, json("POST", { limitMinutes: 10000 }, ME));
+  const a2 = await decide(s2.body.request.ref, "approved", "", OPS);
+  assert.equal(a2.status, 200);
+  assert.equal(a2.body.plan.planRef, plan.planRef);
+  assert.equal(a2.body.plan.limitMinutes, 10000);
+  assert.equal(h.store.planGet(h.sub.userId).note, `申请 ${s2.body.request.ref}`);
+  assert.equal((await h.call("/api/wanxing/v1/console/plans", { headers: OPS })).body.plans.length, 1);
+  await h.close();
+});
+
+test("5.4 PUT reject: records the note, issues nothing, existing plan untouched; the queue drops it from pending", async () => {
+  const h = appHarness();
+  const ME = { Authorization: "Bearer good-id-token" };
+  const OPS = { "x-ops-token": OPS_TOKEN };
+  h.store.planSet(h.sub.userId, 30, "ops", "existing");
+  const submitted = await h.call(REQ_PATH, json("POST", { limitMinutes: 90000 }, ME));
+  const ref = submitted.body.request.ref;
+  const rejected = await h.call(`${REQ_PATH}/${ref}`, json("PUT", { status: "rejected", note: "too much" }, OPS));
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.body.request.status, "rejected");
+  assert.equal(rejected.body.request.decidedNote, "too much");
+  assert.equal(rejected.body.request.decidedBy, "ops");
+  assert.equal(rejected.body.plan, null);
+  const plan = h.store.planGet(h.sub.userId);
+  assert.equal(plan.limitMinutes, 30);
+  assert.equal(plan.note, "existing");
+  // The caller reads the verdict; the ops queue has nothing pending.
+  const mine = await h.call(REQ_PATH, { headers: ME });
+  assert.equal(mine.body.requests[0].status, "rejected");
+  assert.equal(mine.body.requests[0].decidedNote, "too much");
+  const queue = await h.call(REQ_PATH, { headers: OPS });
+  assert.equal(queue.body.pending, 0);
+  assert.equal(queue.body.requests.length, 1);
   await h.close();
 });

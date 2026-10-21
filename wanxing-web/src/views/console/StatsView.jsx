@@ -1,12 +1,22 @@
 // 消耗视图 (add-stats-plane-v1 4.x): three calibers side by side — fleet
 // (estimated), sub2api (billed), local (estimated). The server never merges
 // calibers and neither does this view; every figure block carries its label.
+// The caller-side statement card (API 调用对账) sits above the calibers
+// (add-plan-requests-and-move-statement): caller economics live where
+// consumption is read, and the plan-request form rides inside that card.
 
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
+import { planRequestBadge } from "./shared.jsx";
 
 const DAY_CHOICES = [1, 7, 30, 90];
 const PAGE_SIZE = 10;
+// Plan-request range mirrors the facade gate (console.js PLAN_REQUEST_*);
+// the three tiers are suggestions only — any integer in range is accepted.
+const PLAN_REQUEST_MIN = 60;
+const PLAN_REQUEST_MAX = 1_000_000;
+const PLAN_SUGGESTIONS = [500, 2000, 10000];
+const fmtWhen = (ms) => (ms ? new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false }) : "");
 
 // Agent ids are `packs-<packId>` slugs, so the raw string spends its first six
 // characters repeating the same prefix on every row — truncating at a fixed
@@ -63,6 +73,166 @@ function CaliberCard({ label, tone, children }) {
         {label}
       </div>
       {children}
+    </div>
+  );
+}
+
+// API 调用对账 (add-serving-plans 4.1, moved here by
+// add-plan-requests-and-move-statement): the signed-in caller's own
+// statement — identity-scoped on the server, this fetch can only ever read
+// the caller's own rows — plus the plan-request form and the caller's own
+// request list. The request face only opens once the statement resolved an
+// identity: the ops token (403 here) has nobody to request for, and a
+// billing-plane outage would fail the POST the same way it failed the read.
+function StatementCard() {
+  const [stmt, setStmt] = useState(null);
+  const [stmtErr, setStmtErr] = useState("");
+  const [reqs, setReqs] = useState(null);
+  const [reqErr, setReqErr] = useState("");
+  const [draft, setDraft] = useState({ limit: "", note: "" });
+  const [reqBusy, setReqBusy] = useState(false);
+  const [reqNote, setReqNote] = useState("");
+
+  const loadRequests = () =>
+    authFetch("/api/wanxing/v1/console/plan-requests")
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => (setReqs(d.requests ?? []), setReqErr("")))
+      .catch((e) => setReqErr(String(e?.message || e)));
+
+  useEffect(() => {
+    let live = true;
+    authFetch("/api/wanxing/v1/console/my/statement")
+      .then(async (r) => {
+        if (r.status === 403) throw new Error("ops 令牌没有身份——套餐对账请用登录身份查看");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (!live) return;
+        setStmt(d);
+        setStmtErr("");
+        loadRequests();
+      })
+      .catch((e) => live && setStmtErr(String(e?.message || e)));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const submitRequest = async (e) => {
+    e.preventDefault();
+    const limit = Number(draft.limit);
+    if (!Number.isInteger(limit) || limit < PLAN_REQUEST_MIN || limit > PLAN_REQUEST_MAX) {
+      setReqNote(`分钟上限须为 ${PLAN_REQUEST_MIN}–${PLAN_REQUEST_MAX} 的整数`);
+      return;
+    }
+    setReqBusy(true);
+    setReqNote("");
+    try {
+      const r = await authFetch("/api/wanxing/v1/console/plan-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limitMinutes: limit, note: draft.note }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setDraft({ limit: "", note: "" });
+      setReqNote("已提交——运维批准后套餐自动生效，进度见下方「我的申请」。");
+      await loadRequests();
+    } catch (err) {
+      setReqNote(String(err?.message || err));
+    } finally {
+      setReqBusy(false);
+    }
+  };
+
+  const inputCls = "px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs";
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="my-statement-panel">
+      <h3 className="font-semibold">API 调用对账</h3>
+      <div className="text-[10px] text-slate-400">即原「我的套餐」——你作为 API 调用方的对账单：套餐是平台发放的包月额度（找运维开通），无套餐时按调用键余额逐分钟实扣。</div>
+      {stmtErr && <div className="text-xs text-amber-600 dark:text-amber-400">{stmtErr}</div>}
+      {stmt && (
+        <div className="text-xs text-slate-500 space-y-1" data-testid="my-statement-body">
+          {stmt.plan ? (
+            <div>
+              套餐上限 <b>{stmt.plan.limitMinutes}</b> 分钟 · 已用 <b>{stmt.plan.usedMinutes}</b> · 剩余 <b className="text-slate-900 dark:text-slate-100">{stmt.plan.remainingMinutes}</b>
+            </div>
+          ) : (
+            <div>暂无套餐——API 调用按调用键余额计费。</div>
+          )}
+          <div>
+            套餐结算 <b>{stmt.usage?.planMinutes ?? 0}</b> 分钟（{stmt.usage?.planTurns ?? 0} 回合） · 余额路径 <b>{stmt.usage?.legacyMinutes ?? 0}</b> 分钟（{stmt.usage?.legacyTurns ?? 0} 回合）
+          </div>
+        </div>
+      )}
+      {stmt && (
+        <div className="border-t border-slate-200 dark:border-slate-800 pt-2 space-y-2 text-xs" data-testid="plan-request-section">
+          <details data-testid="plan-request-toggle">
+            <summary className="cursor-pointer select-none font-semibold">{stmt.plan ? "申请调整套餐" : "申请套餐"}</summary>
+            <form onSubmit={submitRequest} className="pt-2 space-y-2">
+              <div className="flex gap-1 flex-wrap items-center">
+                <span className="text-slate-500">建议档：</span>
+                {PLAN_SUGGESTIONS.map((n) => (
+                  <button
+                    type="button"
+                    key={n}
+                    onClick={() => setDraft({ ...draft, limit: String(n) })}
+                    className={`px-2 py-0.5 rounded-full border ${String(n) === draft.limit ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
+                    data-testid={`plan-request-suggest-${n}`}
+                  >
+                    {n} 分钟
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 flex-wrap items-center">
+                <input
+                  value={draft.limit}
+                  onChange={(e) => setDraft({ ...draft, limit: e.target.value })}
+                  inputMode="numeric"
+                  placeholder="或自定义分钟上限"
+                  className={`w-36 font-mono ${inputCls}`}
+                  data-testid="plan-request-limit"
+                />
+                <input
+                  value={draft.note}
+                  onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+                  maxLength={200}
+                  placeholder="备注：用途/预期（可选）"
+                  className={`w-64 ${inputCls}`}
+                  data-testid="plan-request-note"
+                />
+                <button
+                  disabled={reqBusy}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                  data-testid="plan-request-submit"
+                >
+                  {reqBusy ? "提交中…" : "提交申请"}
+                </button>
+              </div>
+              {reqNote && <div className="text-amber-600 dark:text-amber-400" data-testid="plan-request-feedback">{reqNote}</div>}
+              <div className="text-[10px] text-slate-400">申请只是把「找运维开通」搬进控制台：由运维审批、批准即经发放路径生效，不从调用键余额扣款；范围 {PLAN_REQUEST_MIN}–{PLAN_REQUEST_MAX} 分钟，有未决申请时也可再提。</div>
+            </form>
+          </details>
+          <div className="space-y-1" data-testid="plan-requests-mine">
+            <div className="font-semibold">我的申请</div>
+            {reqErr && <div className="text-amber-600 dark:text-amber-400">申请列表读取失败（{reqErr}）</div>}
+            {reqs && reqs.length === 0 && <div className="text-slate-400">暂无申请。</div>}
+            {(reqs ?? []).map((r) => (
+              <div key={r.ref} className="flex gap-2 items-center flex-wrap" data-testid="plan-request-row" data-status={r.status} data-ref={r.ref}>
+                {planRequestBadge(r.status)}
+                <span><b>{r.limitMinutes}</b> 分钟</span>
+                {r.note ? <span className="text-slate-400">「{r.note}」</span> : null}
+                <span className="text-slate-400">{fmtWhen(r.createdAt)}</span>
+                {r.status !== "pending" && r.decidedNote ? <span className="text-slate-500">审批备注：{r.decidedNote}</span> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -126,6 +296,8 @@ export function StatsView() {
           ))}
         </div>
       </div>
+
+      <StatementCard />
 
       {err && (
         <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
