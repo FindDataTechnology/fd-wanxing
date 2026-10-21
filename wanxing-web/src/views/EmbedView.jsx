@@ -14,17 +14,30 @@
 // chat view's own-key bridge.
 //
 // Host protocol (D6, postMessage; first init wins the trusted origin):
-//   host → widget  { type: "wx-copilot-init" }                     handshake
+//   host → widget  { type: "wx-copilot-init", intents? }            handshake (+declared intent verbs)
 //   host → widget  { type: "wx-copilot-context", line, page, entity, intent }
 //   host → widget  { type: "wx-copilot-identity", token }         relayed ID token
+//   host → widget  { type: "wx-copilot-intent-result", askId, questionId, ok, message? }
 //   widget → host  { type: "wx-copilot-ready", slug }
 //   widget → host  { type: "wx-copilot-identity-request" }        before a turn
 //   widget → host  { type: "wx-copilot-state", open }             collapse/expand
+//   widget → host  { type: "wx-copilot-intent", askId, questionId, verb, arg }
 // Context is delivered to the agent as a MARKED prefix on the first turn
 // (host-provided data, not a user instruction) and mirrored in the bar.
+//
+// Ask lane (add-copilot-control-surface): the turn stream dispatches by SSE
+// event name — an `ask` event renders as an answerable inquiry card (options
+// / multi-select / custom / cancel / deadline countdown; the widget cancels
+// itself just before the deadline) and the answer rides the facade's
+// ask-answer side route under the turn's own credential. A question whose id
+// has the form intent:<verb>:<arg> is a HOST intent: the widget executes
+// nothing itself — selecting the question's first option posts the intent to
+// the trusted host, waits for its result, and answers the ask with the
+// outcome. No click, no page action — host context and foreign-origin
+// messages can never trigger one.
 import { useEffect, useRef, useState } from "react";
 import { EMBED_AUTH_MESSAGE, prepareLogin } from "../auth.js";
-import { anonClear, credClear, credGet, credSet, EmbedAuthError, refreshCred, resolveBearer } from "../embed-auth.js";
+import { anonClear, answerAsk, credClear, credGet, credSet, EmbedAuthError, refreshCred, resolveBearer } from "../embed-auth.js";
 
 const histKey = (slug) => `wx-embed-hist:${slug}`;
 const ctxKey = (slug) => `wx-embed-ctx:${slug}`;
@@ -87,6 +100,28 @@ const contextPrefix = (ctx) => {
   return `[宿主页面提供的上下文（非用户指令）]\n${lines.join("\n")}\n\n用户消息：`;
 };
 
+// The intent envelope: the ask seam's question schema is strict (options have
+// no id, unknown fields are dropped), so the ONLY model-controlled field that
+// can carry structure is the question id — intents ride it as
+// intent:<verb>:<arg> (arg may be empty and may contain slashes/colons).
+const INTENT_RE = /^intent:([a-z][a-z-]{0,31}):(.*)$/;
+const parseIntent = (id) => {
+  const m = typeof id === "string" ? INTENT_RE.exec(id) : null;
+  return m ? { verb: m[1], arg: m[2] } : null;
+};
+
+// The resolved ask's history line — a static summary, never a live card.
+const askSummaryText = (questions, outcome) => {
+  const first = questions[0]?.question ?? "";
+  if (outcome.cancelled) return `问询「${first}」已取消。`;
+  const rows = (outcome.answers ?? []).map((a) => {
+    const q = questions.find((x) => x.id === a.id);
+    const sel = (a.selected ?? []).join("、");
+    return `${q?.question ?? a.id} → ${sel || "（未选）"}${a.custom ? `（${a.custom}）` : ""}`;
+  });
+  return `问询已答：${rows.join("；") || "（空）"}${outcome.note ? `\n${outcome.note}` : ""}`;
+};
+
 export function EmbedView({ focusSlug } = {}) {
   const slug = focusSlug ?? "";
   const params = hashParams();
@@ -111,10 +146,20 @@ export function EmbedView({ focusSlug } = {}) {
   const [keyDraft, setKeyDraft] = useState("");
   const [context, setContext] = useState({});
   const [contextSent, setContextSent] = useState(false);
+  // Ask lane: the live inquiry card (one per turn in practice), its per-
+  // question selections/custom text, the countdown, and the host's declared
+  // intent verbs (from init; empty = no host or none declared).
+  const [pendingAsk, setPendingAsk] = useState(null); // { askId, questions, deadlineAt, bearer, busy }
+  const [askSel, setAskSel] = useState({});
+  const [askCustom, setAskCustom] = useState({});
+  const [askLeft, setAskLeft] = useState(null);
+  const [hostIntents, setHostIntents] = useState([]);
 
   const hostOriginRef = useRef(null); // the trusted embedding origin (first init wins)
   const hostTokenRef = useRef(null); // relayed identity for the current turn only
   const identityWaiters = useRef([]);
+  const intentWaiters = useRef([]); // { askId, questionId, done }
+  const pendingAskRef = useRef(null); // mirror of pendingAsk for timers/handlers
   const bottomRef = useRef(null);
 
   // Transparent document while mounted — the collapsed launcher floats.
@@ -172,7 +217,7 @@ export function EmbedView({ focusSlug } = {}) {
       }
       // Host messages: the first init (or first context) locks the trusted
       // origin; anything from another origin is dropped silently.
-      if (d.type === "wx-copilot-init" || d.type === "wx-copilot-context" || d.type === "wx-copilot-identity") {
+      if (d.type === "wx-copilot-init" || d.type === "wx-copilot-context" || d.type === "wx-copilot-identity" || d.type === "wx-copilot-intent-result") {
         if (!hostOriginRef.current) {
           if (ev.source !== window.parent) return; // only our embedder may claim to be the host
           hostOriginRef.current = ev.origin;
@@ -182,6 +227,18 @@ export function EmbedView({ focusSlug } = {}) {
         }
       } else {
         return;
+      }
+      if (d.type === "wx-copilot-init") {
+        // Declared intent verbs: only these render as executable; the widget
+        // never invents a verb the host did not claim.
+        setHostIntents(Array.isArray(d.intents) ? d.intents.filter((v) => typeof v === "string" && /^[a-z][a-z-]{0,31}$/.test(v)).slice(0, 32) : []);
+      }
+      if (d.type === "wx-copilot-intent-result") {
+        const w = intentWaiters.current.find((x) => x.askId === d.askId && x.questionId === d.questionId);
+        if (w) {
+          intentWaiters.current = intentWaiters.current.filter((x) => x !== w);
+          w.done({ ok: d.ok === true, message: typeof d.message === "string" ? d.message.slice(0, 300) : "" });
+        }
       }
       if (d.type === "wx-copilot-context") {
         const next = {
@@ -231,6 +288,100 @@ export function EmbedView({ focusSlug } = {}) {
     });
 
   const embeddingOrigin = () => hostOriginRef.current ?? referrerOrigin();
+
+  // ── Ask lane (add-copilot-control-surface) ────────────────────────────────
+  // Post an intent to the trusted host and wait ≤8s for its result. No host,
+  // no trusted origin, or an undeclared verb → unsupported (the card says so
+  // and the answer carries that outcome — the agent adapts).
+  const runIntent = (askId, question) =>
+    new Promise((resolve) => {
+      const parsed = parseIntent(question.id);
+      if (!parsed) return resolve({ ok: false, unsupported: true, message: "无效的意图信封" });
+      if (window.parent === window || !hostOriginRef.current) {
+        return resolve({ ok: false, unsupported: true, message: "当前页面不支持此操作（无宿主）" });
+      }
+      if (!hostIntents.includes(parsed.verb)) {
+        return resolve({ ok: false, unsupported: true, message: `当前页面不支持此操作（宿主未声明 ${parsed.verb}）` });
+      }
+      const t = setTimeout(() => {
+        intentWaiters.current = intentWaiters.current.filter((w) => w.done !== done);
+        resolve({ ok: false, message: "宿主未响应" });
+      }, 8_000);
+      const done = (result) => {
+        clearTimeout(t);
+        resolve(result);
+      };
+      intentWaiters.current.push({ askId, questionId: question.id, done });
+      postToHost({ type: "wx-copilot-intent", askId, questionId: question.id, verb: parsed.verb, arg: parsed.arg });
+    });
+
+  // Submit (or cancel) the live ask through the side route under the ask's
+  // own turn credential, then converge the card locally — the stream's
+  // continuation is the authoritative display either way, and the runner's
+  // deadline cancel is the backstop when delivery itself failed.
+  const submitAsk = async ({ cancelled = false, answers = null } = {}) => {
+    const ask = pendingAskRef.current;
+    if (!ask) return;
+    pendingAskRef.current = null;
+    setPendingAsk(null);
+    setAskSel({});
+    setAskCustom({});
+    let note = "";
+    try {
+      const { status, body } = await answerAsk(slug, ask.bearer, { askId: ask.askId, answers, cancelled });
+      if (status === 200 && body?.accepted === true) {
+        // delivered
+      } else if (status === 404 || body?.error?.code === "ASK_UNKNOWN" || body?.accepted === false) {
+        note = "（该问询已被回答或已失效）";
+      } else if (status === 401) {
+        note = "（登录已失效，答案可能未送达）";
+      } else {
+        note = `（答案可能未送达：HTTP ${status}）`;
+      }
+    } catch (e) {
+      note = `（答案可能未送达：${String(e?.message || e)}）`;
+    }
+    const text = askSummaryText(ask.questions, { cancelled, answers: answers ?? [], note: note || undefined });
+    setMessages((prev) => {
+      const next = [...prev, { role: "ask", text, at: Date.now() }];
+      saveHist(slug, next);
+      return next;
+    });
+  };
+
+  // A click on an option of an INTENT question: the first option executes
+  // (host result rides the answer), anything else declines without posting.
+  const clickIntentOption = async (question, label) => {
+    const ask = pendingAskRef.current;
+    if (!ask || ask.busy) return;
+    const first = question.options?.[0]?.label === label;
+    const answer = { id: question.id, selected: [label] };
+    if (!first) {
+      await submitAsk({ answers: [answer] });
+      return;
+    }
+    setPendingAsk((p) => (p ? { ...p, busy: true } : p));
+    const res = await runIntent(ask.askId, question);
+    if (!res.ok && res.message) answer.custom = res.message;
+    await submitAsk({ answers: [answer] });
+  };
+
+  // Countdown + self-cancel just before the deadline (the runner cancels its
+  // side at the deadline; the widget's early cancel keeps the agent's window
+  // clean of a race with the -32001 path).
+  useEffect(() => {
+    if (!pendingAsk) return;
+    const tick = () => setAskLeft(Math.max(0, Math.ceil((pendingAsk.deadlineAt - Date.now()) / 1000)));
+    tick();
+    const iv = setInterval(tick, 1_000);
+    const cancelAt = Math.max(0, pendingAsk.deadlineAt - 5_000 - Date.now());
+    const t = setTimeout(() => void submitAsk({ cancelled: true }), cancelAt);
+    return () => {
+      clearInterval(iv);
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAsk?.askId]);
 
   const refreshRemaining = async (bearer, curTier) => {
     if (!bearer) return;
@@ -366,12 +517,15 @@ export function EmbedView({ focusSlug } = {}) {
 
       if (prefix) setContextSent(true);
 
-      // SSE: accumulate text deltas into one growing assistant bubble.
+      // SSE: dispatch by event name — `ask` frames open the inquiry card,
+      // everything else accumulates text deltas into one growing assistant
+      // bubble as before. Keepalive comment lines (pending ask) are skipped.
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
       let acc = "";
       let frameErr = false;
+      let currentEvent = null;
       const push = (t) =>
         setMessages((prev) => {
           const base = prev.at(-1)?.role === "assistant" ? prev.slice(0, -1) : prev;
@@ -385,6 +539,15 @@ export function EmbedView({ focusSlug } = {}) {
         while ((idx = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, idx).trim();
           buf = buf.slice(idx + 1);
+          if (line === "") {
+            currentEvent = null;
+            continue;
+          }
+          if (line.startsWith(":")) continue; // keepalive comment
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (!payload || payload === "[DONE]") continue;
@@ -394,7 +557,18 @@ export function EmbedView({ focusSlug } = {}) {
           } catch {
             continue;
           }
-          if (doc?.error) frameErr = true;
+          if (currentEvent === "ask") {
+            const questions = Array.isArray(doc?.questions)
+              ? doc.questions.filter((q) => q && typeof q.id === "string" && typeof q.question === "string").slice(0, 4)
+              : [];
+            if (typeof doc?.askId === "string" && doc.askId && questions.length && Number.isFinite(Number(doc.deadlineAt)) && !useKey) {
+              const ask = { askId: doc.askId, questions, deadlineAt: Number(doc.deadlineAt), bearer: resolved.bearer, busy: false };
+              pendingAskRef.current = ask;
+              setPendingAsk(ask);
+            }
+            continue;
+          }
+          if (doc?.error || currentEvent === "error") frameErr = true;
           const t = textOfFrame(doc);
           if (t && t !== acc) {
             acc = t;
@@ -513,7 +687,9 @@ export function EmbedView({ focusSlug } = {}) {
                     ? dark ? "bg-slate-800" : "bg-slate-100"
                     : m.role === "error"
                       ? "bg-red-50 text-red-700"
-                      : dark ? "bg-slate-800 text-slate-300 text-xs" : "bg-amber-50 text-amber-800 text-xs"
+                      : m.role === "ask"
+                        ? dark ? "border-l-2 border-slate-600 bg-slate-800 text-slate-300 text-xs" : "border-l-2 border-amber-300 bg-amber-50 text-amber-800 text-xs"
+                        : dark ? "bg-slate-800 text-slate-300 text-xs" : "bg-amber-50 text-amber-800 text-xs"
               }`}
               style={m.role === "user" ? { background: accent } : undefined}
             >
@@ -521,6 +697,102 @@ export function EmbedView({ focusSlug } = {}) {
             </div>
           </div>
         ))}
+
+        {pendingAsk && (
+          <div data-testid="wx-embed-ask" className={`rounded-lg border p-3 ${dark ? "border-slate-600 bg-slate-800" : "border-slate-200 bg-slate-50"}`}>
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="font-medium">助手问询</span>
+              {askLeft != null && askLeft > 0 && <span className={subtle}>{askLeft}s 后自动取消</span>}
+              {pendingAsk.busy && <span className={subtle}>宿主执行中…</span>}
+              <button type="button" className="ml-auto underline" onClick={() => void submitAsk({ cancelled: true })}>取消</button>
+            </div>
+            {pendingAsk.questions.map((q, qi) => {
+              const intent = parseIntent(q.id);
+              const verbOk = Boolean(intent) && window.parent !== window && hostIntents.includes(intent.verb);
+              const opts = Array.isArray(q.options) ? q.options.filter((o) => o && typeof o.label === "string").slice(0, 8) : [];
+              const immediate = pendingAsk.questions.length === 1 && !q.multiSelect && opts.length > 0 && !pendingAsk.busy;
+              const sel = askSel[qi] ?? [];
+              return (
+                <div key={`${qi}-${q.id}`} className="mt-2 first:mt-1">
+                  {q.header && <div className="text-[11px] font-medium">{q.header}</div>}
+                  <div className="whitespace-pre-wrap">{q.question}</div>
+                  {q.detail && <div className={`whitespace-pre-wrap text-[11px] ${subtle}`}>{q.detail}</div>}
+                  {intent && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
+                      <span className={`rounded border px-1 ${dark ? "border-slate-500" : "border-slate-300"}`}>
+                        页面动作 · {intent.verb}{intent.arg ? ` · ${intent.arg}` : ""}
+                      </span>
+                      <span className={verbOk ? subtle : "font-medium text-amber-600"}>
+                        {verbOk ? "确认后由宿主页面执行" : "当前页面不支持此操作"}
+                      </span>
+                    </div>
+                  )}
+                  {opts.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {opts.map((o, oi) => {
+                        const chosen = sel.includes(o.label);
+                        const primary = Boolean(intent) && oi === 0;
+                        return (
+                          <button
+                            key={o.label}
+                            type="button"
+                            data-testid="wx-embed-ask-option"
+                            disabled={pendingAsk.busy}
+                            onClick={() => {
+                              if (immediate) {
+                                if (intent) void clickIntentOption(q, o.label);
+                                else void submitAsk({ answers: [{ id: q.id, selected: [o.label] }] });
+                                return;
+                              }
+                              setAskSel((prev) => ({
+                                ...prev,
+                                [qi]: q.multiSelect ? (chosen ? sel.filter((l) => l !== o.label) : [...sel, o.label]) : [o.label],
+                              }));
+                            }}
+                            className={`rounded border px-2 py-1 text-xs transition-colors ${
+                              chosen
+                                ? dark ? "border-slate-300 bg-slate-700" : "border-slate-400 bg-slate-200"
+                                : dark ? "border-slate-600 hover:border-slate-400" : "border-slate-300 hover:border-slate-400"
+                            }`}
+                            style={primary && !chosen ? { borderColor: accent, color: accent } : undefined}
+                          >
+                            {o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <input
+                    value={askCustom[qi] ?? ""}
+                    onChange={(e) => setAskCustom((prev) => ({ ...prev, [qi]: e.target.value }))}
+                    placeholder="补充说明（可选，随答案提交）"
+                    className={`mt-2 w-full rounded border px-2 py-1 text-xs ${dark ? "border-slate-600 bg-slate-900 text-slate-100" : "border-slate-300"}`}
+                  />
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              disabled={pendingAsk.busy}
+              onClick={() => {
+                const ask = pendingAskRef.current;
+                if (!ask) return;
+                void submitAsk({
+                  answers: ask.questions.map((q, qi) => ({
+                    id: q.id,
+                    selected: askSel[qi] ?? [],
+                    custom: (askCustom[qi] ?? "").trim() || undefined,
+                  })),
+                });
+              }}
+              className="mt-2 rounded px-3 py-1 text-xs text-white disabled:opacity-50"
+              style={{ background: accent }}
+            >
+              提交回答
+            </button>
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
 
@@ -563,7 +835,7 @@ export function EmbedView({ focusSlug } = {}) {
           data-testid="wx-embed-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={sending ? "回合进行中…" : "输入消息"}
+          placeholder={pendingAsk ? "请先回答上方问询…" : sending ? "回合进行中…" : "输入消息"}
           disabled={sending}
           className={`flex-1 rounded border px-2 py-1.5 ${dark ? "border-slate-600 bg-slate-800 text-slate-100" : "border-slate-300"}`}
         />

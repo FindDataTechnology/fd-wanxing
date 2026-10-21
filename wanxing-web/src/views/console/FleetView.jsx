@@ -579,7 +579,10 @@ export function FleetView({ focusSlug } = {}) {
   style="position:fixed;bottom:0;right:0;width:420px;height:640px;border:0;
   background:transparent;z-index:2147483000"
   allow="clipboard-write" title="助手"></iframe>`}</pre>
-              <div className="text-[10px] text-slate-400">弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。</div>
+              <div className="text-[10px] text-slate-400">
+                弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。
+                问询卡随对话自动出现；宿主若想让助手执行页面动作（如 navigate/refresh），在 init 消息里声明 <span className="font-mono">intents</span> 动词列表并监听 <span className="font-mono">wx-copilot-intent</span> 回结果——见文档「宿主意图」。
+              </div>
             </div>
           </div>
         )}

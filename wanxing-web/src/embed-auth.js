@@ -64,9 +64,22 @@ export async function mintAnon(slug, origin) {
   return body;
 }
 
+// Answer or cancel an in-flight ask on the chat lane's side route
+// (add-copilot-control-surface). The bearer is the one the ask's own turn
+// used; the facade binds the ask id to that visitor, so any other credential
+// is a structured not-found. Returns { status, body } — callers converge the
+// card on ASK_UNKNOWN / accepted:false rather than surfacing an error.
+export async function answerAsk(slug, bearer, { askId, answers = null, cancelled = false }) {
+  const r = await fetch(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/ask-answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+    body: JSON.stringify(cancelled ? { askId, cancelled: true } : { askId, answers: answers ?? [] }),
+  });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+
 // One refresh grant through the facade proxy against the embed-stored pair.
-export async function refreshCred(slug) {
-  const c = credGet(slug);
+export async function refreshCred(slug) {  const c = credGet(slug);
   if (!c?.refreshToken) return false;
   const r = await fetch("/api/wanxing/v1/console/auth/refresh", {
     method: "POST",

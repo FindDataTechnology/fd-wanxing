@@ -188,6 +188,19 @@ export function createChatFace({
     return b.count <= cfg.rpmMax;
   }
 
+  // ── In-flight ask bookkeeping (add-copilot-control-surface D1) ────────────
+  // askId → { visitorSub, slug, agentPath, deadlineAt }: minted while
+  // relaying an `ask` frame so the answer route can bind the submission to
+  // the visitor whose stream carried it, evicted at the ask's deadline.
+  // Memory-only by design — an ask lives minutes, and a restart costs one
+  // "ask no longer valid" on the widget (the runner deadline-cancels its
+  // side either way).
+  const relayedAsks = new Map();
+  const sweepRelayedAsks = () => {
+    const nowTs = Date.now();
+    for (const [askId, a] of relayedAsks) if (!(a.deadlineAt > nowTs)) relayedAsks.delete(askId);
+  };
+
   // ── Chat settlement (3.2) ──────────────────────────────────────────────────
   // host rows: the packs internal contract, idempotent by the row id (D5).
   // subsidy rows: deduct the platform settlement key's holder, same shape as
@@ -347,6 +360,10 @@ export function createChatFace({
         anonymous: anonOpenFor(state.slug),
         agent: { name: state.entry?.name ?? state.slug, description: state.entry?.description ?? "" },
         theme: {},
+        // The lane relays in-flight asks and answers them on the side route
+        // (add-copilot-control-surface): hosts read this to know an intent
+        // confirmation round trip is possible.
+        features: { asks: true },
       });
     });
 
@@ -557,9 +574,13 @@ export function createChatFace({
 
       try {
         if (method === "message/stream") {
+          // Ask opt-in (add-copilot-control-surface): streamed turns declare
+          // themselves answer-capable so the serving plane forwards in-flight
+          // asks as `ask` events instead of declining them. Synchronous turns
+          // never opt in — a message/send caller cannot answer anything.
           const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
             method: "POST",
-            headers: { ...forwardHeaders(), "Content-Type": "application/json" },
+            headers: { ...forwardHeaders(), "Content-Type": "application/json", "X-Serving-Ask": "1" },
             body: rpcBody("message/stream"),
           });
           const ctype = upstream.headers.get("content-type") || "";
@@ -573,12 +594,38 @@ export function createChatFace({
           try {
             const reader = upstream.body.getReader();
             const decoder = new TextDecoder();
+            // Byte-verbatim relay with a line scanner riding alongside (the
+            // old whole-chunk error regex tolerated torn frames; the scanner
+            // does not): `event: ask` frames bind the ask id to THIS visitor
+            // so the answer route can refuse everyone else. Keepalive comment
+            // frames pass through untouched and land nowhere.
+            let sseBuf = "";
+            let inAskEvent = false;
             for (;;) {
               const { done, value } = await reader.read();
               if (done) break;
               const frame = decoder.decode(value, { stream: true });
               res.write(frame);
-              if (/event:\s*error/.test(frame)) outcome = "error";
+              sseBuf += frame;
+              let nl;
+              while ((nl = sseBuf.indexOf("\n")) >= 0) {
+                const line = sseBuf.slice(0, nl).trim();
+                sseBuf = sseBuf.slice(nl + 1);
+                if (/^event:\s*error/.test(line)) {
+                  outcome = "error";
+                } else if (/^event:\s*ask\s*$/.test(line)) {
+                  inAskEvent = true;
+                } else if (inAskEvent && line.startsWith("data:")) {
+                  inAskEvent = false;
+                  try {
+                    const doc = JSON.parse(line.slice(5).trim());
+                    const deadlineAt = Number(doc?.deadlineAt);
+                    if (typeof doc?.askId === "string" && doc.askId && Number.isFinite(deadlineAt) && deadlineAt > Date.now()) {
+                      relayedAsks.set(doc.askId, { visitorSub: visitor.sub, slug, agentPath: state.agentPath, deadlineAt });
+                    }
+                  } catch { /* a torn ask frame binds nothing */ }
+                }
+              }
             }
           } catch {
             outcome = "error";
@@ -617,6 +664,68 @@ export function createChatFace({
         if (holdsSlot) finish("error");
         else exitReadonly();
         res.status(200).json(jsonRpcError(id, Number.isInteger(e?.code) ? e.code : -32032, String(e?.message || e)));
+      }
+    });
+
+    // ── Ask answers (add-copilot-control-surface D1): the widget answers an
+    // in-flight ask through the same visitor gate as the turn itself. The
+    // facade binds each relayed ask to the visitor whose stream carried it —
+    // unknown, expired, or foreign ask ids are a structured not-found and
+    // nothing is forwarded. First-wins at the facade too: one accepted
+    // submission per ask (the runner's own empty-table semantics stay the
+    // second gate). Answers ride the chat RPM bound but are NOT metered —
+    // the answered turn is already metered by its stream.
+    app.post("/api/wanxing/v1/chat/:agentSlug/ask-answer", express.json({ limit: "16kb" }), async (req, res) => {
+      const slug = req.params.agentSlug;
+      const visitor = await verifyVisitor(req);
+      if (!visitor) {
+        note("refused", slug, { stage: "visitor", code: "VISITOR_AUTH_REQUIRED", channel: "ask-answer" });
+        return res.status(401).json({ error: { code: "VISITOR_AUTH_REQUIRED", message: "a verified visitor credential is required to answer" } });
+      }
+      if (visitor.tier === "anon" && visitor.slug !== slug) {
+        note("refused", slug, { stage: "visitor", code: "VISITOR_AUTH_REQUIRED", tier: "anon", channel: "ask-answer" });
+        return res.status(401).json({ error: { code: "VISITOR_AUTH_REQUIRED", message: "this visitor credential was not minted for that agent" } });
+      }
+      const body = req.body ?? {};
+      const askId = typeof body.askId === "string" ? body.askId : "";
+      const cancelled = body.cancelled === true;
+      if (!askId || (!cancelled && !Array.isArray(body.answers))) {
+        return res.status(400).json({ error: { code: "ASK_BAD_REQUEST", message: "askId plus answers[] or cancelled:true required" } });
+      }
+      if (!checkChatRpm(visitorCallerId(visitor.sub))) {
+        return res.status(429).json({ error: { code: "RATE_LIMITED", message: "visitor chat rate limit exceeded" } });
+      }
+      sweepRelayedAsks();
+      const ask = relayedAsks.get(askId);
+      if (!ask || ask.slug !== slug || ask.visitorSub !== visitor.sub) {
+        return res.status(404).json({ error: { code: "ASK_UNKNOWN", message: "no pending ask for this visitor and agent (it may have expired, been answered, or belong to another visitor)" } });
+      }
+      relayedAsks.delete(askId);
+      let state;
+      try {
+        state = await agentState(slug);
+      } catch (e) {
+        return res.status(503).json({ error: { code: "DEPLOYMENT_SOURCE_UNAVAILABLE", message: `deployment source unreachable (${String(e?.message || e)})` } });
+      }
+      if (!state?.exists || state.paused) {
+        return res.status(404).json({ error: { code: "ASK_UNKNOWN", message: "the agent behind this ask is no longer serving" } });
+      }
+      try {
+        const base = config.agentUrlFor(state.agentPath);
+        const url = /\/$/.test(base) ? `${base}ask-answer` : `${base}/ask-answer`;
+        const upstream = await upstreamFetch(url, {
+          method: "POST",
+          headers: { ...forwardHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify(cancelled ? { askId, cancelled: true } : { askId, answers: body.answers }),
+        });
+        const doc = await upstream.json().catch(() => null);
+        if (!upstream.ok || !doc || typeof doc !== "object" || typeof doc.accepted !== "boolean") {
+          return res.status(502).json({ error: { code: "UPSTREAM_FAILED", message: `agent route refused the answer (${upstream.status})` } });
+        }
+        note("ask_answered", slug, { ask_id: askId, cancelled, channel: "chat", caller: visitor.email || visitor.sub });
+        return res.status(200).json(doc);
+      } catch (e) {
+        return res.status(502).json({ error: { code: "UPSTREAM_FAILED", message: `agent route refused the answer (${String(e?.message || e)})` } });
       }
     });
   }
