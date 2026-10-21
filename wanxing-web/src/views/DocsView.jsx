@@ -1,6 +1,6 @@
 // The integration one-pager, in-site (docs/wanxing-serving-api.md is the
 // source of truth; this page carries the caller essentials).
-import { A2aSample } from "../components/A2aSample.jsx";
+import { A2aSample, ClusterA2aSample } from "../components/A2aSample.jsx";
 
 const ERRORS = [
   ["401", "INVALID_KEY / UNRESOLVED_KEY", "键形状错 / 键无法解析到账号"],
@@ -12,6 +12,8 @@ const ERRORS = [
   ["423", "AGENT_PAUSED", "agent 已暂停（显式状态，非超时）"],
   ["429", "RATE_LIMITED", "超过调用者 RPM"],
   ["503", "WANXING_BILLING_UNAVAILABLE", "平台计费面未配置（fail-closed）"],
+  ["404", "CLUSTER_NOT_FOUND", "无此集群单位（须至少一个默认成员在役）"],
+  ["403", "CLUSTER_NOT_ADMITTED", "所选集群成员无一获准（附各成员原因）"],
 ];
 
 export function DocsView() {
@@ -35,6 +37,24 @@ export function DocsView() {
           <a className="underline" href="#/catalog">目录</a>；同步返回的是回执（如 queued），
           查询状态=再发一条 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">STATUS my-ticket-001</code>。
         </p>
+      </section>
+
+      <section id="cluster-calls">
+        <h2 className="font-semibold mb-2">集群调用</h2>
+        <p className="mb-2 text-slate-600 dark:text-slate-400">
+          声明了 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">cluster</code> 的 pack
+          且至少一个默认成员在役时，整个小队是一个 A2A 服务单位：路由
+          <code className="mx-1 px-1 rounded bg-slate-100 dark:bg-slate-800">/a2a/cluster/&lt;clusterSlug&gt;</code>
+          （clusterSlug 见<a className="underline" href="#/catalog">目录</a>的集群组头），仅支持
+          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">message/send</code>。
+        </p>
+        <ClusterA2aSample />
+        <ul className="mt-2 list-disc pl-5 space-y-1 text-slate-600 dark:text-slate-400">
+          <li><b>成员选择</b>：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">metadata.agents</code>（可选项或在役成员子集；缺省 = 全部在役默认成员）。</li>
+          <li><b>聚合</b>：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">metadata.aggregation</code> = <code>all</code>（缺省，各成员各一节）/ <code>first</code>（最先成功者）/ <code>summary</code>（声明序首个成功默认成员多跑一回合综合）。</li>
+          <li><b>计费</b>：每个成员回合按直调口径逐个计费（失败/跳过成员免计）；<code>summary</code> 额外多一个回合。集群单位本身不另计费。</li>
+          <li>应答的 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">metadata.cluster</code> 携各成员状态（ok / error / skipped 及原因、分钟数、summaryBy）。</li>
+        </ul>
       </section>
 
       <section>

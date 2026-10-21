@@ -266,3 +266,379 @@ test("A index: without a detail fetcher the catalog is unchanged (no grouping, n
     await new Promise((r) => server.close(r));
   }
 });
+
+// ── §B the cluster unit face ────────────────────────────────────────────────
+
+const { createClusterFace } = await import("../services/wanxing-facade/cluster.js");
+const { createHash } = await import("node:crypto");
+const Database = (await import("better-sqlite3")).default;
+
+const sendJson = (body, headers = {}) => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json", ...headers },
+  body: JSON.stringify(body),
+});
+
+// Upstream stub: answers per agentPath with configurable latency, reply text
+// and failure; records every call (agentPath, parsed body, timestamps) and a
+// rolling in-flight gauge for concurrency assertions.
+function upstreamStub({ replies = {}, latency = {}, failPaths = [] } = {}) {
+  const calls = [];
+  let inflight = 0;
+  let maxInflight = 0;
+  return {
+    calls, maxInflight: () => maxInflight,
+    async fetch(url, init) {
+      const path = new URL(url).pathname.replace(/^\/agent/, "").replace(/\/$/, "");
+      const body = JSON.parse(init.body);
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      try {
+        const wait = new Promise((r) => setTimeout(r, latency[path] ?? 0));
+        await (init.signal
+          ? Promise.race([wait, new Promise((_, rej) => init.signal.addEventListener("abort", () => rej(init.signal.reason ?? new Error("aborted"))))])
+          : wait);
+        if (failPaths.includes(path)) return new Response("nope", { status: 500 });
+        const text = body.params.message.context_id?.endsWith("--summary")
+          ? "综合答复"
+          : replies[path] ?? `${path} 的答复`;
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result: { message: { parts: [{ kind: "text", text }] } } }), { headers: { "Content-Type": "application/json" } });
+      } finally {
+        inflight -= 1;
+        calls.push({ path, body, at: Date.now() });
+      }
+    },
+  };
+}
+
+function clusterHarness({
+  deployments = [dep("p1", "a"), dep("p1", "b"), dep("p1", "c")],
+  policy = undefined,
+  entryOver = null, // (dep) → entry overrides (e.g. private/paused)
+  env = {},
+  coreCfg = {},
+  upstream = upstreamStub(),
+  store = null,
+} = {}) {
+  const storeFile = path.join(mkdtempSync(path.join(tmp, "cs-")), "wanxing.db");
+  store = store ?? createWanxingStore({ file: storeFile });
+  const manifest = {
+    name: "柏讯 · 投研三镜头",
+    agents: [
+      { id: "a", name: "宏观", persona: "…" },
+      { id: "b", name: "估值", persona: "…" },
+      { id: "c", name: "投委会", persona: "…" },
+    ],
+    cluster: {
+      name: "投研三镜头",
+      description: "三镜头",
+      defaultAgents: ["a", "b"],
+      optionalAgents: ["c"],
+      ...(policy !== undefined ? { schedulingPolicy: policy } : {}),
+    },
+  };
+  const core = createWanxingCore({ store, sub2api: stubSub2api(), config: { ratePerMin: 0.1, rpmMax: 100, ...coreCfg } });
+  const face = createA2aFace({
+    core,
+    resolveDeployment: (slug) => deployments.find((d) => d.slug === slug) ?? null,
+    listDeployments: () => deployments,
+    forwardHeaders: () => ({ "X-Authorization": "Bearer svc", Authorization: "Bearer backend" }),
+    registryFetch: async (p) => {
+      const agentPath = p.replace(/^\/api\/agents/, "");
+      const d = deployments.find((x) => x.agentPath === agentPath);
+      return new Response(JSON.stringify({ name: `${d?.agentId}`, description: "", version: "1", visibility: "public", metadata: {}, ...(entryOver ? entryOver(d) : {}) }), { headers: { "Content-Type": "application/json" } });
+    },
+    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+    upstreamFetch: (url, init) => upstream.fetch(url, init),
+    packsBrowseFetch: async () => [{ id: "p1", name: "柏讯", version: 1, agentCount: 3 }],
+    packsDetailFetch: async () => ({ manifest }),
+  });
+  const clusterFace = createClusterFace({
+    core,
+    a2a: {
+      agentState: (slug) => face.agentState(slug),
+      entryFor: (slug) => face.entryFor(slug),
+      clusterMap: () => face.clusterMap(),
+      runMemberTurn: (args) => face.runMemberTurn(args),
+    },
+    listDeployments: () => deployments,
+    env,
+  });
+  const app = express();
+  clusterFace.register(app);
+  face.register(app);
+  const server = http.createServer(app).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return {
+    core, store, storeFile, face, upstream, base,
+    close: () => new Promise((r) => server.close(r)),
+    send: (text, extra = {}, headers = {}) =>
+      fetch(`${base}/api/wanxing/v1/a2a/cluster/p1`, sendJson({ jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", parts: [{ kind: "text", text }], ...extra } } }, { Authorization: "Bearer sk-caller", ...headers }))
+        .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) })),
+    get: (p) => fetch(base + p).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) })),
+  };
+}
+
+test("B units: a partial team is a unit; only-optional is not; private members hide from public faces", async () => {
+  const h = clusterHarness(); // a, b defaults + c optional all deployed
+  try {
+    const list = await h.get("/api/wanxing/v1/clusters");
+    assert.equal(list.status, 200);
+    assert.equal(list.body.clusters.length, 1);
+    const u = list.body.clusters[0];
+    assert.equal(u.slug, "p1");
+    assert.equal(u.name, "投研三镜头");
+    assert.match(u.url, /\/api\/wanxing\/v1\/a2a\/cluster\/p1$/);
+    assert.deepEqual(u.members.map((m) => [m.id, m.role, m.served]), [["a", "default", true], ["b", "default", true], ["c", "optional", true]]);
+
+    const card = await h.get("/api/wanxing/v1/a2a/cluster/p1/.well-known/agent-card.json");
+    assert.equal(card.status, 200);
+    assert.equal(card.body.capabilities.streaming, false);
+    assert.deepEqual(card.body.skills.map((s) => s.id), ["a", "b", "c"]);
+    assert.deepEqual(card.body.cluster.aggregations, ["all", "first", "summary"]);
+    assert.match(card.body.url, /\/a2a\/cluster\/p1$/);
+  } finally {
+    await h.close();
+  }
+
+  // Only the optional member served → no unit anywhere.
+  const h2 = clusterHarness({ deployments: [dep("p1", "c")] });
+  try {
+    assert.equal((await h2.get("/api/wanxing/v1/clusters")).body.clusters.length, 0);
+    assert.equal((await h2.get("/api/wanxing/v1/a2a/cluster/p1/.well-known/agent-card.json")).status, 404);
+    const r = await h2.send("hi");
+    assert.equal(r.status, 404);
+    assert.equal(r.body.error.code, "CLUSTER_NOT_FOUND");
+  } finally {
+    await h2.close();
+  }
+
+  // A private served member hides from the public list and card, not from turns.
+  const h3 = clusterHarness({ entryOver: (d) => (d.agentId === "b" ? { visibility: "private" } : {}) });
+  try {
+    const list = await h3.get("/api/wanxing/v1/clusters");
+    assert.deepEqual(list.body.clusters[0].members.map((m) => m.id), ["a", "c"], "private served member hidden");
+    const card = await h3.get("/api/wanxing/v1/a2a/cluster/p1/.well-known/agent-card.json");
+    assert.deepEqual(card.body.skills.map((s) => s.id), ["a", "c"]);
+    // Default member set for turns still includes b (admission per member).
+    const r = await h3.send("hi");
+    assert.equal(r.status, 200, "the composite runs on its public default members");
+    const ids = r.body.result.message.metadata.cluster.members.filter((m) => m.status !== "skipped").map((m) => m.id).sort();
+    assert.deepEqual(ids, ["a"], "b is skipped for an unauthorized caller (CALLER_NOT_AUTHORIZED)");
+  } finally {
+    await h3.close();
+  }
+});
+
+test("B turn: send-only protocol, unknown member selection, and admission verdicts", async () => {
+  const h = clusterHarness();
+  try {
+    const stream = await fetch(`${h.base}/api/wanxing/v1/a2a/cluster/p1`, sendJson({ jsonrpc: "2.0", id: 1, method: "message/stream", params: { message: { parts: [{ kind: "text", text: "x" }] } } }, { Authorization: "Bearer sk-caller" })).then((r) => r.json());
+    assert.equal(stream.error.code, -32601);
+    assert.match(stream.error.message, /message\/send only/);
+
+    const unknown = await h.send("x", { metadata: { agents: ["a", "zzz"] } });
+    assert.equal(unknown.body.error.code, -32602);
+    assert.match(unknown.body.error.message, /zzz/);
+    assert.equal(h.upstream.calls.length, 0, "no member ran");
+
+    const unserved = await h.send("x", { metadata: { agents: ["a", "b"] }, /* b not deployed in this variant */ });
+    // (b IS deployed in the default harness; use the paused variant below.)
+  } finally {
+    await h.close();
+  }
+
+  // A paused member skips; the composite still answers on the rest.
+  const hp = clusterHarness({ entryOver: (d) => (d.agentId === "b" ? { metadata: { paused: true } } : {}) });
+  try {
+    const r = await hp.send("分析下");
+    assert.equal(r.status, 200);
+    const block = r.body.result.message.metadata.cluster;
+    const b = block.members.find((m) => m.id === "b");
+    assert.equal(b.status, "skipped");
+    assert.equal(b.reason, "AGENT_PAUSED");
+    assert.equal(block.members.find((m) => m.id === "a").status, "ok");
+    assert.match(r.body.result.message.parts[0].text, /## 宏观/);
+    assert.match(r.body.result.message.parts[0].text, /估值：跳过（AGENT_PAUSED）/);
+  } finally {
+    await hp.close();
+  }
+
+  // Every member paused → refusal before any upstream call.
+  const ha = clusterHarness({ entryOver: () => ({ metadata: { paused: true } }) });
+  try {
+    const r = await ha.send("分析下");
+    assert.equal(r.status, 403);
+    assert.equal(r.body.error.code, "CLUSTER_NOT_ADMITTED");
+    assert.equal(ha.upstream.calls.length, 0);
+  } finally {
+    await ha.close();
+  }
+});
+
+test("B turn: the member slot is respected — a member busy on a direct call skips as TURN_IN_FLIGHT", async () => {
+  const h = clusterHarness();
+  try {
+    h.core.acquireSlot(7, "packs-p1-b"); // simulate a direct call in flight
+    const r = await h.send("分析下");
+    assert.equal(r.status, 200);
+    const block = r.body.result.message.metadata.cluster;
+    assert.equal(block.members.find((m) => m.id === "b").status, "skipped");
+    assert.equal(block.members.find((m) => m.id === "b").reason, "TURN_IN_FLIGHT");
+    assert.equal(block.members.find((m) => m.id === "a").status, "ok");
+  } finally {
+    await h.close();
+  }
+});
+
+test("B turn: RPM ticks once per composite; concurrency follows the declaration", async () => {
+  // rpmMax 1: one composite with TWO members passes (single tick)…
+  const h = clusterHarness({ coreCfg: { rpmMax: 1 }, upstream: upstreamStub({ latency: { "/packs/p1/a": 60, "/packs/p1/b": 60 } }) });
+  try {
+    const r = await h.send("分析下");
+    assert.equal(r.status, 200, "both members ran under one RPM tick");
+    assert.equal(h.upstream.calls.length, 2);
+    assert.equal(h.upstream.maxInflight(), 2, "no declared policy → members run concurrently");
+    // …the next request in the same window is throttled.
+    const r2 = await h.send("再来");
+    assert.equal(r2.status, 429);
+  } finally {
+    await h.close();
+  }
+
+  // maxConcurrentRuns 1 → strictly sequential.
+  const hs = clusterHarness({ policy: { maxConcurrentRuns: 1 }, upstream: upstreamStub({ latency: { "/packs/p1/a": 80, "/packs/p1/b": 10 } }) });
+  try {
+    const r = await hs.send("分析下");
+    assert.equal(r.status, 200);
+    assert.equal(hs.upstream.maxInflight(), 1, "the declaration caps concurrency");
+  } finally {
+    await hs.close();
+  }
+});
+
+test("B aggregation: all / first / summary, and total failure is a JSON-RPC error with the block", async () => {
+  const h = clusterHarness({ upstream: upstreamStub({ replies: { "/packs/p1/a": "宏观说涨", "/packs/p1/b": "估值说跌" } }) });
+  try {
+    const all = await h.send("分析下");
+    const allText = all.body.result.message.parts[0].text;
+    assert.match(allText, /## 宏观（默认成员）\n\n宏观说涨/);
+    assert.match(allText, /## 估值（默认成员）\n\n估值说跌/);
+    assert.equal(all.body.result.message.metadata.cluster.aggregation, "all");
+
+    const first = await h.send("分析下", { metadata: { aggregation: "first" } });
+    assert.equal(first.body.result.message.metadata.cluster.aggregation, "first");
+    assert.ok(["宏观说涨", "估值说跌"].includes(first.body.result.message.parts[0].text));
+
+    const summary = await h.send("分析下", { metadata: { aggregation: "summary" } }, { "Idempotency-Key": "sum-1" });
+    const block = summary.body.result.message.metadata.cluster;
+    assert.equal(block.aggregation, "summary");
+    assert.equal(block.summaryBy, "a", "the lead is the first successful default in declaration order");
+    assert.equal(summary.body.result.message.parts[0].text, "综合答复");
+    const synthCall = h.upstream.calls.find((c) => c.body.params.message.context_id.endsWith("--summary"));
+    assert.ok(synthCall, "the synthesis turn ran");
+    assert.match(synthCall.body.params.message.parts[0].text, /【宏观】\n宏观说涨/);
+    assert.match(synthCall.body.params.message.parts[0].text, /【估值】\n估值说跌/);
+    assert.match(synthCall.body.params.message.parts[0].text, /原始任务：分析下/);
+    const summaryMember = block.members.find((m) => m.name === "宏观（汇总）");
+    assert.equal(summaryMember.status, "ok");
+  } finally {
+    await h.close();
+  }
+
+  // Total failure: error response still carrying the block, both rows waived.
+  const hf = clusterHarness({ upstream: upstreamStub({ failPaths: ["/packs/p1/a", "/packs/p1/b"] }) });
+  try {
+    const r = await hf.send("分析下");
+    assert.equal(r.body.error.code, -32040);
+    assert.equal(r.body.error.data.cluster.members.every((m) => m.status === "error"), true);
+    assert.equal(hf.store.usagePending().length, 0, "error turns are waived, nothing to settle");
+  } finally {
+    await hf.close();
+  }
+});
+
+test("B metering: member rows individually booked under one cluster_turn_id; the unit books nothing; replay and partial-crash reuse", async () => {
+  const h = clusterHarness();
+  try {
+    const r = await h.send("分析下", {}, { "Idempotency-Key": "meter-1" });
+    assert.equal(r.status, 200);
+    const block = r.body.result.message.metadata.cluster;
+    const ctId = new Database(h.storeFile).prepare(`SELECT cluster_turn_id FROM wanxing_usage WHERE agent_slug = ? ORDER BY started_at DESC LIMIT 1`).get("packs-p1-a").cluster_turn_id;
+    const rows = h.store.usageByClusterTurn(ctId);
+    assert.equal(rows.length, 2, "one row per member");
+    assert.deepEqual(rows.map((x) => x.agent_slug).sort(), ["packs-p1-a", "packs-p1-b"]);
+    assert.deepEqual(rows.map((x) => x.idem_key).sort(), ["meter-1--a", "meter-1--b"]);
+    assert.ok(rows.every((x) => x.cluster_turn_id === ctId));
+    assert.ok(!rows.some((x) => x.agent_slug === "p1"), "the unit records no row");
+
+    // A full replay returns the recorded response and books nothing new.
+    const replay = await h.send("分析下", {}, { "Idempotency-Key": "meter-1" });
+    assert.deepEqual(replay.body, r.body);
+    assert.equal(h.store.usageByClusterTurn(ctId).length, 2);
+    assert.equal(h.upstream.calls.length, 2);
+
+    // Partial-crash replay: drop the composite's idempotency row AND member
+    // b's (crash after a finished, before b did) — a replays from its
+    // derived key (no new row, no upstream call), only b reruns.
+    const db = new Database(h.storeFile);
+    db.prepare(`DELETE FROM wanxing_requests WHERE agent_slug = ?`).run("p1");
+    db.prepare(`DELETE FROM wanxing_requests WHERE agent_slug = ? AND idem_key = ?`).run("packs-p1-b", "meter-1--b");
+    db.close();
+    const rerun = await h.send("分析下", {}, { "Idempotency-Key": "meter-1" });
+    assert.equal(rerun.status, 200);
+    assert.equal(h.upstream.calls.length, 3, "member a replayed from its derived key; only b hit the upstream again");
+    const count = (slug) => new Database(h.storeFile).prepare(`SELECT COUNT(*) AS n FROM wanxing_usage WHERE agent_slug = ?`).get(slug).n;
+    assert.equal(count("packs-p1-a"), 1, "a booked once — its derived key replayed without a new row");
+    assert.equal(count("packs-p1-b"), 2, "b re-booked: the rerun is a new execution under a new cluster_turn_id");
+  } finally {
+    await h.close();
+  }
+});
+
+test("B metering: a failed member is waived inside a successful composite; timeouts mark TIMEOUT", async () => {
+  const h = clusterHarness({ upstream: upstreamStub({ failPaths: ["/packs/p1/a"] }) });
+  try {
+    const r = await h.send("分析下", {}, { "Idempotency-Key": "mix-1" });
+    assert.equal(r.status, 200);
+    const ctId = new Database(h.storeFile).prepare(`SELECT cluster_turn_id FROM wanxing_usage WHERE agent_slug = ? ORDER BY started_at DESC LIMIT 1`).get("packs-p1-a").cluster_turn_id;
+    const rows = h.store.usageByClusterTurn(ctId);
+    const a = rows.find((x) => x.agent_slug === "packs-p1-a");
+    const b = rows.find((x) => x.agent_slug === "packs-p1-b");
+    assert.equal(a.outcome, "error");
+    assert.equal(a.minutes_billed, 0);
+    assert.equal(a.settlement_status, "waived");
+    assert.equal(b.outcome, "ok");
+    assert.ok(b.minutes_billed >= 1);
+    assert.match(r.body.result.message.parts[0].text, /估值/);
+    assert.match(r.body.result.message.parts[0].text, /宏观：失败/);
+  } finally {
+    await h.close();
+  }
+
+  const ht = clusterHarness({ env: { WANXING_CLUSTER_MEMBER_TIMEOUT_MS: "60" }, upstream: upstreamStub({ latency: { "/packs/p1/a": 400, "/packs/p1/b": 10 } }) });
+  try {
+    const r = await ht.send("分析下", {}, { "Idempotency-Key": "to-1" });
+    assert.equal(r.status, 200);
+    const a = r.body.result.message.metadata.cluster.members.find((m) => m.id === "a");
+    assert.equal(a.status, "error");
+    assert.equal(a.reason, "TIMEOUT");
+    const b = r.body.result.message.metadata.cluster.members.find((m) => m.id === "b");
+    assert.equal(b.status, "ok");
+  } finally {
+    await ht.close();
+  }
+});
+
+test("B contexts: a caller's context_id continues every member conversation", async () => {
+  const h = clusterHarness();
+  try {
+    const r = await h.send("分析下", { context_id: "wx:ctx-42" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.result.message.metadata.cluster.members.length >= 2, true);
+    const ctxs = h.upstream.calls.map((c) => c.body.params.message.context_id).sort();
+    assert.deepEqual(ctxs, ["wx:ctx-42--a", "wx:ctx-42--b"]);
+  } finally {
+    await h.close();
+  }
+});

@@ -17,3 +17,27 @@ export function A2aSample() {
   }'`}</pre>
   );
 }
+// The cluster call sample (add-cluster-service-unit): one message/send fans
+// out to the unit's served members; member selection and aggregation ride
+// message.metadata. Billing is per member turn — the summary aggregation
+// adds one more (the lead's synthesis turn).
+export function ClusterA2aSample() {
+  return (
+    <pre className="overflow-x-auto rounded-lg bg-slate-900 text-slate-100 p-4 text-xs">{`curl -X POST "$BASE/api/wanxing/v1/a2a/cluster/<clusterSlug>" \\
+  -H "Authorization: Bearer sk-xxxx" \\
+  -H "Idempotency-Key: my-ticket-001" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "jsonrpc": "2.0", "id": 1,
+    "method": "message/send",
+    "params": { "message": {
+      "role": "user",
+      "parts": [{ "kind": "text", "text": "从三个镜头审读这家公司" }],
+      "metadata": {
+        "agents": ["macro-analyst", "valuation-analyst"],
+        "aggregation": "summary"
+      }
+    }}
+  }'`}</pre>
+  );
+}

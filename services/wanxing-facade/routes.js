@@ -15,6 +15,7 @@ import path from "node:path";
 import { createWanxingStore } from "./store.js";
 import { createWanxingCore, slugFor } from "./core.js";
 import { createA2aFace } from "./a2a.js";
+import { createClusterFace } from "./cluster.js";
 import { createChatFace } from "./chat.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
@@ -250,6 +251,11 @@ export function registerWanxingRoutes(app, {
   // entry cache) and the chat face needs it, while the a2a face's catalog
   // marker needs the chat face's chatability — the late-bound ref breaks the
   // cycle without changing either face's shape.
+  // Cluster units (add-cluster-service-unit): the composite face resolves
+  // against the a2a face's index/entry cache/member-turn core, while the a2a
+  // face's catalog marker names the unit's endpoint — the late-bound ref
+  // breaks the cycle the same way chatFaceRef does.
+  let clusterRef = null;
   let chatFaceRef = null;
   const face = createA2aFace({
     core,
@@ -300,7 +306,27 @@ export function registerWanxingRoutes(app, {
     // lives in the manifest, which the browse row does not carry.
     packsDetailFetch: (id) => packsInternalFetch(`/api/packs/${encodeURIComponent(id)}`),
     usageTurnsByAgent: (sinceMs) => store.usageTurnsByAgent(sinceMs),
+    // The unit endpoint on the cluster marker (add-cluster-service-unit):
+    // late-bound so the two faces can be created in dependency order.
+    clusterUnits: async () => (clusterRef ? clusterRef.units() : []),
   });
+  const clusterFace = createClusterFace({
+    core,
+    a2a: {
+      agentState: (slug) => face.agentState(slug),
+      entryFor: (slug) => face.entryFor(slug),
+      clusterMap: () => face.clusterMap(),
+      runMemberTurn: (args) => face.runMemberTurn(args),
+    },
+    listDeployments,
+    hardStale: () => bookkeeping.hardStale(),
+    ensureFresh: () => bookkeeping.poke(),
+    report: (ev) => fleetReporter.report(ev),
+    env,
+    log: (m) => console.log(`[wanxing:cluster] ${m}`),
+  });
+  clusterFace.register(app);
+  clusterRef = clusterFace;
   face.register(app);
 
   const chatFace = createChatFace({

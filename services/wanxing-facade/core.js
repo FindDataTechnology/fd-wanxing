@@ -192,7 +192,7 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   // Minutes round UP — a 5-second turn bills one minute unit (the rate table
   // is per started minute). outcome=error rows are recorded but waived: the
   // caller is never charged for a turn that produced nothing.
-  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null, visitorTier = null, missionId = null }) {
+  function recordUsage({ caller, slug, idemKey, startedAt, endedAt, outcome, channel = null, settler = null, visitorSub = null, visitorTier = null, missionId = null, clusterTurnId = null }) {
     const durationMs = Math.max(0, endedAt - startedAt);
     const billable = outcome === "ok";
     const minutesBilled = billable ? Math.max(1, Math.ceil(durationMs / 60_000)) : 0;
@@ -233,6 +233,9 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
       ...(visitorSub && visitorTier ? { visitorTier } : {}),
       planRef,
       ...(missionId ? { missionId } : {}),
+      // Cluster-turn linkage (add-cluster-service-unit D4): members of one
+      // composite call share the id; the composite itself records no row.
+      ...(clusterTurnId ? { clusterTurnId } : {}),
     };
     store.usageInsert(row);
     return row;

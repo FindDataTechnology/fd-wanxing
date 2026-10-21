@@ -211,6 +211,21 @@ export function CatalogView() {
               </button>
             )}
           </div>
+          {seg.url ? (
+            <div className="flex items-center gap-2 mb-2 text-xs" data-testid={`cluster-endpoint-${seg.id}`}>
+              <a href="#/docs" className="text-violet-700 dark:text-violet-300 underline">集群调用</a>
+              <code className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-violet-200 dark:border-violet-900 font-mono break-all">{seg.url}</code>
+              <button
+                onClick={() => navigator.clipboard?.writeText(seg.url)}
+                data-testid={`cluster-copy-${seg.id}`}
+                className="px-1.5 py-0.5 rounded border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300"
+              >
+                复制
+              </button>
+            </div>
+          ) : (
+            <div className="mb-2 text-xs text-slate-400">尚不可整体调用——至少需要一个默认成员在役。</div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{seg.items.map(card)}</div>
         </div>
       );

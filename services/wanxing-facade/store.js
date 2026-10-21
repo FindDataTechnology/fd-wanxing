@@ -120,6 +120,11 @@ export function createWanxingStore({ file }) {
   // this column — the mission's spent minutes derive from the ledger over it,
   // never from a counter. Rows without a mission keep NULL.
   if (!usageCols.has("mission_id")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN mission_id TEXT`);
+  // Cluster-turn linkage (add-cluster-service-unit D4): the member turns (and
+  // the summary turn) of ONE composite call share this id. Linkage only — the
+  // composite itself records no row, and nothing derives from it yet; it is
+  // the future grouping key for owner-facing usage views.
+  if (!usageCols.has("cluster_turn_id")) db.exec(`ALTER TABLE wanxing_usage ADD COLUMN cluster_turn_id TEXT`);
 
   // Host allowance (D6): one one-time minute cap per agent, set and adjusted
   // by that deployment's deployer (or ops). Used minutes derive from the
@@ -366,9 +371,15 @@ export function createWanxingStore({ file }) {
 
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
-      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, visitor_tier, plan_ref, mission_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.visitorTier || "tenant", row.planRef ?? null, row.missionId ?? null);
+      db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, visitor_tier, plan_ref, mission_id, cluster_turn_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.callerId, row.callerEmail || "", row.agentSlug, row.idemKey || "", row.startedAt, row.endedAt, row.durationMs, row.outcome, row.minutesBilled, row.rateUsd, row.settlementStatus, row.channel || "api", row.settler ?? null, row.visitorSub ?? null, row.visitorTier || "tenant", row.planRef ?? null, row.missionId ?? null, row.clusterTurnId ?? null);
+    },
+    // Cluster linkage read (add-cluster-service-unit): the member rows of one
+    // composite call, in start order. Read-only today — the grouping view
+    // comes later; this is the honest window onto it.
+    usageByClusterTurn(clusterTurnId) {
+      return db.prepare(`SELECT * FROM wanxing_usage WHERE cluster_turn_id = ? ORDER BY started_at`).all(String(clusterTurnId));
     },
     usageMarkSettled(id) {
       db.prepare(`UPDATE wanxing_usage SET settlement_status = 'settled', settled_at = ? WHERE id = ?`).run(now(), id);

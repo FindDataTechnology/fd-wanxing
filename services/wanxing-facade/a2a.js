@@ -106,6 +106,10 @@ export function createA2aFace({
   // grouping, never a failure.
   packsDetailFetch = null,
   usageTurnsByAgent = null,
+  // Listed cluster units (add-cluster-service-unit): async () → [{ id, slug,
+  // … }] — the marker gains the unit's slug and url when its cluster is a
+  // listed unit. Optional; absent markers carry no endpoint.
+  clusterUnits = null,
 }) {
   const note = (kind, agent, payload = {}, id = null) => {
     try {
@@ -288,6 +292,123 @@ export function createA2aFace({
     };
   }
 
+  // ── The send-transport turn core (add-cluster-service-unit 1.3) ────────────
+  // finishTurn is the per-request finish the route has always run, lifted to
+  // parameters so a cluster member turn (cluster.js) books through the exact
+  // same path: slot release, usage row (with the optional composite linkage),
+  // the caller's completion callback, settlement and the fleet event.
+  const finishTurn = ({ caller, slug, idemKey, startedAt, outcome, clusterTurnId = null }) => {
+    core.releaseSlot(caller.userId, slug);
+    const row = core.recordUsage({
+      caller, slug, idemKey, startedAt, endedAt: Date.now(), outcome,
+      ...(clusterTurnId ? { clusterTurnId } : {}),
+    });
+    // The caller's turn-completion callback (add-caller-preferences):
+    // fire-and-forget BESIDE settlement — notification only, settlement
+    // untouched. Traced by the usage-row id (the receiver deduplicates on it).
+    if (onTurnComplete) {
+      void onTurnComplete({
+        caller, slug, idemKey, outcome,
+        startedAt, endedAt: row.endedAt, minutesBilled: row.minutesBilled, traceId: row.id,
+      });
+    }
+    // Deterministic event id (the usage row id): inline settle and the
+    // pending sweep can both report this row — exactly once on the observer.
+    if (row.settlementStatus === "waived") {
+      note("settled", slug, { minutes_billed: 0, usd: 0, settlement_status: "waived", outcome }, `facade-${row.id}`);
+    } else {
+      void core.trySettle(row)
+        .then((ok) => note("settled", slug, {
+          minutes_billed: row.minutesBilled,
+          usd: Number((row.minutesBilled * row.rateUsd).toFixed(4)),
+          settlement_status: ok ? "settled" : "pending",
+          outcome,
+        }, `facade-${row.id}`))
+        .catch(() => note("settled", slug, { minutes_billed: row.minutesBilled, usd: Number((row.minutesBilled * row.rateUsd).toFixed(4)), settlement_status: "pending", outcome }, `facade-${row.id}`));
+    }
+    return row;
+  };
+
+  // One message/send flight over the idempotency ledger: the forward (or the
+  // caller-supplied exec — the route's mailbox branch), the answer-derived
+  // outcome, and the finish/exit semantics by slot ownership. A flight error
+  // is RETURNED as the JSON-RPC error response, never thrown — the route and
+  // the cluster face render it identically either way.
+  const runSendFlight = async ({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId = null, holdsSlot, clusterTurnId = null, exec = null, timeoutMs = null }) => {
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: rpcId,
+      method: "message/send",
+      params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
+    });
+    const forward = async () => {
+      const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
+        method: "POST",
+        headers: { ...forwardHeaders(), "Content-Type": "application/json" },
+        body,
+        ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+      });
+      const doc = await upstream.json().catch(() => null);
+      if (!upstream.ok) {
+        throw Object.assign(new Error(`agent route refused the turn (${upstream.status})`), { code: -32033 });
+      }
+      return { response: doc ?? { jsonrpc: "2.0", id: rpcId ?? null, error: { code: -32001, message: "agent route returned an unreadable response" } } };
+    };
+    try {
+      const out = await core.idempotentSend({
+        callerId: caller.userId,
+        slug,
+        idemKey,
+        exec: exec ?? forward,
+      });
+      // message/send: replay/join land here without a slot of their own —
+      // no usage row, no settle; the flight's owner did (or will) record.
+      // The outcome is derived from the ANSWER, not the HTTP status: the
+      // A2A transport carries a model-failed turn as HTTP 200 + a JSON-RPC
+      // error object, so "upstream.ok" says nothing about the turn —
+      // billing those as "ok" charged callers for turns that returned
+      // nothing (live incident 2026-10-13, fix-error-turn-billing).
+      const row = out.replayed ? null : finishTurn({ caller, slug, idemKey, startedAt, outcome: out.response?.error ? "error" : "ok", clusterTurnId });
+      return { replayed: Boolean(out.replayed), response: out.response, error: out.response?.error?.message ?? null, row };
+    } catch (e) {
+      const row = holdsSlot ? finishTurn({ caller, slug, idemKey, startedAt, outcome: "error", clusterTurnId }) : null;
+      // A DOMException's legacy `code` is a small integer (TimeoutError is
+      // 23) — the timeout check must win over the "integer code passthrough"
+      // branch or a timeout masquerades as a protocol error.
+      const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
+      return {
+        replayed: false,
+        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: timedOut ? -32041 : Number.isInteger(e?.code) ? e.code : -32032, message: timedOut ? `member turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
+        error: String(e?.message || e),
+        timedOut,
+        row,
+      };
+    }
+  };
+
+  // One member turn of a cluster composite (add-cluster-service-unit):
+  // selection and admission are the cluster face's job; this runs the flight
+  // — the member's (caller, member) slot, the derived-key idempotency
+  // (`<key>--<agentId>`), the forward under the member timeout, and the same
+  // finishTurn a direct turn books. Skips surface as {status:"skipped"}.
+  const runMemberTurn = async ({ caller, slug, state, text, contextId, idemKey = null, clusterTurnId, timeoutMs = 300_000, rpcId = null }) => {
+    if (!core.acquireSlot(caller.userId, slug)) {
+      return { status: "skipped", reason: "TURN_IN_FLIGHT" };
+    }
+    const startedAt = Date.now();
+    const out = await runSendFlight({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId, holdsSlot: true, clusterTurnId, timeoutMs });
+    const err = out.response?.error;
+    const replyText = err ? null : textOf(out.response?.result?.message);
+    return {
+      status: err ? "error" : "ok",
+      ...(out.timedOut ? { reason: "TIMEOUT" } : err ? { reason: String(err.code ?? "ERROR") } : {}),
+      text: replyText,
+      error: out.error,
+      replayed: out.replayed,
+      ...(out.row ? { durationMs: out.row.durationMs, minutesBilled: out.row.minutesBilled } : {}),
+    };
+  };
+
   function register(app) {
     // ── Public discovery: no credential by design (spec: card and catalog
     // are public). Private agents are simply absent from both. Both faces
@@ -305,13 +426,26 @@ export function createA2aFace({
       }
       // Signals (add-catalog-facets): curation by pack id, activity by slug —
       // both cached 60s, both degrading honestly. The cluster index rides the
-      // same cadence (add-cluster-catalog-grouping).
-      const [curation, turns, clusters] = await Promise.all([curationMap(), turns7dMap(), clusterMap()]);
+      // same cadence (add-cluster-catalog-grouping); the unit endpoint names
+      // the marker when the cluster is a listed unit (add-cluster-service-unit).
+      const [curation, turns, clusters, listed] = await Promise.all([
+        curationMap(),
+        turns7dMap(),
+        clusterMap(),
+        clusterUnits ? clusterUnits().catch(() => []) : [],
+      ]);
+      const listedUnits = new Map((listed ?? []).map((u) => [u.id, u]));
       for (const dep of deps) {
         const entry = await entryFor(dep.slug, dep);
         if (!entry || entry.visibility === "private") continue;
         const cur = dep.packId != null ? curation.get(dep.packId) : null;
-        const cluster = clusterMarkerFor(dep, clusters);
+        const marker = clusterMarkerFor(dep, clusters);
+        const unit = marker ? listedUnits.get(marker.id) ?? null : null;
+        const cluster = marker
+          ? unit
+            ? { ...marker, slug: unit.slug, url: `${req.protocol}://${req.get("host")}/api/wanxing/v1/a2a/cluster/${unit.slug}` }
+            : marker
+          : null;
         out.push({
           slug: dep.slug,
           name: entry.name,
@@ -400,11 +534,18 @@ export function createA2aFace({
       if (!state.exists || state.visibility === "private") {
         return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
       }
-      const cluster = clusterMarkerFor(state, await clusterMap());
+      const marker = clusterMarkerFor(state, await clusterMap());
+      const unit = marker && clusterUnits ? (await clusterUnits().catch(() => [])).find((u) => u.id === marker.id) ?? null : null;
       res.json({
         ...publicCard(req.params.agentSlug, state.entry, req),
         ...(chatability?.(state) ? { chatable: true } : {}),
-        ...(cluster ? { cluster } : {}),
+        ...(marker
+          ? {
+              cluster: unit
+                ? { ...marker, slug: unit.slug, url: `${req.protocol}://${req.get("host")}/api/wanxing/v1/a2a/cluster/${unit.slug}` }
+                : marker,
+            }
+          : {}),
       });
     });
 
@@ -485,33 +626,7 @@ export function createA2aFace({
       // finish = THIS request's turn ended (slot-holder only): ledger row +
       // fire-and-forget settlement (the pending sweep retries, idempotently).
       // exitReadonly = a replay/join leaves without recording anything.
-      const finish = (outcome) => {
-        core.releaseSlot(caller.userId, slug);
-        const row = core.recordUsage({ caller, slug, idemKey, startedAt, endedAt: Date.now(), outcome });
-        // The caller's turn-completion callback (add-caller-preferences):
-        // fire-and-forget BESIDE settlement — notification only, settlement
-        // untouched. Traced by the usage-row id (the receiver deduplicates on it).
-        if (onTurnComplete) {
-          void onTurnComplete({
-            caller, slug, idemKey, outcome,
-            startedAt, endedAt: row.endedAt, minutesBilled: row.minutesBilled, traceId: row.id,
-          });
-        }
-        // Deterministic event id (the usage row id): inline settle and the
-        // pending sweep can both report this row — exactly once on the observer.
-        if (row.settlementStatus === "waived") {
-          note("settled", slug, { minutes_billed: 0, usd: 0, settlement_status: "waived", outcome }, `facade-${row.id}`);
-        } else {
-          void core.trySettle(row)
-            .then((ok) => note("settled", slug, {
-              minutes_billed: row.minutesBilled,
-              usd: Number((row.minutesBilled * row.rateUsd).toFixed(4)),
-              settlement_status: ok ? "settled" : "pending",
-              outcome,
-            }, `facade-${row.id}`))
-            .catch(() => note("settled", slug, { minutes_billed: row.minutesBilled, usd: Number((row.minutesBilled * row.rateUsd).toFixed(4)), settlement_status: "pending", outcome }, `facade-${row.id}`));
-        }
-      };
+      const finish = (outcome) => finishTurn({ caller, slug, idemKey, startedAt, outcome });
       const exitReadonly = () => {
         if (holdsSlot) core.releaseSlot(caller.userId, slug);
       };
@@ -572,13 +687,12 @@ export function createA2aFace({
           return;
         }
 
-        // message/send, with replay semantics on the idempotency key.
-        const out = await core.idempotentSend({
-          callerId: caller.userId,
-          slug,
-          idemKey,
-          exec: async () => {
-            if (seatRunnerId && config.mailboxEnqueue) {
+        // message/send, with replay semantics on the idempotency key — the
+        // shared send-transport flight (also what a cluster member turn
+        // rides). The route's only custom exec is the mailbox branch; the
+        // normal forward is the flight's own.
+        const mailboxExec = seatRunnerId && config.mailboxEnqueue
+          ? async () => {
               const taskId = config.mailboxEnqueue({ runnerId: seatRunnerId, agentPath: state.agentPath, text, callerEmail: caller.email ?? "" });
               return {
                 response: {
@@ -595,27 +709,12 @@ export function createA2aFace({
                 },
               };
             }
-            const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
-              method: "POST",
-              headers: { ...forwardHeaders(), "Content-Type": "application/json" },
-              body: rpcBody("message/send"),
-            });
-            const doc = await upstream.json().catch(() => null);
-            if (!upstream.ok) {
-              throw Object.assign(new Error(`agent route refused the turn (${upstream.status})`), { code: -32033 });
-            }
-            return { response: doc ?? { jsonrpc: "2.0", id: id ?? null, error: { code: -32001, message: "agent route returned an unreadable response" } } };
-          },
+          : null;
+        const out = await runSendFlight({
+          caller, slug, state, text, contextId, idemKey, startedAt, rpcId: id, holdsSlot, exec: mailboxExec,
         });
-        // message/send: replay/join land here without a slot of their own —
-        // no usage row, no settle; the flight's owner did (or will) record.
-        // The outcome is derived from the ANSWER, not the HTTP status: the
-        // A2A transport carries a model-failed turn as HTTP 200 + a JSON-RPC
-        // error object, so "upstream.ok" says nothing about the turn —
-        // billing those as "ok" charged callers for turns that returned
-        // nothing (live incident 2026-10-13, fix-error-turn-billing).
-        if (!out.replayed) finish(out.response?.error ? "error" : "ok");
-        else exitReadonly();
+        // A replay/join leaves without recording anything of its own.
+        if (out.replayed) exitReadonly();
         res.status(200).json(out.response);
       } catch (e) {
         if (holdsSlot) finish("error");
@@ -625,5 +724,5 @@ export function createA2aFace({
     });
   }
 
-  return { register, entryFor, agentState, clusterMap, clusterMarkerFor };
+  return { register, entryFor, agentState, clusterMap, clusterMarkerFor, runMemberTurn };
 }
