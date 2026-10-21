@@ -302,7 +302,10 @@ function upstreamStub({ replies = {}, latency = {}, failPaths = [] } = {}) {
         const text = body.params.message.context_id?.endsWith("--summary")
           ? "综合答复"
           : replies[path] ?? `${path} 的答复`;
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result: { message: { parts: [{ kind: "text", text }] } } }), { headers: { "Content-Type": "application/json" } });
+        // The runner's real wire shape: the Message IS the result (probed live
+        // 2026-10-22 — result:{role,parts}); a second flavor wraps it under
+        // result.message, asserted below so both stay readable.
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result: { role: "assistant", parts: [{ kind: "text", text }] } }), { headers: { "Content-Type": "application/json" } });
       } finally {
         inflight -= 1;
         calls.push({ path, body, at: Date.now() });

@@ -398,7 +398,10 @@ export function createA2aFace({
     const startedAt = Date.now();
     const out = await runSendFlight({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId, holdsSlot: true, clusterTurnId, timeoutMs });
     const err = out.response?.error;
-    const replyText = err ? null : textOf(out.response?.result?.message);
+    // The runner answers message/send with the Message AS the result
+    // ({result:{role,parts,…}}); the A2A spec also allows {result:{message:…}}
+    // — read both, the same tolerance the chat lane applies.
+    const replyText = err ? null : textOf(out.response?.result?.message ?? out.response?.result);
     return {
       status: err ? "error" : "ok",
       ...(out.timedOut ? { reason: "TIMEOUT" } : err ? { reason: String(err.code ?? "ERROR") } : {}),
