@@ -55,8 +55,8 @@
 
 ## 5. 上线与实证
 
-- [ ] 5.1 出片 facade + web 双镜像 → relay → ccr digest → GitOps → pod imageID 核验
-- [ ] 5.2 生产实证（集群包默认成员已部署为前置）：`GET /clusters` 列出单位；卡公开可取；
+- [x] 5.1 出片 facade + web 双镜像 → relay → ccr digest → GitOps → pod imageID 核验
+- [x] 5.2 生产实证（集群包默认成员已部署为前置）：`GET /clusters` 列出单位；卡公开可取；
   用调用键 `message/send` 默认扇出 → 两成员各一节；`aggregation: summary` → 综合文本 +
   三条 usage 行同 `cluster_turn_id`；replay 同 key 零新行；目录组头显示端点
-- [ ] 5.3 台账 `docs/`（发布记录）+ 记忆
+- [x] 5.3 台账 `docs/`（发布记录）+ 记忆

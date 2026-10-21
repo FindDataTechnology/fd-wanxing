@@ -31,9 +31,9 @@
 
 ## 4. 上线与实证
 
-- [ ] 4.1 出片：facade + web 双镜像（公开快照线）→ relay → ccr digest → GitOps 两清单 → pod
+- [x] 4.1 出片：facade + web 双镜像（公开快照线）→ relay → ccr digest → GitOps 两清单 → pod
   imageID 核验
-- [ ] 4.2 数据前置（非代码）：集群包 v2 三成员补 `serving: {protocol: "a2a"}`（作者身份发布）；
+- [x] 4.2 数据前置（非代码）：集群包 v2 三成员补 `serving: {protocol: "a2a"}`（作者身份发布）；
   经 console 向导部署默认成员（部署者计费键）
-- [ ] 4.3 生产实证：目录出现集群组头（`2 / 3 在本页` 或全员）、`cluster=` 过滤命中、
+- [x] 4.3 生产实证：目录出现集群组头（`2 / 3 在本页` 或全员）、`cluster=` 过滤命中、
   `facets.clusters ≥ 1`、agent-card 带标记、向导对集群包默认只勾默认成员
