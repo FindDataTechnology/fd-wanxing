@@ -44,3 +44,11 @@ _Avoid_: 游客账号、试用用户、匿名用户（泛指——不存在的�
 **嵌入车道（Embed Lane）**:
 产品线网页以跨站 iframe 嵌入门面 `#/embed/<slug>` widget 形成的对话渠道；凭据阶梯为 宿主递租户 ID token → widget 内登录（popup 回交）→ 匿名访客。与对话车道同走准入内核，账本同记 channel=chat、以 visitor_tier 分层。
 _Avoid_: 悬浮框（指 UI 形态时另说）、插件、SDK
+
+**问询卡（Ask Card）**:
+served agent 回合中调用 `ask_user_question` 后，经 serving 面 `ask` 事件接力到 widget 渲染的可答卡片（选项/多选/自由文本/取消/到期倒计时）；答案经门面 `ask-answer` 侧路由回到 agent，归属绑定在转发该帧的访客。问询窗=剩余回合预算，到期 runner 自取消。`#/chat` 主页暂不渲染问询（只看 data 行，帧被忽略）。
+_Avoid_: 审批、表单、工具卡（指通用工具渲染时另说）
+
+**宿主意图（Host Intent）**:
+问询的一种：question `id` 形如 `intent:<verb>:<arg>` 时视为宿主页面动作提议，widget 自身不执行——用户点第一个选项才向可信宿主 postMessage `wx-copilot-intent`，宿主按其在 init 里声明的动词白名单执行并回 `wx-copilot-intent-result`，结果随答案回到 agent。无点击不动作；宿主未声明的动词答「当前页面不支持」。
+_Avoid_: 客户端动作（CopilotKit 术语）、ui_intent（早期草案名）
