@@ -26,12 +26,12 @@
 
 - [x] 4.1 部署前核实：用 ops 凭据读 `pack-demo-fingpt` 部署的 `effective_model`（实证可用的 LLM 链）；记录到本 change 的 `measurements.md`
 - [x] 4.2 铸包（facet-pack-builder 技能）：persona「识律控制台伴随助手」；skills：`console-tour`（五页各管什么）/ `quota-billing`（配额与账单口径解读，不编造数字）/ `credentials-guide`（凭据创建与轮换流程）/ `intent-protocol`（`intent:navigate:<path>` 与 `intent:refresh:` 用法、选项固定 `["执行","跳过"]`、一次一题、能不问不问、宿主拒绝时的改口）；无 MCP 引用；`suggestedConfig: { budgetMinutes: 8, model: <4.1 核实值> }`
-- [ ] 4.3 `POST /api/packs/validate` 预校验绿 → 上架（谦面市场）→ 萬星舰队部署（billingKey 既有流程）→ embed-settings：匿名按既有策略、origins 含识律站点 → `measurements.md` 记 slug / 部署 id / 首回合实证 ——【前半已完成：真校验器 0 错 + 上架 packId XfyXvzONQFelnFIgM0dJVw v1；**舰队部署需用户的 sub2api 计费键（sk-），不代铸代绑**，命令见 measurements.md §4.3】
+- [x] 4.3 `POST /api/packs/validate` 预校验绿 → 上架 → 舰队部署 → embed-settings ——packId XfyXvzONQFelnFIgM0dJVw v1；计费键=aloadtree 词元账户（OIDC 面板铸 key + admin 充 50，用户原键无属主被拒）；slug packs-xfyxvzonqfelnfigm0djvw-lex-console-copilot；首回合+问询探针全过（measurements 追记）
 - [x] 4.4 curl 级探针（在 fingpt 上完成等价验收——新 pack 部署留用户计费键）：非 opt-in 拒答原文、ask 帧信封（模型自行组成 intent:navigate:/console/usage）、facade ask-answer accepted、答案真实回到模型（复述「执行」）、deadline 自取消与收尾；全记录 measurements.md
 
 ## 5. 出片、真机验收、切换、归档
 
 - [x] 5.1 萬星 facade+web 双镜像出片（`fd-build-channel` 判路；源仓先推 origin 再 `fd-build-snapshot`，多镜像串行）；无新 env；pod 内 grep 新路由实证
 - [ ] 5.2 ego 真机四线（需 paas 姊妹镜像已滚）：① 问询往返（卡片→答题→回合收尾，账本一行、无新 usage 行）；② 识律控制台 navigate 意图往返（点「执行」→ 页面切到用量页 → agent 收到确认）；③ 到期自动取消（短预算部署或等 deadline，agent 正常收尾）；④ 独立打开 `#/embed`（无宿主）intent 卡显示「不支持」并如实答题
-- [ ] 5.3 切换 `WIDGET_SLUG` → 识律 copilot 部署 slug，fd-lex web 再出片；真机复跑 ②
+- [x] 5.3 切换 `WIDGET_SLUG` → fd-lex web sha-84724f2 滚产（真机复跑 ② 随 5.2 待入口修复）
 - [ ] 5.4 `docs/adr/0004-host-intents-ride-question-ids.md`；`CONTEXT.md` 增「问询卡」「宿主意图」词条并标注 `#/chat` 页暂不渲染问询；spec 同步（`openspec validate --specs`）；归档

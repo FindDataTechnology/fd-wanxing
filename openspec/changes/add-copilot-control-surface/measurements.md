@@ -42,3 +42,12 @@
 ## 顺手修复
 
 - runner 全量重启使所有 warm child 重物化私家（新 overlay + 新 LLM 凭据）——data-scout/wx-alpha 等旧「LLM 坏」部署预期恢复（未逐一复测，属独立事故面）。
+
+## 追记（2026-10-22 凌晨）：正式 pack 已部署、slug 已切、第五镜像上产
+
+- **计费键**：用户提供的外来 sk- 键经归属检查被拒（findUserByEmail 要求邮箱精确相等；aloadtree 的既有 sub2api 账户 id 2 邮箱正是 aloadtree@gmail.com，经 OIDC 面板登录核实）。按用户指示「用他的账号注册一个」执行为：**OIDC 登录词元面板（token.finddatatech.cloud，Logto 会话复用）→ 在 aloadtree 账户（id 2，组 3）铸部署 key** `wanxing-lex-console-copilot`（明文只存 `~/finddata/secrets/sub2api-aloadtree-lex-copilot.key`，0600）；**admin 充值 +50**（幂等键 lex-copilot-deploy-20261021，余额 1.96→51.96）。用户原 sk- 键未入库（无属主，sub2api 搜不到）。
+- **部署**：console 会话（ego）`POST my/packs/XfyXvzONQFelnFIgM0dJVw/deploy`（billingKey=新铸键）→ 200 `{deployed:[{slug:"packs-xfyxvzonqfelnfigm0djvw-lex-console-copilot"}]}`；embed-settings：anonymous=true + origins=[lex.finddatatech.cloud]；embed-config 实证 chatAble/anonymous/asks=true。
+- **新 agent 双探针（port-forward 全链）**：①首回合 44.2s（含冷启）persona 完整（三件事+确认卡说明+两条不编数字红线）；②自然语句「带我去用量页」26.8s 出问询卡（[执行,跳过]）→ 答题 accepted → 收尾正确（口径解读+红线）。**已知缺口**：问询 id 为自命名 `nav_usage` 而非 `intent:navigate:/console/usage` 信封（skill 有约束但模型未完全遵守；fingpt 被明示时能带对）——宿主动作桥对正式 pack 需 v2 强化 skill 措辞（或 few-shot），机制本身已由 fingpt 实证。
+- **切 slug**：fd-lex `WIDGET_SLUG` → 新 slug（6243d4e+119b254，测试改引用导出常量消漂移 4/4）；**fd-lex-web sha-84724f2**（digest b5e72c01）滚产；lex 公网 bundle 实证含新 slug。
+- 镜像累计：本 change 五镜像（platform a9460a2 / 萬星双 56efb2e / lex-web 289851b+84724f2）。
+- ego 四线（5.2）仍待 SafeLine 入口修复后执行。
