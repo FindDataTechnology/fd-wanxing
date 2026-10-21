@@ -1,0 +1,44 @@
+# measurements — add-copilot-control-surface（+姊妹 add-serving-ask-bridge）
+
+## 4.1 部署前核实（2026-10-21）
+
+- `pack-demo-fingpt`（packs-vtdpsNmtW6OQ9I99mBhbDw，演示分析师）registry 条目 metadata **无 `effective_model`**——走 runner 默认车道。
+- runner-serving env：`AGENT_RUNNER_PROVIDER=finddata`，`AGENT_RUNNER_MODEL=deepseek-v4.1-flash`（即 fingpt 实证可用的车道）。
+- **LLM 事故差分解**：LLM 凭据是**物化时**写进私家家的（compose.js `writeLlmProfile`/`ensureCredentialsStore`），旧部署的家持有轮换前的旧 key；fingpt 是后物化的所以通。⇒ 新部署物化即取当前 key，**无需钉模型**；旧部署 LLM 坏属独立事故（重启 runner 全量重物化可修——本次已顺手执行），与本 change 无关。
+
+## 4.2 pack（已铸已验已上架）
+
+- 源：`~/finddata/docs/copilot-packs/lex-console-copilot/`（persona + 4 skills：console-tour / quota-billing / credentials-guide / intent-protocol）。
+- manifest：`serving = {protocol:"a2a", budget:{turnMinutes:8}, card:{…}}`；无 MCP 引用；paas 真校验器 `validatePackManifest` **0 错**。
+- 上架：`POST /api/packs`（代理通道，作者 ops-seed@finddatatech.cloud）→ **packId `XfyXvzONQFelnFIgM0dJVw` v1**。
+
+## 4.3 部署（留用户的计费键）
+
+- `deployPackCore` 强制 `billingKey`（sk-，sub2api 计费键）——真金绑定属用户决策，不代铸代绑。
+- 待执行（用户给键即可）：`POST /api/wanxing/v1/console/my/packs/XfyXvzONQFelnFIgM0dJVw/deploy`，body `{"billingKey":"sk-…","agents":["lex-console-copilot"]}`；部署后 embed-settings 开匿名 + origins 加识律站，`WIDGET_SLUG` 换新 slug。
+- E3 机制验收不依赖新部署——在 fingpt 上完成（见下）。
+
+## 滚产终态（四镜像全上产，2026-10-21 晚）
+
+| 镜像 | tag | digest | 源 |
+|---|---|---|---|
+| yizuo/platform（agent-runner-serving） | sha-a9460a2 | ca793303… | paas 736c80be（2753630c+lint 修） |
+| yizuo/wanxing-facade | sha-56efb2e | df8559ab… | fd-wanxing 97f5aa1 |
+| yizuo/wanxing-web | sha-56efb2e | 5ea1d1cd… | fd-wanxing 97f5aa1 |
+| finddata-business/fd-lex-web | sha-289851b | 1b204e43… | fd-lex 0c0af13 |
+
+- 出片通道：testaction001/build-pool 串行四发；**排雷记录**：接手时池残留 `BUILD_CONTEXT=web / BUILD_DOCKERFILE=web/Dockerfile`（fd-lex 上一位）致 platform 首跑秒红（paas 无 web/Dockerfile）——删变量 rerun 绿；后续每镜像按需设/清变量。公开 verify 仓 ba60b17 的 image-build-check（build+五冒烟）success（CI 红为 6 处他仓已推代码的预存 lint 欠账，本 change 1 处已修）。
+- gitee 双远端坑两次实撞：fd-infra-deploy 与 fd-lex 的 push 必须打 **gitee**（ArgoCD 真源），origin 是 github。
+- 同一性证据：pod imageID↔skopeo digest 双向、in-pod grep（dsh.js `userQuestion/ask`=1、a2a.js `ask-answer`=1、桥文件在镜像）、公网 bundle grep（wanxing `wx-embed-ask`、lex `wx-copilot-intent`）。
+
+## 4.4/5.x 探针与验收（curl 级全过；真机被入口缓冲挡一道）
+
+- **非 opt-in 拒答**：fingpt `message/send` 让其调 `ask_user_question` → agent 原样复述工具错误 `Error: the caller cannot answer questions`（新桥+快速拒答上产实证；滚前是 NO_PROVIDER）。
+- **registry 反代**：`/agent/<path>/ask-answer` 子路径 + X-Authorization/Authorization 双头透传全通（旧镜像 404 Express 形状 → 新镜像 `{accepted:false,reason:"no live runtime"}`）。
+- **deadline 自取消**：无人答题 → runner 到期 cancel（agent 复述 `Error: the ask window closed before the user answered`）→ 回合正常收尾 message+done。
+- **port-forward 全链终证**（facade pod 直打，绕公网前置）：prompt 后 **11.5s** 收 `ask`（`intent:navigate:/console/usage` 信封由模型自行组成，无需 pack 技能）；**11.8s** facade `ask-answer` → `{"accepted":true}`（匿名访客归属绑定+代理）；**26.5s** agent 最终回复**准确复述「你选择了执行」**——答案真实回到模型。
+- **SSE 缓冲三段定罪**：① runner 源头即时（pod 内 8.5s）；② registry 应用面 `100.64.0.15:18080` 即时（facade pod 内 node 直读分块到）；③ facade 全链即时（port-forward）。**唯一攒包层 = 公网前置 SafeLine/WAF**（mcp:443 与 wanxing 两 vhost 同病；wanxing 公网数数回合 delta#1..#8+done 全在 5.7s 同刻）。E1 起纯聊天「整回合末出字」即此因（功能可用）；**对问询交互不可用**（ask 迟到→deadline 先到）。处置：facade `registry_url` 已切 `http://100.64.0.15:18080` 直连（secret 一改即滚，已上产；回滚=改回 https://mcp…）；**公网入口缓冲待用户决策**（SafeLine 流式配置 / wanxing 换入口 / 短轮询兜底），ego 真机四线（5.2）与切 slug（5.3）因此暂缓。
+
+## 顺手修复
+
+- runner 全量重启使所有 warm child 重物化私家（新 overlay + 新 LLM 凭据）——data-scout/wx-alpha 等旧「LLM 坏」部署预期恢复（未逐一复测，属独立事故面）。
