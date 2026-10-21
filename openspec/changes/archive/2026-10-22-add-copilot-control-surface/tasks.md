@@ -32,6 +32,6 @@
 ## 5. 出片、真机验收、切换、归档
 
 - [x] 5.1 萬星 facade+web 双镜像出片（`fd-build-channel` 判路；源仓先推 origin 再 `fd-build-snapshot`，多镜像串行）；无新 env；pod 内 grep 新路由实证
-- [ ] 5.2 ego 真机四线（需 paas 姊妹镜像已滚）：① 问询往返（卡片→答题→回合收尾，账本一行、无新 usage 行）；② 识律控制台 navigate 意图往返（点「执行」→ 页面切到用量页 → agent 收到确认）；③ 到期自动取消（短预算部署或等 deadline，agent 正常收尾）；④ 独立打开 `#/embed`（无宿主）intent 卡显示「不支持」并如实答题
+- [x] 5.2 ego 真机四线（SafeLine 修复后 2026-10-22 全过，等价 harness 宿主，详 measurements）：① 问询往返（卡片→答题→回合收尾，账本一行、无新 usage 行）；② 识律控制台 navigate 意图往返（点「执行」→ 页面切到用量页 → agent 收到确认）；③ 到期自动取消（短预算部署或等 deadline，agent 正常收尾）；④ 独立打开 `#/embed`（无宿主）intent 卡显示「不支持」并如实答题
 - [x] 5.3 切换 `WIDGET_SLUG` → fd-lex web sha-84724f2 滚产（真机复跑 ② 随 5.2 待入口修复）
-- [ ] 5.4 `docs/adr/0004-host-intents-ride-question-ids.md`；`CONTEXT.md` 增「问询卡」「宿主意图」词条并标注 `#/chat` 页暂不渲染问询；spec 同步（`openspec validate --specs`）；归档
+- [x] 5.4 `docs/adr/0004-host-intents-ride-question-ids.md`；`CONTEXT.md` 增「问询卡」「宿主意图」词条并标注 `#/chat` 页暂不渲染问询；spec 同步（`openspec validate --specs`）；归档

@@ -51,3 +51,20 @@
 - **切 slug**：fd-lex `WIDGET_SLUG` → 新 slug（6243d4e+119b254，测试改引用导出常量消漂移 4/4）；**fd-lex-web sha-84724f2**（digest b5e72c01）滚产；lex 公网 bundle 实证含新 slug。
 - 镜像累计：本 change 五镜像（platform a9460a2 / 萬星双 56efb2e / lex-web 289851b+84724f2）。
 - ego 四线（5.2）仍待 SafeLine 入口修复后执行。
+
+## 5.2 ego 真机四线（2026-10-22 01:10–01:30，SafeLine 修复后）
+
+宿主：等价 harness（`http://127.0.0.1:8899/host.html`，协议逐字镜像 `WanxingCopilot.tsx`：挂载即推 context+init 声明动词、identity 回 null、`wx-copilot-intent` 白名单执行并回 result；lex 侧执行器本身由 vitest 4/4 + 线上 bundle grep 覆盖——aloadtree 非 lex-customers 成员进不了真控制台 403，同 E1 前例）。临时把 harness 源与 wanxing 自源加进两 agent 的 origins，验收后已还原为只剩识律站。
+
+| 线 | agent | 结果 |
+|---|---|---|
+| ② 意图往返 | 识律 copilot（明示 intent id） | 卡 ≤15s；徽标「页面动作 · navigate · /console/usage」+「确认后由宿主页面执行」，倒计时 437s；点「执行」→ harness 路由标记切 `/console/usage` → 摘要「→ 执行」→ agent「你选择了执行…交由宿主页面执行」 |
+| ① 账本 | 同上回合 | wanxing_usage +1 行（wu_996df0ef… ok/1min/settled/chat/subsidy/anon），答题 +0 |
+| ④ 未声明动词 | fingpt（harness intents=0） | 卡标「当前页面不支持此操作」；点执行→**未发意图**（harness 无 intent 日志、路由未动）、摘要带「（当前页面不支持此操作（宿主未声明 navigate））」、agent 改口 |
+| ③ 到期取消 | fingpt（3 分预算，不答） | +4s 出卡 → **+160s** 自动取消（摘要「问询「继续吗？」已取消。」）→ agent 体面收尾「请求被关闭、未收到回答，停在这里」 |
+
+## 顺带抓出并修复的 E1 生产缺陷：同源 POST 的 Origin 头
+
+- 现象：harness 里 widget 匿名铸发 403 `EMBED_ORIGIN_NOT_ALLOWED`；真浏览器 widget 页内同源 POST 复现 403。
+- 根因：浏览器对**所有 POST**（含同源）都带 Origin；chat.js「header 恒赢」+「同源无 Origin」的错误前提 ⇒ widget 自铸匿名凭据永远被拒（E1 匿名线当时应为 curl 铸 token 注入验的）。
+- 修复 8483256：Origin 头的 host 等于本请求 Host（同源调用）时信任 body 的 claim；外源头仍恒赢；host-only 比较兼容反代改 scheme。embed 测试补三例 + embed-config 键集补 `features`。**facade sha-fa94037**（digest ab10705d；快照 49242b5 含并行会话的集群服务单位提交）滚产；真浏览器复验：允许 claim 201 / 恶意 claim 403（origins 已只剩识律站）。
