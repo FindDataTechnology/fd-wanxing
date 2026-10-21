@@ -10,6 +10,11 @@ import { registerWanxingRoutes } from "./routes.js";
 
 const dataRoot = process.env.WANXING_DATA_ROOT || path.resolve("data");
 const app = express();
+// The facade sits behind the TLS-terminating edge (SafeLine/Caddy): honor
+// X-Forwarded-Proto so card/catalog/cluster URLs carry https — without this
+// every composed url rendered http:// and the copyable cluster endpoint
+// shipped the wrong scheme (live finding 2026-10-22).
+app.set("trust proxy", true);
 const wired = registerWanxingRoutes(app, { dataRoot });
 
 const port = Number(process.env.WANXING_PORT || 3080);

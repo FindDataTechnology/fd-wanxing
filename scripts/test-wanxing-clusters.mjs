@@ -645,3 +645,51 @@ test("B contexts: a caller's context_id continues every member conversation", as
     await h.close();
   }
 });
+
+// ── trust proxy: composed URLs honor X-Forwarded-Proto ──────────────────────
+// The standalone facade sets app.set("trust proxy", true) behind its edge —
+// the card/catalog/cluster URLs must carry the forwarded scheme, or the
+// copyable cluster endpoint ships http:// (live finding 2026-10-22).
+
+test("A/B urls: a forwarded https request composes https card, catalog and cluster URLs", async () => {
+  const h = clusterHarness();
+  try {
+    // The harness app does NOT set trust proxy (the pre-fix posture): the
+    // forwarded header is ignored and URLs stay http — the live bug. The
+    // shipped bootstrap (index.js) enables it; the app2 half below mirrors
+    // that and asserts the fix.
+    const card = await fetch(`${h.base}/api/wanxing/v1/a2a/packs-p1-a/.well-known/agent-card.json`, { headers: { "X-Forwarded-Proto": "https" } }).then((r) => r.json());
+    assert.match(card.url, /^http:\/\//, "without trust proxy the forwarded header is ignored (the bug)");
+    const list = await h.get("/api/wanxing/v1/clusters");
+    assert.match(list.body.clusters[0].url, /^http:\/\//, "direct traffic keeps http");
+
+    // The shipped bootstrap (index.js) enables trust proxy; mirror it here.
+    const store2 = freshStore();
+    const core2 = createWanxingCore({ store: store2, sub2api: stubSub2api(), config: { ratePerMin: 0.1, rpmMax: 100 } });
+    const app2 = express();
+    app2.set("trust proxy", true);
+    const face2 = createA2aFace({
+      core: core2,
+      resolveDeployment: (slug) => DEPLOYMENTS.find((d) => d.slug === slug) ?? null,
+      listDeployments: () => DEPLOYMENTS,
+      forwardHeaders: () => ({}),
+      registryFetch: async () => new Response(JSON.stringify({ name: "n", description: "d", version: "1", visibility: "public", metadata: {} }), { headers: { "Content-Type": "application/json" } }),
+      config: { agentUrlFor: (p) => p },
+      packsBrowseFetch: async () => [{ id: "p1", version: 1, agentCount: 4 }],
+      packsDetailFetch: async () => ({ manifest: CLUSTER_MANIFEST }),
+    });
+    face2.register(app2);
+    const server2 = http.createServer(app2).listen(0);
+    try {
+      const base2 = `http://127.0.0.1:${server2.address().port}`;
+      const card2 = await fetch(`${base2}/api/wanxing/v1/a2a/packs-p1-a/.well-known/agent-card.json`, { headers: { "X-Forwarded-Proto": "https" } }).then((r) => r.json());
+      assert.match(card2.url, /^https:\/\//, "with trust proxy the forwarded scheme wins");
+      const doc2 = await fetch(`${base2}/api/wanxing/v1/agents?facets=1`, { headers: { "X-Forwarded-Proto": "https" } }).then((r) => r.json());
+      assert.ok(doc2.agents.filter((a) => a.cluster?.url).every((a) => a.cluster.url.startsWith("https://")), "catalog marker urls honor the scheme");
+    } finally {
+      await new Promise((r) => server2.close(r));
+    }
+  } finally {
+    await h.close();
+  }
+});
