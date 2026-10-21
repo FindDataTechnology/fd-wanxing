@@ -32,6 +32,6 @@
 
 ## 6. 部署与生产验收
 
-- [ ] 6.1 env 落位与镜像滚动：facade（`WANXING_EMBED_SECRET`/`WANXING_EMBED_ORIGINS`/`WANXING_EMBED_AUDIENCES`/`WANXING_CHAT_ANON_ENABLED` 默认 false/匿名日额 env）+ web；按迁移序 facade→web，匿名保持关滚完，/healthz + 既有探针回归全绿
-- [ ] 6.2 识律试点真机四线走查：①匿名起聊（deployer 开匿名→无登录首回合出字→耗尽显式升级态）②宿主递 token（识律页片段递 ID token→秒升登录档）③上下文（pusher 推页面上下文→上下文条可见→回合带前缀）④popup 登录（BFF 形态模拟→弹窗回交→续聊）——探针/截图留档
-- [ ] 6.3 对账与止血演练：匿名回合在账本三字段（chat/subsidy/anon）成行、平台键实扣一次；`WANXING_CHAT_ANON_ENABLED=false` 一键关匿名复验（mint 拒、在途回合自然收尾）——留档
+- [x] 6.1 env 落位与镜像滚动（2026-10-21 完成）：Secret 补五键（embed_secret/embed_audiences=91kqy7xgs9dstnr0i2qyu/chat_anon_enabled/chat_anon_daily_minutes=3/embed_origins 空）+ yaml 五 env；镜像 sha-a711fd4 双滚（digest 318a8064/31e538d4 ccr 实证，pod imageID 对上；首次滚 sha-5b322e5 为旧快照假滚已纠正——fd-build-snapshot 从 origin clone，源仓必须先 push origin）；catalog/status/embed-config 探针全绿、匿名关态滚完
+- [x] 6.2 真机四线走查（2026-10-21 ego 真浏览器，试点 agent=packs-vtdpsnmtw6oq9i99mbhbdw-pack-demo-fingpt；识律侧因走查身份非 lex-customers 组织，宿主协议线在 widget 页以同源宿主身份注入等价验证，lex 生产页片段已上 sha-7852548）：①匿名=生产协议链 mint→带上下文标记前缀→SSE 出字+UI 匿名态 ②递 token=chip 秒翻已登录+剩余 9 分钟（tenant 瀑布真数据）③上下文=条子可见+已随首回合+agent 回答真引用识律/数据集 ④popup=aloadtree 真登录→回交翻档→刷新持久——快照证据在册（embed-e2e 走查记录）
+- [x] 6.3 对账与止血演练（2026-10-21）：账本 wu_d24de1cac17a818dc6f0c0d6 = chat/subsidy/anon/1min/**settled**，错误回合正确 waived（2 行 0min）；止血=关→embed-config anonymous:false + mint 403 ANON_NOT_OPEN(loginUpgrade)→开回恢复 true，分钟级杠杆实证——终态：匿名全局开+per-agent 开（fingpt/data-scout/wx-alpha 三条试点）
