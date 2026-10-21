@@ -66,6 +66,27 @@ export function registerConsoleRoutes(app, {
     return false;
   };
 
+  // Deployer-or-ops gate (fix-fleet-scope-and-owner-gates): every
+  // per-deployment management face — pause/resume, allowlist, records, host
+  // allowance, embed settings — enforces the same ownership: the ops service
+  // token (no actor) may touch any deployment; a verified identity may touch
+  // only the rows it deployed (case-insensitive email match on the
+  // bookkeeping's deployedBy).
+  const ownerGate = async (req, res) => {
+    if (!(await gate(req, res))) return null;
+    const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
+    if (!row) {
+      res.status(404).json({ error: "deployment not found" });
+      return null;
+    }
+    const isOps = !req.consoleIdentity; // the token path carries no actor
+    if (!isOps && String(row.deployedBy || "").toLowerCase() !== String(req.consoleIdentity.email || "").toLowerCase()) {
+      res.status(403).json({ error: "only this deployment's deployer (or the ops credential) may read or change it" });
+      return null;
+    }
+    return { row, isOps };
+  };
+
   // PKCE exchange proxy: the static face cannot call the tenant token
   // endpoint cross-origin; the facade exchanges and returns the verified
   // identity bound to the ID token. Body gate: absent/"console" (default)
@@ -173,8 +194,14 @@ export function registerConsoleRoutes(app, {
     } catch (e) {
       return res.status(503).json({ error: { code: "DEPLOYMENT_SOURCE_UNAVAILABLE", message: String(e?.message || e) } });
     }
+    // Fleet scoping (fix-fleet-scope-and-owner-gates): a verified identity
+    // sees only the deployments it owns; the ops credential (no actor) keeps
+    // the full fleet view, including rows that predate deployer bookkeeping.
+    const scoped = req.consoleIdentity
+      ? rows.filter((d) => String(d.deployedBy || "").toLowerCase() === String(req.consoleIdentity.email || "").toLowerCase())
+      : rows;
     const out = [];
-    for (const d of rows.slice(0, 200)) {
+    for (const d of scoped.slice(0, 200)) {
       let name = null, visibility = null, paused = false;
       try {
         const r = await registryFetch(`/api/agents${d.agentPath}`);
@@ -198,9 +225,9 @@ export function registerConsoleRoutes(app, {
   });
 
   const pauseAction = (paused) => async (req, res) => {
-    if (!(await gate(req, res))) return;
-    const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
-    if (!row) return res.status(404).json({ error: "deployment not found" });
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const { row } = who;
     try {
       const out = await setPaused(row.agentPath, paused);
       say(`console: ${req.params.slug} ${paused ? "paused" : "resumed"}`);
@@ -258,12 +285,12 @@ export function registerConsoleRoutes(app, {
   }
 
   app.get("/api/wanxing/v1/console/deployments/:slug/callers", async (req, res) => {
-    if (!(await gate(req, res))) return;
+    if (!(await ownerGate(req, res))) return;
     return ok(res, { callers: store.allowlistList(req.params.slug) });
   });
 
   app.post("/api/wanxing/v1/console/deployments/:slug/callers", express.json({ limit: "16kb" }), async (req, res) => {
-    if (!(await gate(req, res))) return;
+    if (!(await ownerGate(req, res))) return;
     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
     if (!email || !/^[^@\s]+@[^@\s]+$/.test(email)) return res.status(400).json({ error: "email required" });
     if (!sub2api || sub2api.degraded()) return res.status(503).json({ error: "billing plane not configured — allowlists are inactive" });
@@ -284,7 +311,7 @@ export function registerConsoleRoutes(app, {
   });
 
   app.delete("/api/wanxing/v1/console/deployments/:slug/callers", express.json({ limit: "16kb" }), async (req, res) => {
-    if (!(await gate(req, res))) return;
+    if (!(await ownerGate(req, res))) return;
     const userId = Number(req.body?.userId ?? req.query?.userId);
     if (!Number.isInteger(userId)) return res.status(400).json({ error: "userId required" });
     store.allowlistRemove(req.params.slug, userId);
@@ -293,31 +320,16 @@ export function registerConsoleRoutes(app, {
 
   // ── Invocation records + host allowance (add-agent-chat-lane 4.1/4.2) ──────
   //
-  // Owner scoping: the deployment row's deployer (by email) or the ops
-  // service token. Any other verified console identity gets 403 — records
-  // and the allowance cap belong to the agent's owner, not the console at
-  // large. Visitor emails are masked for everyone (ops may pass
-  // ?unmasked=1); API callers' key-holder emails are not secrets to the
-  // owner (the allowlist relationship is already theirs).
+  // Owner scoping rides the shared ownerGate above (fix-fleet-scope-and-
+  // owner-gates): records and the allowance cap belong to the agent's owner,
+  // not the console at large. Visitor emails are masked for everyone (ops
+  // may pass ?unmasked=1); API callers' key-holder emails are not secrets to
+  // the owner (the allowlist relationship is already theirs).
   const maskEmail = (email) => {
     const s = String(email || "");
     const at = s.indexOf("@");
     if (at <= 0) return s ? "…" : s;
     return `${s.slice(0, 1)}***${s.slice(at)}`;
-  };
-  const ownerGate = async (req, res) => {
-    if (!(await gate(req, res))) return null;
-    const row = await bookkeeping.resolve(req.params.slug).catch(() => null);
-    if (!row) {
-      res.status(404).json({ error: "deployment not found" });
-      return null;
-    }
-    const isOps = !req.consoleIdentity; // the token path carries no actor
-    if (!isOps && String(row.deployedBy || "").toLowerCase() !== String(req.consoleIdentity.email || "").toLowerCase()) {
-      res.status(403).json({ error: "only this deployment's deployer (or the ops credential) may read or change it" });
-      return null;
-    }
-    return { row, isOps };
   };
 
   app.get("/api/wanxing/v1/console/deployments/:slug/usage", async (req, res) => {

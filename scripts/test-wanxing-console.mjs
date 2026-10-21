@@ -227,3 +227,117 @@ test("console config proxy: verified identity forwards the actor; the ops token 
     await new Promise((r) => packsSrv.close(r));
   }
 });
+
+// ── fleet-ownership-gates: scoped list, non-deployer refusals, ops full view ─
+
+test("fleet ownership gates: list scoping, non-deployer 403s, deployer round-trip, ops unaffected", async () => {
+  const ownRows = [
+    { packId: "POW", agentId: "alpha", version: 1, agentPath: "/packs/POW/deployments/alpha", deployedBy: "owner@x.test" },
+    { packId: "POT", agentId: "beta", version: 1, agentPath: "/packs/POT/deployments/beta", deployedBy: "Other@X.Test" },
+    { packId: "POD", agentId: "legacy", version: 1, agentPath: "/packs/POD/deployments/legacy" },
+  ];
+  const ownSlug = slugFor(ownRows[0].agentPath);
+
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "k1";
+  jwk.alg = "ES384";
+  const b64u = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const rawRS = (der) => {
+    const lenR = der[3];
+    const r = der.slice(4, 4 + lenR);
+    const lenS = der[5 + lenR];
+    const s = der.slice(6 + lenR, 6 + lenR + lenS);
+    const pad48 = (x0) => { let x = x0; while (x.length > 1 && x[0] === 0) x = x.slice(1); return Buffer.concat([Buffer.alloc(Math.max(0, 48 - x.length)), x]); };
+    return Buffer.concat([pad48(r), pad48(s)]);
+  };
+  const sign = (email) => {
+    const h = b64u(JSON.stringify({ alg: "ES384", typ: "JWT", kid: "k1" }));
+    const p = b64u(JSON.stringify({
+      iss: "https://auth.example.test/oidc", aud: "app-own", exp: Math.floor(Date.now() / 1000) + 600,
+      sub: `u-${email}`, email,
+    }));
+    const sig = rawRS(nodeSign("sha384", Buffer.from(`${h}.${p}`), privateKey));
+    return `${h}.${p}.${b64u(sig)}`;
+  };
+  const asOwner = { Authorization: `Bearer ${sign("owner@x.test")}` };
+  const asRival = { Authorization: `Bearer ${sign("rival@x.test")}` };
+
+  const writes = [];
+  const packsApp = express();
+  packsApp.get("/api/packs/internal/deployments", (req, res) => {
+    if (req.headers.authorization !== "Bearer svc") return res.status(401).json({});
+    res.json({ deployments: ownRows });
+  });
+  const packsSrv = http.createServer(packsApp).listen(0);
+  await new Promise((r) => packsSrv.once("listening", r));
+
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url).endsWith("/oidc/jwks")) return new Response(JSON.stringify({ keys: [jwk] }), { headers: { "Content-Type": "application/json" } });
+    if (url.startsWith("http://127.0.0.1:")) return fetch(url, init);
+    if (url.startsWith("https://reg.internal/api/agents/packs/POW")) {
+      if (init.method === "PUT") writes.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ name: "A", visibility: "public", metadata: {} }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("{}", { status: 404 });
+  };
+  const app = express();
+  const wired = registerWanxingRoutes(app, {
+    dataRoot: path.join(tmp, `own-${Math.random().toString(36).slice(2)}`),
+    env: {
+      PACKS_INTERNAL_BASE_URL: `http://127.0.0.1:${packsSrv.address().port}`,
+      AGENT_SERVING_REGISTRY_URL: "https://reg.internal",
+      AGENT_SERVING_REGISTRY_TOKEN: "svc",
+      FLEET_OBSERVER_TOKEN: TOKEN,
+      WANXING_LOGTO_ENDPOINT: "https://auth.example.test",
+      WANXING_LOGTO_APP_ID: "app-own",
+      WANXING_CONSOLE_ALLOWLIST: "owner@x.test,rival@x.test",
+    },
+    fetchImpl,
+  });
+  const srv = http.createServer(app).listen(0);
+  await new Promise((r) => srv.once("listening", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const dep = `${base}/api/wanxing/v1/console/deployments`;
+  try {
+    // Scoping: the verified identity sees only its own row (case-insensitive
+    // deployedBy match); rows without a deployer never surface to identities.
+    const mine = (await (await fetch(dep, { headers: asOwner })).json()).deployments;
+    assert.equal(mine.length, 1);
+    assert.equal(mine[0].slug, ownSlug);
+    // Ops keeps the full fleet view, deployer-less rows included.
+    const all = (await (await fetch(dep, { headers: H })).json()).deployments;
+    assert.equal(all.length, 3);
+
+    // Non-deployer refusals: pause and every allowlist verb 403 with zero
+    // side effects on the registry.
+    assert.equal((await fetch(`${dep}/${ownSlug}/pause`, { method: "POST", headers: asRival })).status, 403);
+    assert.equal((await fetch(`${dep}/${ownSlug}/resume`, { method: "POST", headers: asRival })).status, 403);
+    assert.equal((await fetch(`${dep}/${ownSlug}/callers`, { headers: asRival })).status, 403);
+    assert.equal((await fetch(`${dep}/${ownSlug}/callers`, {
+      method: "POST", headers: { ...asRival, "Content-Type": "application/json" }, body: JSON.stringify({ email: "known@x.test" }),
+    })).status, 403);
+    assert.equal((await fetch(`${dep}/${ownSlug}/callers`, {
+      method: "DELETE", headers: { ...asRival, "Content-Type": "application/json" }, body: JSON.stringify({ userId: 7 }),
+    })).status, 403);
+    assert.equal(writes.length, 0);
+
+    // Deployer round-trip: pause succeeds and writes registry metadata.
+    const p = await fetch(`${dep}/${ownSlug}/pause`, { method: "POST", headers: asOwner });
+    assert.equal(p.status, 200);
+    assert.equal((await p.json()).paused, true);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].metadata.paused, true);
+    // Deployer allowlist read opens.
+    assert.equal((await fetch(`${dep}/${ownSlug}/callers`, { headers: asOwner })).status, 200);
+
+    // Ops credential still acts on any deployment.
+    assert.equal((await fetch(`${dep}/${ownSlug}/resume`, { method: "POST", headers: H })).status, 200);
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].metadata.paused, undefined);
+  } finally {
+    wired.close();
+    await new Promise((r) => srv.close(r));
+    await new Promise((r) => packsSrv.close(r));
+  }
+});

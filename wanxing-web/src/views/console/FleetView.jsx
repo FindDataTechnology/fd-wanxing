@@ -49,6 +49,21 @@ export function FleetView({ focusSlug } = {}) {
   // allowances — the cards' signal column, polled with the deployments list.
   const [summary, setSummary] = useState(null);
   const [earnErr, setEarnErr] = useState("");
+  // Ownership feedback (fix-fleet-scope-and-owner-gates): a refused or failed
+  // panel load reports at the card that launched it — never solely inside the
+  // panel that failed to open. One slot, keyed `${slug}:${action}`; the
+  // latest error wins.
+  const [cardErr, setCardErr] = useState(null); // { key, text }
+  const clearCardErr = (key) => setCardErr((p) => (p?.key === key ? null : p));
+  const withStatus = async (r, fallback) => {
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(d?.error || `${fallback} HTTP ${r.status}`), { status: r.status });
+    return d;
+  };
+  const cardErrText = (label, e) =>
+    e?.status === 403
+      ? `${label}未打开——这不是你部署的 agent，仅部署者本人（或运维）可管理`
+      : `${label}加载失败（${String(e?.message || e)}）——服务暂不可用，请稍后重试`;
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
@@ -141,13 +156,11 @@ export function FleetView({ focusSlug } = {}) {
 
   const loadCallers = (slug) => {
     setAlNote("");
+    clearCardErr(`${slug}:allowlist`);
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`callers HTTP ${r.status}`);
-        return r.json();
-      })
+      .then((r) => withStatus(r, "callers"))
       .then((d) => setCallers({ slug, list: d.callers ?? [] }))
-      .catch((e) => setAlNote(String(e?.message || e)));
+      .catch((e) => setCardErr({ key: `${slug}:allowlist`, text: cardErrText("允许清单", e) }));
   };
   const addCaller = (slug) => {
     setAlNote("");
@@ -175,10 +188,10 @@ export function FleetView({ focusSlug } = {}) {
 
   const loadConfig = (slug) => {
     setCfgNote("");
+    clearCardErr(`${slug}:config`);
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/config`)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d?.error || `config HTTP ${r.status}`);
+      .then((r) => withStatus(r, "config"))
+      .then((d) => {
         setCfg({ slug, data: d });
         const c = d.config ?? {};
         setCfgDraft({
@@ -187,7 +200,7 @@ export function FleetView({ focusSlug } = {}) {
           model: c.model?.effective ?? "",
         });
       })
-      .catch((e) => setCfgNote(String(e?.message || e)));
+      .catch((e) => setCardErr({ key: `${slug}:config`, text: cardErrText("配置", e) }));
   };
   const saveConfig = (slug) => {
     setCfgNote("");
@@ -223,23 +236,20 @@ export function FleetView({ focusSlug } = {}) {
   const loadUsage = (slug) => {
     setUsageErr("");
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/usage?days=30`)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d?.error || `usage HTTP ${r.status}`);
-        setUsage({ slug, doc: d });
-      })
-      .catch((e) => setUsageErr(String(e?.message || e)));
+      .then((r) => withStatus(r, "usage"))
+      .then((d) => setUsage({ slug, doc: d }))
+      .catch((e) => setUsageErr(e)); // carries .status — the banner words by refusal vs outage
   };
   const loadAllowance = (slug) => {
     setAlwNote("");
+    clearCardErr(`${slug}:allowance`);
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/host-allowance`)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d?.error || `allowance HTTP ${r.status}`);
+      .then((r) => withStatus(r, "allowance"))
+      .then((d) => {
         setAllowance({ slug, doc: d });
         setAlwDraft(String(d.limitMinutes ?? 0));
       })
-      .catch((e) => setAlwNote(String(e?.message || e)));
+      .catch((e) => setCardErr({ key: `${slug}:allowance`, text: cardErrText("额度", e) }));
   };
   const saveAllowance = (slug) => {
     setAlwNote("");
@@ -266,14 +276,14 @@ export function FleetView({ focusSlug } = {}) {
   // from "开关" to "贴进产品线" never leaves this card.
   const loadEmbed = (slug) => {
     setEmbedNote("");
+    clearCardErr(`${slug}:embed`);
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/embed-settings`)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d?.error || `embed HTTP ${r.status}`);
+      .then((r) => withStatus(r, "embed"))
+      .then((d) => {
         setEmbedS({ slug, doc: d });
         setEmbedDraft({ anonymous: d.anonymous === true, origins: (d.origins ?? []).join("\n") });
       })
-      .catch((e) => setEmbedNote(String(e?.message || e)));
+      .catch((e) => setCardErr({ key: `${slug}:embed`, text: cardErrText("嵌入", e) }));
   };
   const saveEmbed = (slug) => {
     setEmbedNote("");
@@ -302,6 +312,11 @@ export function FleetView({ focusSlug } = {}) {
       <div className="space-y-3">
         <h2 className="font-semibold">管理 · 部署</h2>
         {depErr && <div className="text-sm text-amber-600 dark:text-amber-400">部署面读取失败（{depErr}）</div>}
+        {deps && (deps.deployments ?? []).length === 0 && (
+          <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-4 text-xs text-slate-500" data-testid="fleet-empty">
+            名下暂无部署——在下方「部署我的 agent」选一个自己的 pack，或经「目录可部署」部署他人发布的 pack。
+          </div>
+        )}
         {deps && (
           <div className="grid gap-3 sm:grid-cols-2" data-testid="fleet-cards">
             {(deps.deployments ?? []).map((d) => {
@@ -365,6 +380,9 @@ export function FleetView({ focusSlug } = {}) {
                       <code className="block mt-1 font-mono">{d.slug}</code>
                     </details>
                   </div>
+                  {cardErr?.key.startsWith(`${d.slug}:`) && (
+                    <div className="text-xs text-amber-600 dark:text-amber-400" data-testid={`fleet-card-err-${d.slug}`}>{cardErr.text}</div>
+                  )}
                 </div>
               );
             })}
@@ -458,8 +476,12 @@ export function FleetView({ focusSlug } = {}) {
           </div>
         )}
         {usageErr && (
-          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
-            调用记录读取失败（{usageErr}）——这不是「没有调用」，请稍后再试。
+          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="usage-error">
+            {usageErr?.status === 403 ? (
+              <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看调用记录。</>
+            ) : (
+              <>调用记录读取失败（{String(usageErr?.message || usageErr)}）——这不是「没有调用」，请稍后再试。</>
+            )}
           </div>
         )}
         {usage && (
