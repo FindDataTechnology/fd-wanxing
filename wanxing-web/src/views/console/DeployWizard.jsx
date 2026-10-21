@@ -20,6 +20,11 @@ const RHYTHM_PRESETS = [
   { key: "custom", label: "自定义（JSON 数组）" },
 ];
 const STEP_LABELS = ["选包", "勾选 agent", "配置", "计费与通知"];
+const BILLING_PANEL_URL = "https://token.finddatatech.cloud";
+// One billing key binds exactly one agent (back-end refusal rule): shown at
+// the selection step the moment a second agent is picked, and again at the
+// billing step as the backstop — one source of truth for both.
+const ONE_KEY_ONE_AGENT_NOTE = "勾选了多个 agent：平台要求一个计费键只绑一个 agent——若被拒收，请在面板为每个 agent 各建一键后分批部署。";
 
 export function DeployWizard({ packs, loadMyPacks, authFetch }) {
   // M4②: the pack step's two sources — the author's own packs and the
@@ -274,6 +279,9 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
 
   return (
     <div className="space-y-3" data-testid={`wizard-step-${step}`}>
+      <div className="text-[11px] text-slate-500" data-testid="wizard-prep-note">
+        准备：先在 <a href={BILLING_PANEL_URL} target="_blank" rel="noreferrer" className="underline">计费面板</a> 用寻数账号创建至少一个 sk- 计费键——部署的回合按分钟实扣此键（一个键只绑一个 agent）。
+      </div>
       <div className="flex items-center gap-1 text-xs">
         {STEP_LABELS.map((label, i) => (
           <span key={label} className={`px-2 py-0.5 rounded-full ${step === i + 1 ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900" : "bg-slate-100 dark:bg-slate-800 text-slate-500"}`}>
@@ -379,6 +387,9 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
               </label>
             ))}
           </div>
+          {picked.size > 1 && (
+            <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="wizard-multi-agent-note">{ONE_KEY_ONE_AGENT_NOTE}</div>
+          )}
           <div className="flex gap-2 items-center">
             <input
               value={version}
@@ -489,7 +500,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                 data-testid="wizard-billing-key"
               />
               <span className="block text-[10px] text-slate-400">
-                在 <a href="https://token.finddatatech.cloud" target="_blank" rel="noreferrer" className="underline">计费面板</a> 用寻数账号登录后创建；部署的回合按分钟实扣此键。
+                在 <a href={BILLING_PANEL_URL} target="_blank" rel="noreferrer" className="underline">计费面板</a> 用寻数账号登录后创建；部署的回合按分钟实扣此键。
               </span>
             </label>
             <label className="space-y-1">
@@ -505,9 +516,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             </label>
           </div>
           {picked.size > 1 && (
-            <div className="text-xs text-amber-600 dark:text-amber-400">
-              勾选了多个 agent：平台要求一个计费键只绑一个 agent——若被拒收，请在面板为每个 agent 各建一键后分批部署。
-            </div>
+            <div className="text-xs text-amber-600 dark:text-amber-400">{ONE_KEY_ONE_AGENT_NOTE}</div>
           )}
           {err && <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="wizard-error">{err}</div>}
           <div className="mb-3">

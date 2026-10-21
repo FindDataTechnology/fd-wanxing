@@ -618,7 +618,8 @@ export function FleetView({ focusSlug } = {}) {
 
       {/* Serving plans (add-serving-plans 4.1): my statement */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="my-statement-panel">
-        <h3 className="font-semibold">我的套餐</h3>
+        <h3 className="font-semibold">API 调用对账</h3>
+        <div className="text-[10px] text-slate-400">即原「我的套餐」——你作为 API 调用方的对账单：套餐是平台发放的包月额度（找运维开通），无套餐时按调用键余额逐分钟实扣。</div>
         {stmtErr && <div className="text-xs text-amber-600 dark:text-amber-400">{stmtErr}</div>}
         {stmt && (
           <div className="text-xs text-slate-500 space-y-1" data-testid="my-statement-body">
