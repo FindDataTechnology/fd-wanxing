@@ -33,7 +33,7 @@ export function FleetView({ focusSlug } = {}) {
   const [memoryArmed, setMemoryArmed] = useState(null); // item path pending confirm
   // The lane flag rides the deployments list; sticky-once-seen avoids
   // flicker when one poll races the flag.
-  const memoryLaneAvailable = useMemo(() => deployments.some((d) => d.memory) || memory !== null, [deployments, memory]);
+  const memoryLaneAvailable = useMemo(() => (deps ?? []).some((d) => d.memory) || memory !== null, [deps, memory]);
   const [usageErr, setUsageErr] = useState("");
   const [allowance, setAllowance] = useState(null); // { slug, doc }
   const [alwDraft, setAlwDraft] = useState("");
