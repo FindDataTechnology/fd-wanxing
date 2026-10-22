@@ -4,7 +4,7 @@
 // ConsoleView monolith; behavior and testids unchanged. The ④b cockpit
 // visualization lands ON this skeleton. The caller-side statement card
 // (API 调用对账) lives in the 消耗 view (add-plan-requests-and-move-statement).
-import { useEffect, useState } from "react";
+import { useMemo, useEffect, useState  } from "react";
 import { authFetch } from "../../auth.js";
 import { DeployWizard } from "./DeployWizard.jsx";
 import { channelLabel, sourceBadge } from "./shared.jsx";
@@ -25,6 +25,15 @@ export function FleetView({ focusSlug } = {}) {
   // Invocation records + host allowance (add-agent-chat-lane 5.3): the
   // owner's "who called my agent" panel and the chat allowance cap editor.
   const [usage, setUsage] = useState(null); // { slug, doc }
+  // Deployment memory (add-memory-visibility-console): { slug, doc } + layer
+  // filter; forget is two-step (armed path → confirm posts, then reload).
+  const [memory, setMemory] = useState(null); // { slug, doc }
+  const [memoryErr, setMemoryErr] = useState(null);
+  const [memoryLayer, setMemoryLayer] = useState("");
+  const [memoryArmed, setMemoryArmed] = useState(null); // item path pending confirm
+  // The lane flag rides the deployments list; sticky-once-seen avoids
+  // flicker when one poll races the flag.
+  const memoryLaneAvailable = useMemo(() => deployments.some((d) => d.memory) || memory !== null, [deployments, memory]);
   const [usageErr, setUsageErr] = useState("");
   const [allowance, setAllowance] = useState(null); // { slug, doc }
   const [alwDraft, setAlwDraft] = useState("");
@@ -221,6 +230,28 @@ export function FleetView({ focusSlug } = {}) {
       .then((d) => setUsage({ slug, doc: d }))
       .catch((e) => setUsageErr(e)); // carries .status — the banner words by refusal vs outage
   };
+  const loadMemory = (slug, layer = memoryLayer) => {
+    setMemoryErr(null);
+    setMemoryArmed(null);
+    setMemoryLayer(layer);
+    const q = new URLSearchParams({ limit: "50" });
+    if (layer) q.set("layer", layer);
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/memory?${q.toString()}`)
+      .then((r) => withStatus(r, "memory"))
+      .then((d) => setMemory({ slug, doc: d }))
+      .catch((e) => setMemoryErr(e)); // .status — 403 refusal vs 503 degraded lane
+  };
+  const forgetMemoryItem = (slug, path) => {
+    setMemoryErr(null);
+    authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/memory/forget`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, confirm: true }),
+    })
+      .then((r) => withStatus(r, "memory"))
+      .then(() => loadMemory(slug))
+      .catch((e) => setMemoryErr(e));
+  };
   const loadAllowance = (slug) => {
     setAlwNote("");
     clearCardErr(`${slug}:allowance`);
@@ -359,6 +390,7 @@ export function FleetView({ focusSlug } = {}) {
                     </button>
                     <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
                     <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
+                    {memoryLaneAvailable && <button onClick={() => loadMemory(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
                     <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
                     <button onClick={() => loadEmbed(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
                     <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
@@ -460,6 +492,63 @@ export function FleetView({ focusSlug } = {}) {
               <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
             </form>
             {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
+          </div>
+        )}
+        {memoryErr && (
+          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="memory-error">
+            {memoryErr?.status === 403 ? (
+              <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看记忆。</>
+            ) : (
+              <>记忆读取失败（{String(memoryErr?.message || memoryErr)}）——这不是「没有记忆」，是车道暂不可达，请稍后再试。</>
+            )}
+          </div>
+        )}
+        {memory && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`memory-panel-${memory.slug}`}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono text-xs">记忆 · {memory.slug}</span>
+              <div className="flex gap-1">
+                {["", "L0", "L1", "L2"].map((l) => (
+                  <button
+                    key={l || "all"}
+                    onClick={() => loadMemory(memory.slug, l)}
+                    className={`px-2 py-0.5 rounded border text-xs ${memoryLayer === l ? "border-slate-900 dark:border-slate-100" : "border-slate-300 dark:border-slate-700"}`}
+                  >
+                    {l || "全部"}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setMemory(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+            </div>
+            {(memory.doc?.items ?? []).length === 0 ? (
+              <div className="text-xs text-slate-500">暂无记忆条目。</div>
+            ) : (
+              <div className="space-y-1">
+                {(memory.doc?.items ?? []).map((it, i) => (
+                  <div key={`${it.path}-${i}`} className="flex items-center gap-2 text-xs border-b border-slate-100 dark:border-slate-900 py-1">
+                    <span className={`px-1.5 rounded text-[10px] ${it.layer === "L2" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : it.layer === "L0" ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"}`}>{it.layer}</span>
+                    <span className="font-mono truncate flex-1" title={it.path}>{it.title}</span>
+                    <span className="text-slate-400">{it.ts ? new Date(it.ts).toLocaleString("zh-CN", { hour12: false }) : "?"}</span>
+                    {(it.layer === "L1" || it.layer === "L2") && (
+                      memoryArmed === it.path ? (
+                        <span className="flex gap-1 items-center">
+                          <span className="text-amber-600 dark:text-amber-400">确认遗忘？</span>
+                          <button
+                            onClick={() => { forgetMemoryItem(memory.slug, it.path); setMemoryArmed(null); }}
+                            className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px]"
+                          >
+                            确认
+                          </button>
+                          <button onClick={() => setMemoryArmed(null)} className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px]">取消</button>
+                        </span>
+                      ) : (
+                        <button onClick={() => setMemoryArmed(it.path)} className="px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-[10px]">遗忘</button>
+                      )
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
         {usageErr && (

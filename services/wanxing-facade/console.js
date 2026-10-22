@@ -21,6 +21,7 @@ export function registerConsoleRoutes(app, {
   registryFetch, // (path, init) → Response against the registry
   packsInternalFetch = null, // (path, init) → Response against the packs surface (config proxy)
   observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
+  memoryFetch = null, // (path, init) → Response against fd-memory (platform seam inside); null = lane unconfigured
   log = null,
 }) {
   const say = log ?? (() => {});
@@ -219,6 +220,8 @@ export function registerConsoleRoutes(app, {
         agentId: d.agentId,
         version: d.version ?? null,
         name, visibility, paused,
+        // the web hides the memory affordance when the seam is unconfigured
+        memory: Boolean(memoryLane()),
       });
     }
     return ok(res, { deployments: out });
@@ -429,6 +432,54 @@ export function registerConsoleRoutes(app, {
     res.status(403).json({ error: "serving plans are managed by the ops credential only" });
     return false;
   };
+
+  // ── deployment memory (add-memory-visibility-console): transparent proxy to
+  // fd-memory's platform-seam visibility lane. The rootKey derives from the
+  // OWNER-VERIFIED bookkeeping row — a caller can never name an arbitrary
+  // root. Unconfigured seam → 503 MEMORY_LANE_UNCONFIGURED (the web hides the
+  // affordance); forward failures degrade visibly, never as an empty list.
+  const memoryLane = () => (typeof memoryFetch === "function" ? memoryFetch : null);
+  app.get("/api/wanxing/v1/console/deployments/:slug/memory", async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const lane = memoryLane();
+    if (!lane) {
+      return res.status(503).json({ error: { code: "MEMORY_LANE_UNCONFIGURED", message: "fleet memory seam is not configured on this facade" } });
+    }
+    const rootKey = `d-${who.row.packId}`;
+    const q = new URLSearchParams();
+    for (const k of ["layer", "scope", "since", "until", "limit", "offset"]) {
+      if (req.query[k] !== undefined) q.set(k, String(req.query[k]));
+    }
+    q.set("rootKey", rootKey);
+    try {
+      const r = await lane(`/memory?${q.toString()}`);
+      const body = await r.text();
+      res.status(r.status).type("application/json").send(body);
+    } catch (e) {
+      res.status(503).json({ error: { code: "MEMORY_LANE_UNREACHABLE", message: String(e?.message || e) } });
+    }
+  });
+  app.post("/api/wanxing/v1/console/deployments/:slug/memory/forget", express.json({ limit: "4kb" }), async (req, res) => {
+    const who = await ownerGate(req, res);
+    if (!who) return;
+    const lane = memoryLane();
+    if (!lane) {
+      return res.status(503).json({ error: { code: "MEMORY_LANE_UNCONFIGURED", message: "fleet memory seam is not configured on this facade" } });
+    }
+    const rootKey = `d-${who.row.packId}`;
+    try {
+      const r = await lane("/forget", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rootKey, path: String(req.body?.path ?? ""), confirm: req.body?.confirm === true }),
+      });
+      const body = await r.text();
+      res.status(r.status).type("application/json").send(body);
+    } catch (e) {
+      res.status(503).json({ error: { code: "MEMORY_LANE_UNREACHABLE", message: String(e?.message || e) } });
+    }
+  });
 
   app.get("/api/wanxing/v1/console/plans", async (req, res) => {
     if (!opsOnly(req, res)) return;

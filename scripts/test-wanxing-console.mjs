@@ -341,3 +341,162 @@ test("fleet ownership gates: list scoping, non-deployer 403s, deployer round-tri
     await new Promise((r) => packsSrv.close(r));
   }
 });
+
+// ── deployment memory proxy (add-memory-visibility-console) ─────────────────
+
+test("deployment memory: owner passthrough with derived rootKey, rival 403 without forward, unconfigured 503, forget confirm", async () => {
+  const memRows = [
+    { packId: "MEM1", agentId: "sage", version: 1, agentPath: "/packs/MEM1/deployments/sage", deployedBy: "sage@x.test" },
+  ];
+  const memSlug = slugFor(memRows[0].agentPath);
+
+  const memCalls = [];
+  const memApp = express();
+  memApp.get("/memory", (req, res) => {
+    memCalls.push({ kind: "read", rootKey: req.query.rootKey, layer: req.query.layer ?? null });
+    if (req.headers.authorization !== "Bearer fdm-plat") return res.status(401).json({ error: "unauthorized" });
+    res.json({ items: [{ path: "sage/experiences/e1.md", title: "排障经验", layer: "L2", project: "sage", sources: [], ts: "2026-10-23T00:00:00Z" }], offset: 0, limit: 50 });
+  });
+  memApp.post("/forget", express.json({ limit: "4kb" }), (req, res) => {
+    memCalls.push({ kind: "forget", rootKey: req.body?.rootKey, path: req.body?.path, confirm: req.body?.confirm });
+    if (req.body?.confirm !== true) return res.status(400).json({ error: "confirm_required" });
+    res.json({ forgotten: req.body.path });
+  });
+  const memSrv = http.createServer(memApp).listen(0);
+  await new Promise((r) => memSrv.once("listening", r));
+
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "k1";
+  jwk.alg = "ES384";
+  const b64u = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const rawRS = (der) => {
+    const lenR = der[3];
+    const r = der.slice(4, 4 + lenR);
+    const lenS = der[5 + lenR];
+    const s = der.slice(6 + lenR, 6 + lenR + lenS);
+    const pad48 = (x0) => { let x = x0; while (x.length > 1 && x[0] === 0) x = x.slice(1); return Buffer.concat([Buffer.alloc(Math.max(0, 48 - x.length)), x]); };
+    return Buffer.concat([pad48(r), pad48(s)]);
+  };
+
+  const sign = (email) => {
+    const h = b64u(JSON.stringify({ alg: "ES384", typ: "JWT", kid: "k1" }));
+    const p = b64u(JSON.stringify({
+      iss: "https://auth.example.test/oidc", aud: "app-own", exp: Math.floor(Date.now() / 1000) + 600,
+      sub: `u-${email}`, email,
+    }));
+    return `${h}.${p}.${b64u(rawRS(nodeSign("sha384", Buffer.from(`${h}.${p}`), privateKey)))}`;
+  };
+  const asSage = { Authorization: `Bearer ${sign("sage@x.test")}`, "Content-Type": "application/json" };
+  const asRival = { Authorization: `Bearer ${sign("rival@x.test")}`, "Content-Type": "application/json" };
+
+  const packsApp = express();
+  packsApp.get("/api/packs/internal/deployments", (req, res) => {
+    if (req.headers.authorization !== "Bearer svc") return res.status(401).json({});
+    res.json({ deployments: memRows });
+  });
+  const packsSrv = http.createServer(packsApp).listen(0);
+  await new Promise((r) => packsSrv.once("listening", r));
+
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url).endsWith("/oidc/jwks")) return new Response(JSON.stringify({ keys: [jwk] }), { headers: { "Content-Type": "application/json" } });
+    if (url.startsWith("http://127.0.0.1:")) return fetch(url, init);
+    return new Response("{}", { status: 404 });
+  };
+  const app = express();
+  const wiredMem = registerWanxingRoutes(app, {
+    dataRoot: path.join(tmp, `mem-${Math.random().toString(36).slice(2)}`),
+    env: {
+      PACKS_INTERNAL_BASE_URL: `http://127.0.0.1:${packsSrv.address().port}`,
+      AGENT_SERVING_REGISTRY_URL: "https://reg.internal",
+      AGENT_SERVING_REGISTRY_TOKEN: "svc",
+      FLEET_OBSERVER_TOKEN: TOKEN,
+      WANXING_LOGTO_ENDPOINT: "https://auth.example.test",
+      WANXING_LOGTO_APP_ID: "app-own",
+      WANXING_CONSOLE_ALLOWLIST: "sage@x.test,rival@x.test",
+      FD_MEMORY_URL: `http://127.0.0.1:${memSrv.address().port}`,
+      FD_MEMORY_PLATFORM_TOKEN: "fdm-plat",
+    },
+    fetchImpl,
+  });
+  const srv = http.createServer(app).listen(0);
+  await new Promise((r) => srv.once("listening", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+
+  // owner read: forwarded with the row-derived rootKey, body transparent
+  const rd = await fetch(`${base}/api/wanxing/v1/console/deployments/${memSlug}/memory?layer=L2`, { headers: asSage });
+  assert.equal(rd.status, 200);
+  const doc = await rd.json();
+  assert.equal(doc.items.length, 1);
+  assert.equal(doc.items[0].layer, "L2");
+  const readCall = memCalls.find((c) => c.kind === "read");
+  assert.equal(readCall.rootKey, "d-MEM1", "rootKey derives from the verified row");
+  assert.equal(readCall.layer, "L2");
+
+  // rival: 403 from the owner gate, ZERO fleet-memory traffic
+  const before = memCalls.length;
+  const denied = await fetch(`${base}/api/wanxing/v1/console/deployments/${memSlug}/memory`, { headers: asRival });
+  assert.equal(denied.status, 403);
+  assert.equal(memCalls.length, before, "no forward on refusal");
+
+  // forget without confirm: forwarded, fd-memory refuses 400 (facade does not invent a confirm)
+  const nf = await fetch(`${base}/api/wanxing/v1/console/deployments/${memSlug}/memory/forget`, { method: "POST", headers: asSage, body: JSON.stringify({ path: "sage/experiences/e1.md" }) });
+  assert.equal(nf.status, 400);
+  // forget with confirm: forwarded, ok
+  const ok = await fetch(`${base}/api/wanxing/v1/console/deployments/${memSlug}/memory/forget`, { method: "POST", headers: asSage, body: JSON.stringify({ path: "sage/experiences/e1.md", confirm: true }) });
+  const okDoc = await ok.json();
+  if (!okDoc.forgotten) console.log("forget resp:", ok.status, JSON.stringify(okDoc));
+  assert.equal(okDoc.forgotten, "sage/experiences/e1.md");
+  const forgetCall = memCalls.find((c) => c.kind === "forget" && c.confirm === true);
+  assert.equal(forgetCall.rootKey, "d-MEM1");
+  wiredMem.close();
+  await new Promise((r) => srv.close(r));
+  memSrv.close();
+  packsSrv.close();
+});
+
+test("deployment memory: unconfigured seam responds 503 MEMORY_LANE_UNCONFIGURED", async () => {
+  const rows = [{ packId: "MEM2", agentId: "s2", version: 1, agentPath: "/packs/MEM2/deployments/s2" }];
+  const slug2 = slugFor(rows[0].agentPath);
+  const packsApp = express();
+  packsApp.get("/api/packs/internal/deployments", (req, res) => {
+    if (req.headers.authorization !== "Bearer svc") return res.status(401).json({});
+    res.json({ deployments: rows });
+  });
+  const packsSrv = http.createServer(packsApp).listen(0);
+  await new Promise((r) => packsSrv.once("listening", r));
+  const app = express();
+  const wiredMemU = registerWanxingRoutes(app, {
+    dataRoot: path.join(tmp, `memu-${Math.random().toString(36).slice(2)}`),
+    env: {
+      PACKS_INTERNAL_BASE_URL: `http://127.0.0.1:${packsSrv.address().port}`,
+      AGENT_SERVING_REGISTRY_URL: "https://reg.internal",
+      AGENT_SERVING_REGISTRY_TOKEN: "svc",
+      FLEET_OBSERVER_TOKEN: TOKEN,
+      // no FD_MEMORY_URL/TOKEN — the seam is unconfigured
+    },
+    fetchImpl: async (url, init = {}) => {
+      if (url.startsWith("http://127.0.0.1:")) return fetch(url, init);
+      return new Response("{}", { status: 404 });
+    },
+  });
+  const srv = http.createServer(app).listen(0);
+  await new Promise((r) => srv.once("listening", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  // warm the bookkeeping snapshot (async refresh after register)
+  for (let i = 0; i < 20; i++) {
+    const w = await fetch(`${base}/api/wanxing/v1/console/deployments`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    const wd = await w.json().catch(() => ({}));
+    if (i === 19) console.log("warm list final:", w.status, JSON.stringify(wd).slice(0, 200));
+    if ((wd.deployments ?? []).some((d) => d.slug === slug2)) break;
+    await new Promise((r2) => setTimeout(r2, 100));
+  }
+  const r = await fetch(`${base}/api/wanxing/v1/console/deployments/${slug2}/memory`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const udoc = await r.json();
+  if (r.status !== 503) console.log("unconfigured resp:", r.status, JSON.stringify(udoc).slice(0, 120));
+  assert.equal(r.status, 503);
+  assert.equal(udoc.error.code, "MEMORY_LANE_UNCONFIGURED");
+  wiredMemU.close();
+  await new Promise((r) => srv.close(r));
+  packsSrv.close();
+});

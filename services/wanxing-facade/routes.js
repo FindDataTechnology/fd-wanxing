@@ -175,6 +175,20 @@ export function registerWanxingRoutes(app, {
         });
       };
     })(),
+    // Fleet-memory platform seam (add-memory-visibility-console): the browser
+    // brings a verified identity, the facade swaps in the fd-memory platform
+    // credential. Null when unconfigured — the console memory faces then
+    // respond 503 MEMORY_LANE_UNCONFIGURED and the web hides the affordance.
+    memoryFetch: (() => {
+      const memUrl = () => (env.FD_MEMORY_URL || "").replace(/\/+$/, "");
+      const memToken = () => env.FD_MEMORY_PLATFORM_TOKEN || "";
+      if (!memUrl() || !memToken()) return null;
+      return async (p, init = {}) =>
+        (fetchImpl ?? fetch)(`${memUrl()}${p}`, {
+          ...init,
+          headers: { ...(init.headers ?? {}), Authorization: `Bearer ${memToken()}` },
+        });
+    })(),
     log: (m) => console.log(`[wanxing:console] ${m}`),
   });
 
