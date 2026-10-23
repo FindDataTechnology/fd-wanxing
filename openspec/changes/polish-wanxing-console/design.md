@@ -9,8 +9,8 @@ wanxing-web 是 React 19 + Vite + Tailwind v4 的无路由库 hash 路由 SPA（
 ### D1 抽屉：右侧固定抽屉一次一个，state 提升不重写面板
 
 - 新组件 `Drawer.jsx`（自绘：fixed 覆盖层 + 右侧滑入面板，Esc/点遮罩关闭，`role="dialog"` + `aria-modal`）。
-- FleetView 用一个 `openPanel` state（`{slug, kind}`）替换七处 `{x && …}` 堆叠：面板组件本体（表单、端点调用、错误分语、testid）**原样搬进抽屉**，只改承载容器。深链 `#/console/<slug>` 照旧解析为 `openPanel={slug, "config"}`。
-- 暂停/恢复按钮留在卡片上（高频一键操作不进抽屉）；「配置/记录/记忆/额度/嵌入/允许清单/分成」七按钮开抽屉对应面板。
+- FleetView 用一个 `openPanel` state（`{slug, kind}`）替换六处 `{x && …}` 堆叠：面板组件本体（表单、端点调用、错误分语、testid）**原样搬进抽屉**，只改承载容器。深链 `#/console/<slug>` 照旧解析为 `openPanel={slug, "config"}`。
+- 暂停/恢复按钮留在卡片上（高频一键操作不进抽屉）；「配置/记录/记忆/额度/嵌入/允许清单」六按钮开抽屉对应面板（「我的收益（分成）」是部署卡常驻区而非按需面板，不进抽屉——实现时核实的修正）。
 - 同一时刻只开一个面板：与现状「一屏只能专注一个面板」等价，且避免抽屉内嵌套。
 
 ### D2 toast：自绘 40 行，只报成功；错误仍就地分语

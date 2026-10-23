@@ -1,15 +1,23 @@
 // 我的舰队 (refactor-console-ia, M4④ 前置): the deployer's fleet — the
-// deployments table with its management panels (config / allowlist / usage /
-// allowance) and the deploy wizard with earnings. Moved verbatim from the
-// ConsoleView monolith; behavior and testids unchanged. The ④b cockpit
-// visualization lands ON this skeleton. The caller-side statement card
-// (API 调用对账) lives in the 消耗 view (add-plan-requests-and-move-statement).
+// deployments table with its management panels and the deploy wizard with
+// earnings. Moved verbatim from the ConsoleView monolith; behavior and testids
+// unchanged. The ④b cockpit visualization lands ON this skeleton. The
+// caller-side statement card (API 调用对账) lives in the 消耗 view
+// (add-plan-requests-and-move-statement).
+// polish-wanxing-console D1: the six management panels (config / callers /
+// memory / usage / allowance / embed) open in a right-side drawer, one at a
+// time, instead of stacking below the cards — same panels, same endpoints,
+// same testids, different container. D2: successful writes confirm with a
+// toast; errors stay in the panel/card banners where they can persist.
 import { useMemo, useEffect, useState  } from "react";
 import { authFetch } from "../../auth.js";
 import { DeployWizard } from "./DeployWizard.jsx";
+import { Drawer } from "../../components/Drawer.jsx";
+import { useToast } from "../../components/Toast.jsx";
 import { channelLabel, sourceBadge } from "./shared.jsx";
 
 export function FleetView({ focusSlug } = {}) {
+  const toast = useToast();
   // Management (⑤ increment 1): deployments + per-agent allowlist.
   const [deps, setDeps] = useState(null);
   const [depErr, setDepErr] = useState(null);
@@ -62,6 +70,12 @@ export function FleetView({ focusSlug } = {}) {
   // latest error wins.
   const [cardErr, setCardErr] = useState(null); // { key, text }
   const clearCardErr = (key) => setCardErr((p) => (p?.key === key ? null : p));
+  // The drawer slot (polish-wanxing-console D1): { kind } while open — the
+  // panel's own state (cfg/callers/…) carries the slug it loaded. Opening a
+  // second panel replaces the first; closing keeps the loaded data around so
+  // a re-open is instant, matching the old never-unmount behavior.
+  const [panel, setPanel] = useState(null); // "config" | "callers" | "memory" | "usage" | "allowance" | "embed"
+  const closePanel = () => setPanel(null);
   const withStatus = async (r, fallback) => {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(d?.error || `${fallback} HTTP ${r.status}`), { status: r.status });
@@ -74,7 +88,7 @@ export function FleetView({ focusSlug } = {}) {
   // Deep link (#/console/<slug>): open the config panel as soon as the
   // session token is live — the 壹座 "去配置" path lands here.
   useEffect(() => {
-    if (focusSlug) loadConfig(focusSlug);
+    if (focusSlug) { setPanel("config"); loadConfig(focusSlug); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSlug]);
 
@@ -138,6 +152,7 @@ export function FleetView({ focusSlug } = {}) {
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/${action}`, { method: "POST" })
       .then(async (r) => {
         if (!r.ok) throw new Error(`${action} HTTP ${r.status}`);
+        toast(`${action === "pause" ? "已暂停" : "已恢复"} · ${slug}`);
         loadDeps();
       })
       .catch((e) => setDepErr(String(e?.message || e)))
@@ -163,6 +178,7 @@ export function FleetView({ focusSlug } = {}) {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
         setNewEmail("");
+        toast("已添加调用者");
         loadCallers(slug);
       })
       .catch((e) => setAlNote(String(e?.message || e)));
@@ -172,7 +188,10 @@ export function FleetView({ focusSlug } = {}) {
     authFetch(`/api/wanxing/v1/console/deployments/${encodeURIComponent(slug)}/callers?userId=${userId}`, {
       method: "DELETE",
     })
-      .then(() => loadCallers(slug))
+      .then(() => {
+        toast("已移除调用者");
+        loadCallers(slug);
+      })
       .catch((e) => setAlNote(String(e?.message || e)));
   };
 
@@ -217,7 +236,7 @@ export function FleetView({ focusSlug } = {}) {
       .then(async (r) => {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
-        setCfgNote("已保存 · 节奏/预算五分钟窗内无感生效；模型变更排水重生");
+        toast("配置已保存");
         loadConfig(slug);
       })
       .catch((e) => setCfgNote(String(e?.message || e)))
@@ -249,7 +268,10 @@ export function FleetView({ focusSlug } = {}) {
       body: JSON.stringify({ path, confirm: true }),
     })
       .then((r) => withStatus(r, "memory"))
-      .then(() => loadMemory(slug))
+      .then(() => {
+        toast("已遗忘该条目");
+        loadMemory(slug);
+      })
       .catch((e) => setMemoryErr(e));
   };
   const loadAllowance = (slug) => {
@@ -277,7 +299,7 @@ export function FleetView({ focusSlug } = {}) {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
         setAllowance({ slug, doc: d });
-        setAlwNote("已保存——下一回合起生效");
+        toast("额度已保存——下一回合起生效");
       })
       .catch((e) => setAlwNote(String(e?.message || e)))
       .finally(() => setAlwBusy(false));
@@ -313,10 +335,18 @@ export function FleetView({ focusSlug } = {}) {
         if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
         setEmbedS({ slug, doc: d });
         setEmbedDraft({ anonymous: d.anonymous === true, origins: (d.origins ?? []).join("\n") });
-        setEmbedNote("已保存——下一次匿名凭据铸发起生效");
+        toast("嵌入设置已保存");
       })
       .catch((e) => setEmbedNote(String(e?.message || e)))
       .finally(() => setEmbedBusy(false));
+  };
+
+  // Drawer title bar per panel kind. Kept as data, not six wrappers.
+  const PANEL_TITLES = { config: "服务配置", callers: "允许清单", memory: "记忆", usage: "调用记录", allowance: "对话额度（主人池）", embed: "嵌入助手（副驾 widget）" };
+  const openPanel = (kind, slug) => {
+    setPanel(kind);
+    if (kind === "memory") return loadMemory(slug); // explicit: not in the fetch map below
+    ({ config: loadConfig, callers: loadCallers, usage: loadUsage, allowance: loadAllowance, embed: loadEmbed })[kind](slug);
   };
 
   return (
@@ -388,12 +418,12 @@ export function FleetView({ focusSlug } = {}) {
                     >
                       {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
                     </button>
-                    <button onClick={() => loadConfig(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
-                    <button onClick={() => loadUsage(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
-                    {memoryLaneAvailable && <button onClick={() => loadMemory(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
-                    <button onClick={() => loadAllowance(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
-                    <button onClick={() => loadEmbed(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
-                    <button onClick={() => loadCallers(d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
+                    <button onClick={() => openPanel("config", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
+                    <button onClick={() => openPanel("usage", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
+                    {memoryLaneAvailable && <button onClick={() => openPanel("memory", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
+                    <button onClick={() => openPanel("allowance", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
+                    <button onClick={() => openPanel("embed", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
+                    <button onClick={() => openPanel("callers", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
                     <details className="text-[11px] text-slate-400 ml-auto self-center">
                       <summary className="cursor-pointer select-none">slug</summary>
                       <code className="block mt-1 font-mono">{d.slug}</code>
@@ -407,282 +437,280 @@ export function FleetView({ focusSlug } = {}) {
             })}
           </div>
         )}
-        {cfg && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
-            <div className="font-mono text-xs">
-              服务配置 · {cfg.slug}（v{cfg.data.packVersion ?? "?"} · 只写本部署的覆盖，清空即回落声明）
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3 text-xs">
-              <label className="space-y-1">
-                <span className="text-slate-500">工作节奏（JSON 数组）{sourceBadge(cfg.data.config?.rhythm)}</span>
-                <textarea
-                  value={cfgDraft.rhythm}
-                  onChange={(e) => setCfgDraft((p) => ({ ...p, rhythm: e.target.value }))}
-                  rows={3}
-                  placeholder='[{"every":"1h","do":"巡检"}]'
-                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-slate-500">回合预算（分钟）{sourceBadge(cfg.data.config?.budgetMinutes)}</span>
-                <input
-                  value={cfgDraft.budget}
-                  onChange={(e) => setCfgDraft((p) => ({ ...p, budget: e.target.value }))}
-                  inputMode="numeric"
-                  placeholder="如 20"
-                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-slate-500">模型{sourceBadge(cfg.data.config?.model)}</span>
-                <input
-                  value={cfgDraft.model}
-                  onChange={(e) => setCfgDraft((p) => ({ ...p, model: e.target.value }))}
-                  list={`lanes-${cfg.slug}`}
-                  placeholder="留空 = runner 默认"
-                  className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
-                />
-                <datalist id={`lanes-${cfg.slug}`}>
-                  {(cfg.data.lanes ?? []).map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-                {(cfg.data.lanes ?? []).length > 0 && (
-                  <span className="block text-[10px] text-slate-400">部署键车道：{cfg.data.lanes.join(" · ")}</span>
-                )}
-              </label>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                disabled={cfgBusy}
-                onClick={() => saveConfig(cfg.slug)}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
-              >
-                {cfgBusy ? "保存中…" : "保存"}
-              </button>
-              <button onClick={() => setCfg(null)} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs">收起</button>
-              {cfgNote && <span className="text-xs text-amber-600 dark:text-amber-400">{cfgNote}</span>}
-            </div>
-          </div>
-        )}
-        {callers && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
-            <div className="font-mono text-xs">允许清单 · {callers.slug}（私有 agent 的调用者）</div>
-            {(callers.list ?? []).length === 0 && <div className="text-xs text-slate-500">空——私有 agent 目前无人可调</div>}
-            {(callers.list ?? []).map((c) => (
-              <div key={c.userId} className="flex items-center gap-3 text-xs">
-                <span className="font-mono">{c.userId}</span>
-                <span>{c.email}</span>
-                <button onClick={() => removeCaller(callers.slug, c.userId)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">移除</button>
-              </div>
-            ))}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                addCaller(callers.slug);
-              }}
-              className="flex gap-2"
-            >
-              <input
-                value={newEmail}
-                onChange={(e) => setNewEmail(e.target.value)}
-                placeholder="调用者邮箱（须已在计费面板登录过一次）"
-                className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
-              />
-              <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
-            </form>
-            {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
-          </div>
-        )}
-        {memoryErr && (
-          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="memory-error">
-            {memoryErr?.status === 403 ? (
-              <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看记忆。</>
-            ) : (
-              <>记忆读取失败（{String(memoryErr?.message || memoryErr)}）——这不是「没有记忆」，是车道暂不可达，请稍后再试。</>
-            )}
-          </div>
-        )}
-        {memory && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`memory-panel-${memory.slug}`}>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-mono text-xs">记忆 · {memory.slug}</span>
-              <div className="flex gap-1">
-                {["", "L0", "L1", "L2"].map((l) => (
-                  <button
-                    key={l || "all"}
-                    onClick={() => loadMemory(memory.slug, l)}
-                    className={`px-2 py-0.5 rounded border text-xs ${memoryLayer === l ? "border-slate-900 dark:border-slate-100" : "border-slate-300 dark:border-slate-700"}`}
-                  >
-                    {l || "全部"}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setMemory(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
-            </div>
-            {(memory.doc?.items ?? []).length === 0 ? (
-              <div className="text-xs text-slate-500">暂无记忆条目。</div>
-            ) : (
-              <div className="space-y-1">
-                {(memory.doc?.items ?? []).map((it, i) => (
-                  <div key={`${it.path}-${i}`} className="flex items-center gap-2 text-xs border-b border-slate-100 dark:border-slate-900 py-1">
-                    <span className={`px-1.5 rounded text-[10px] ${it.layer === "L2" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : it.layer === "L0" ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"}`}>{it.layer}</span>
-                    <span className="font-mono truncate flex-1" title={it.path}>{it.title}</span>
-                    <span className="text-slate-400">{it.ts ? new Date(it.ts).toLocaleString("zh-CN", { hour12: false }) : "?"}</span>
-                    {(it.layer === "L1" || it.layer === "L2") && (
-                      memoryArmed === it.path ? (
-                        <span className="flex gap-1 items-center">
-                          <span className="text-amber-600 dark:text-amber-400">确认遗忘？</span>
-                          <button
-                            onClick={() => { forgetMemoryItem(memory.slug, it.path); setMemoryArmed(null); }}
-                            className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px]"
-                          >
-                            确认
-                          </button>
-                          <button onClick={() => setMemoryArmed(null)} className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px]">取消</button>
-                        </span>
-                      ) : (
-                        <button onClick={() => setMemoryArmed(it.path)} className="px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-[10px]">遗忘</button>
-                      )
+        {panel && (
+          <Drawer title={<span className="font-mono text-xs">{PANEL_TITLES[panel]} · {(panel === "config" ? cfg : panel === "callers" ? callers : panel === "memory" ? memory : panel === "usage" ? usage : panel === "allowance" ? allowance : embedS)?.slug ?? "…"}</span>} onClose={closePanel}>
+            {panel === "config" && cfg && (
+              <div className="space-y-3" data-testid={`config-panel-${cfg.slug}`}>
+                <div className="text-xs text-slate-500">
+                  v{cfg.data.packVersion ?? "?"} · 只写本部署的覆盖，清空即回落声明
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3 text-xs">
+                  <label className="space-y-1">
+                    <span className="text-slate-500">工作节奏（JSON 数组）{sourceBadge(cfg.data.config?.rhythm)}</span>
+                    <textarea
+                      value={cfgDraft.rhythm}
+                      onChange={(e) => setCfgDraft((p) => ({ ...p, rhythm: e.target.value }))}
+                      rows={3}
+                      placeholder='[{"every":"1h","do":"巡检"}]'
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-slate-500">回合预算（分钟）{sourceBadge(cfg.data.config?.budgetMinutes)}</span>
+                    <input
+                      value={cfgDraft.budget}
+                      onChange={(e) => setCfgDraft((p) => ({ ...p, budget: e.target.value }))}
+                      inputMode="numeric"
+                      placeholder="如 20"
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-slate-500">模型{sourceBadge(cfg.data.config?.model)}</span>
+                    <input
+                      value={cfgDraft.model}
+                      onChange={(e) => setCfgDraft((p) => ({ ...p, model: e.target.value }))}
+                      list={`lanes-${cfg.slug}`}
+                      placeholder="留空 = runner 默认"
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                    />
+                    <datalist id={`lanes-${cfg.slug}`}>
+                      {(cfg.data.lanes ?? []).map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                    {(cfg.data.lanes ?? []).length > 0 && (
+                      <span className="block text-[10px] text-slate-400">部署键车道：{cfg.data.lanes.join(" · ")}</span>
                     )}
+                  </label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    disabled={cfgBusy}
+                    onClick={() => saveConfig(cfg.slug)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                  >
+                    {cfgBusy ? "保存中…" : "保存"}
+                  </button>
+                  <button onClick={closePanel} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs">收起</button>
+                  {cfgNote && <span className="text-xs text-amber-600 dark:text-amber-400">{cfgNote}</span>}
+                </div>
+              </div>
+            )}
+            {panel === "callers" && callers && (
+              <div className="space-y-2" data-testid={`allowlist-panel-${callers.slug}`}>
+                <div className="text-xs text-slate-500">私有 agent 的调用者</div>
+                {(callers.list ?? []).length === 0 && <div className="text-xs text-slate-500">空——私有 agent 目前无人可调</div>}
+                {(callers.list ?? []).map((c) => (
+                  <div key={c.userId} className="flex items-center gap-3 text-xs">
+                    <span className="font-mono">{c.userId}</span>
+                    <span>{c.email}</span>
+                    <button onClick={() => removeCaller(callers.slug, c.userId)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700">移除</button>
                   </div>
                 ))}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    addCaller(callers.slug);
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="调用者邮箱（须已在计费面板登录过一次）"
+                    className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+                  />
+                  <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
+                </form>
+                {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
               </div>
             )}
-          </div>
-        )}
-        {usageErr && (
-          <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="usage-error">
-            {usageErr?.status === 403 ? (
-              <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看调用记录。</>
-            ) : (
-              <>调用记录读取失败（{String(usageErr?.message || usageErr)}）——这不是「没有调用」，请稍后再试。</>
+            {panel === "memory" && (
+              <>
+                {memoryErr && (
+                  <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="memory-error">
+                    {memoryErr?.status === 403 ? (
+                      <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看记忆。</>
+                    ) : (
+                      <>记忆读取失败（{String(memoryErr?.message || memoryErr)}）——这不是「没有记忆」，是车道暂不可达，请稍后再试。</>
+                    )}
+                  </div>
+                )}
+                {memory && (
+                  <div className="space-y-3" data-testid={`memory-panel-${memory.slug}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex gap-1">
+                        {["", "L0", "L1", "L2"].map((l) => (
+                          <button
+                            key={l || "all"}
+                            onClick={() => loadMemory(memory.slug, l)}
+                            className={`px-2 py-0.5 rounded border text-xs ${memoryLayer === l ? "border-slate-900 dark:border-slate-100" : "border-slate-300 dark:border-slate-700"}`}
+                          >
+                            {l || "全部"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {(memory.doc?.items ?? []).length === 0 ? (
+                      <div className="text-xs text-slate-500">暂无记忆条目。</div>
+                    ) : (
+                      <div className="space-y-1">
+                        {(memory.doc?.items ?? []).map((it, i) => (
+                          <div key={`${it.path}-${i}`} className="flex items-center gap-2 text-xs border-b border-slate-100 dark:border-slate-900 py-1">
+                            <span className={`px-1.5 rounded text-[10px] ${it.layer === "L2" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : it.layer === "L0" ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"}`}>{it.layer}</span>
+                            <span className="font-mono truncate flex-1" title={it.path}>{it.title}</span>
+                            <span className="text-slate-400">{it.ts ? new Date(it.ts).toLocaleString("zh-CN", { hour12: false }) : "?"}</span>
+                            {(it.layer === "L1" || it.layer === "L2") && (
+                              memoryArmed === it.path ? (
+                                <span className="flex gap-1 items-center">
+                                  <span className="text-amber-600 dark:text-amber-400">确认遗忘？</span>
+                                  <button
+                                    onClick={() => { forgetMemoryItem(memory.slug, it.path); setMemoryArmed(null); }}
+                                    className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px]"
+                                  >
+                                    确认
+                                  </button>
+                                  <button onClick={() => setMemoryArmed(null)} className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px]">取消</button>
+                                </span>
+                              ) : (
+                                <button onClick={() => setMemoryArmed(it.path)} className="px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-[10px]">遗忘</button>
+                              )
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
-          </div>
-        )}
-        {usage && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`usage-panel-${usage.slug}`}>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-xs">调用记录 · {usage.slug}（近 30 天）</span>
-              <button onClick={() => setUsage(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
-            </div>
-            {(usage.doc?.byCaller ?? []).length === 0 ? (
-              <div className="text-xs text-slate-500">暂无调用。</div>
-            ) : (
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left border-b border-slate-200 dark:border-slate-800">
-                    <th className="py-1.5 px-2">调用者</th><th className="px-2">渠道</th><th className="px-2 text-right">回合</th><th className="px-2 text-right">分钟</th><th className="px-2 text-right">最近</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(usage.doc?.byCaller ?? []).map((r, i) => (
-                    <tr key={`${r.channel}-${r.email}-${i}`} className="border-b border-slate-100 dark:border-slate-900">
-                      <td className="py-1.5 px-2 font-mono">{r.email || "（匿名/无邮箱）"}</td>
-                      <td className="px-2">{channelLabel(r.channel)}</td>
-                      <td className="px-2 text-right">{r.turns}</td>
-                      <td className="px-2 text-right">{r.minutes}</td>
-                      <td className="px-2 text-right text-slate-500">{r.lastAt ? new Date(r.lastAt).toLocaleString("zh-CN", { hour12: false }) : "?"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {panel === "usage" && (
+              <>
+                {usageErr && (
+                  <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm" data-testid="usage-error">
+                    {usageErr?.status === 403 ? (
+                      <>无权读取——这不是你部署的 agent，仅部署者本人（或运维）可查看调用记录。</>
+                    ) : (
+                      <>调用记录读取失败（{String(usageErr?.message || usageErr)}）——这不是「没有调用」，请稍后再试。</>
+                    )}
+                  </div>
+                )}
+                {usage && (
+                  <div className="space-y-3" data-testid={`usage-panel-${usage.slug}`}>
+                    {(usage.doc?.byCaller ?? []).length === 0 ? (
+                      <div className="text-xs text-slate-500">暂无调用。</div>
+                    ) : (
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left border-b border-slate-200 dark:border-slate-800">
+                            <th className="py-1.5 px-2">调用者</th><th className="px-2">渠道</th><th className="px-2 text-right">回合</th><th className="px-2 text-right">分钟</th><th className="px-2 text-right">最近</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(usage.doc?.byCaller ?? []).map((r, i) => (
+                            <tr key={`${r.channel}-${r.email}-${i}`} className="border-b border-slate-100 dark:border-slate-900">
+                              <td className="py-1.5 px-2 font-mono">{r.email || "（匿名/无邮箱）"}</td>
+                              <td className="px-2">{channelLabel(r.channel)}</td>
+                              <td className="px-2 text-right">{r.turns}</td>
+                              <td className="px-2 text-right">{r.minutes}</td>
+                              <td className="px-2 text-right text-slate-500">{r.lastAt ? new Date(r.lastAt).toLocaleString("zh-CN", { hour12: false }) : "?"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    <div className="text-xs text-slate-500 space-y-1">
+                      <div className="font-semibold text-slate-600 dark:text-slate-300">最近活动</div>
+                      {(usage.doc?.activity ?? []).length === 0 && <div>无。</div>}
+                      {(usage.doc?.activity ?? []).map((a, i) => (
+                        <div key={i} className="flex gap-3">
+                          <span className="text-slate-400 w-36 shrink-0 font-mono">{new Date(a.at).toLocaleString("zh-CN", { hour12: false })}</span>
+                          <span className="px-1.5 rounded bg-slate-100 dark:bg-slate-800">{channelLabel(a.channel)}</span>
+                          <span>{a.outcome}</span>
+                          <span>{a.minutes ? `${a.minutes} 分钟` : ""}</span>
+                          <span className="text-slate-400 font-mono ml-auto">{a.email || ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
-            <div className="text-xs text-slate-500 space-y-1">
-              <div className="font-semibold text-slate-600 dark:text-slate-300">最近活动</div>
-              {(usage.doc?.activity ?? []).length === 0 && <div>无。</div>}
-              {(usage.doc?.activity ?? []).map((a, i) => (
-                <div key={i} className="flex gap-3">
-                  <span className="text-slate-400 w-36 shrink-0 font-mono">{new Date(a.at).toLocaleString("zh-CN", { hour12: false })}</span>
-                  <span className="px-1.5 rounded bg-slate-100 dark:bg-slate-800">{channelLabel(a.channel)}</span>
-                  <span>{a.outcome}</span>
-                  <span>{a.minutes ? `${a.minutes} 分钟` : ""}</span>
-                  <span className="text-slate-400 font-mono ml-auto">{a.email || ""}</span>
+            {panel === "allowance" && allowance && (
+              <div className="space-y-3" data-testid={`allowance-panel-${allowance.slug}`}>
+                <div className="text-xs text-slate-500">
+                  当前上限 <b>{allowance.doc?.limitMinutes ?? 0}</b> 分钟 · 剩余 <b>{allowance.doc?.remainingMinutes ?? 0}</b> 分钟
+                  {allowance.doc?.updatedBy ? ` · 上次由 ${allowance.doc.updatedBy} 设置` : ""}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {allowance && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`allowance-panel-${allowance.slug}`}>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-xs">对话额度（主人池） · {allowance.slug}</span>
-              <button onClick={() => setAllowance(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
-            </div>
-            <div className="text-xs text-slate-500">
-              当前上限 <b>{allowance.doc?.limitMinutes ?? 0}</b> 分钟 · 剩余 <b>{allowance.doc?.remainingMinutes ?? 0}</b> 分钟
-              {allowance.doc?.updatedBy ? ` · 上次由 ${allowance.doc.updatedBy} 设置` : ""}
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                saveAllowance(allowance.slug);
-              }}
-              className="flex gap-2 items-center"
-            >
-              <input
-                value={alwDraft}
-                onChange={(e) => setAlwDraft(e.target.value)}
-                inputMode="numeric"
-                placeholder="新上限（分钟，0=关闭）"
-                className="w-48 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
-              />
-              <button disabled={alwBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
-                {alwBusy ? "保存中…" : "保存"}
-              </button>
-              {alwNote && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote}</span>}
-            </form>
-            <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
-          </div>
-        )}
-        {embedS && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid={`embed-panel-${embedS.slug}`}>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-xs">嵌入助手（副驾 widget） · {embedS.slug}</span>
-              <button onClick={() => setEmbedS(null)} className="ml-auto px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-xs">收起</button>
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={embedDraft.anonymous}
-                onChange={(e) => setEmbedDraft((d) => ({ ...d, anonymous: e.target.checked }))}
-                data-testid={`embed-anon-toggle-${embedS.slug}`}
-              />
-              开放匿名对话（访客免登录，按平台匿名日额计费；关闭后仅登录访客可聊）
-            </label>
-            <div className="space-y-1">
-              <div className="text-xs text-slate-500">允许嵌入的网页源（每行一个，形如 https://lex.finddatatech.cloud）——匿名凭据只对这些源铸发。</div>
-              <textarea
-                value={embedDraft.origins}
-                onChange={(e) => setEmbedDraft((d) => ({ ...d, origins: e.target.value }))}
-                rows={3}
-                spellCheck={false}
-                className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
-                placeholder={"https://lex.finddatatech.cloud\nhttps://wire.finddatatech.cloud"}
-              />
-            </div>
-            <div className="flex gap-2 items-center">
-              <button
-                disabled={embedBusy}
-                onClick={() => saveEmbed(embedS.slug)}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
-              >
-                {embedBusy ? "保存中…" : "保存"}
-              </button>
-              {embedNote && <span className="text-xs text-amber-600 dark:text-amber-400">{embedNote}</span>}
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs text-slate-500">嵌入代码（贴进产品线页面；宿主上下文/身份递送见文档「嵌入车道」）：</div>
-              <pre className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-900 p-2 text-[10px] font-mono text-slate-600 dark:text-slate-300">{`<iframe src="${window.location.origin}/#/embed/${embedS.slug}?open=1"
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveAllowance(allowance.slug);
+                  }}
+                  className="flex gap-2 items-center"
+                >
+                  <input
+                    value={alwDraft}
+                    onChange={(e) => setAlwDraft(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="新上限（分钟，0=关闭）"
+                    className="w-48 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+                  />
+                  <button disabled={alwBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+                    {alwBusy ? "保存中…" : "保存"}
+                  </button>
+                  {alwNote && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote}</span>}
+                </form>
+                <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
+              </div>
+            )}
+            {panel === "embed" && embedS && (
+              <div className="space-y-3" data-testid={`embed-panel-${embedS.slug}`}>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={embedDraft.anonymous}
+                    onChange={(e) => setEmbedDraft((d) => ({ ...d, anonymous: e.target.checked }))}
+                    data-testid={`embed-anon-toggle-${embedS.slug}`}
+                  />
+                  开放匿名对话（访客免登录，按平台匿名日额计费；关闭后仅登录访客可聊）
+                </label>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500">允许嵌入的网页源（每行一个，形如 https://lex.finddatatech.cloud）——匿名凭据只对这些源铸发。</div>
+                  <textarea
+                    value={embedDraft.origins}
+                    onChange={(e) => setEmbedDraft((d) => ({ ...d, origins: e.target.value }))}
+                    rows={3}
+                    spellCheck={false}
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+                    placeholder={"https://lex.finddatatech.cloud\nhttps://wire.finddatatech.cloud"}
+                  />
+                </div>
+                <div className="flex gap-2 items-center">
+                  <button
+                    disabled={embedBusy}
+                    onClick={() => saveEmbed(embedS.slug)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                  >
+                    {embedBusy ? "保存中…" : "保存"}
+                  </button>
+                  {embedNote && <span className="text-xs text-amber-600 dark:text-amber-400">{embedNote}</span>}
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500">嵌入代码（贴进产品线页面；宿主上下文/身份递送见文档「嵌入车道」）：</div>
+                  <pre className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-900 p-2 text-[10px] font-mono text-slate-600 dark:text-slate-300">{`<iframe src="${window.location.origin}/#/embed/${embedS.slug}?open=1"
   style="position:fixed;bottom:0;right:0;width:420px;height:640px;border:0;
   background:transparent;z-index:2147483000"
   allow="clipboard-write" title="助手"></iframe>`}</pre>
-              <div className="text-[10px] text-slate-400">
-                弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。
-                问询卡随对话自动出现；宿主若想让助手执行页面动作（如 navigate/refresh），在 init 消息里声明 <span className="font-mono">intents</span> 动词列表并监听 <span className="font-mono">wx-copilot-intent</span> 回结果——见文档「宿主意图」。
+                  <div className="text-[10px] text-slate-400">
+                    弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。
+                    问询卡随对话自动出现；宿主若想让助手执行页面动作（如 navigate/refresh），在 init 消息里声明 <span className="font-mono">intents</span> 动词列表并监听 <span className="font-mono">wx-copilot-intent</span> 回结果——见文档「宿主意图」。
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          </Drawer>
         )}
       </div>
 

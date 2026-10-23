@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
+import { DailyChart } from "../../components/DailyChart.jsx";
 import { planRequestBadge } from "./shared.jsx";
 
 const DAY_CHOICES = [1, 7, 30, 90];
@@ -426,24 +427,14 @@ export function StatsView() {
       </div>
 
       <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+        {/* polish-wanxing-console: one series per caliber (source/basis) —
+            the calibers stay separate, never merged into a single bar. */}
         <div className="text-xs font-semibold text-slate-500 mb-2">每日序列（口径分列）</div>
-        <div className="space-y-1 max-h-64 overflow-auto" data-testid="stats-daily">
-          {(daily?.fleet ?? []).map((d) => (
-            <div key={`${d.day}|${d.source}|${d.basis}`} className="flex items-center gap-2 text-xs tabular-nums">
-              <span className="w-24 text-slate-500">{d.day}</span>
-              <span className="w-24">{d.source}/{d.basis}</span>
-              <span className="flex-1">
-                <span
-                  className="block h-2 rounded bg-slate-400 dark:bg-slate-500"
-                  style={{ width: `${Math.min(100, ((d.tokens_in + d.tokens_out) / Math.max(1, Math.max(...(daily?.fleet ?? [{ tokens_in: 0, tokens_out: 0 }]).map((x) => x.tokens_in + x.tokens_out)))) * 100)}%` }}
-                />
-              </span>
-              <span className="w-20 text-right">{fmtTok(d.tokens_in + d.tokens_out)}</span>
-              <span className="w-14 text-right text-slate-400">{d.turns}t</span>
-            </div>
-          ))}
-          {(daily?.fleet ?? []).length === 0 && <div className="text-sm text-slate-400 py-2">窗口内无数据</div>}
-        </div>
+        {(daily?.fleet ?? []).length === 0 ? (
+          <div className="text-sm text-slate-400 py-2" data-testid="stats-daily">窗口内无数据</div>
+        ) : (
+          <DailyChart rows={daily.fleet} />
+        )}
       </div>
     </section>
   );

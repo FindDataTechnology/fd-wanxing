@@ -6,20 +6,37 @@
 // upgrade-wanxing-footer）；控制台是工具面，只渲染一行合规条（© + 双备案）。
 // 导航随登录态切换（Q2=3a/Q11）：未登录 =「登录」直发 PKCE；已登录 =
 // 「控制台」+ 邮箱·退出 chip。联系与备案是事实常量，站点无 i18n。
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { IntroView } from "./views/IntroView.jsx";
 import { CatalogView } from "./views/CatalogView.jsx";
 import { DocsView } from "./views/DocsView.jsx";
-import { ConsoleView } from "./views/ConsoleView.jsx";
-import { ChatView } from "./views/ChatView.jsx";
-import { CollectionsView } from "./views/CollectionsView.jsx";
-import { BundleView } from "./views/BundleView.jsx";
 import { EmbedView } from "./views/EmbedView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
 import { loginLogto, signOut, useAuth } from "./auth.js";
 
+// polish-wanxing-console: the authenticated-heavy views code-split — the
+// initial bundle (intro landing, catalog, docs, embed) excludes their code.
+// The public faces and the embed widget stay static: no extra round-trip on
+// first paint or inside a host iframe.
+const ConsoleView = lazy(() => import("./views/ConsoleView.jsx").then((m) => ({ default: m.ConsoleView })));
+const ChatView = lazy(() => import("./views/ChatView.jsx").then((m) => ({ default: m.ChatView })));
+const CollectionsView = lazy(() => import("./views/CollectionsView.jsx").then((m) => ({ default: m.CollectionsView })));
+const BundleView = lazy(() => import("./views/BundleView.jsx").then((m) => ({ default: m.BundleView })));
+
 const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView, "#/embed": EmbedView };
+
+// Skeleton matching the main column's rhythm — a lazy chunk's first
+// navigation shows this, never a blank flash.
+function ViewFallback() {
+  return (
+    <div className="space-y-4 animate-pulse" aria-hidden="true">
+      <div className="h-6 w-40 rounded bg-slate-200 dark:bg-slate-800" />
+      <div className="h-24 rounded-xl bg-slate-200 dark:bg-slate-800" />
+      <div className="h-24 rounded-xl bg-slate-200 dark:bg-slate-800" />
+    </div>
+  );
+}
 
 const CONTACT_EMAIL = "1253774197@qq.com";
 const CONTACT_PHONE = "17753221425";
@@ -193,7 +210,9 @@ export function App() {
         </div>
       </header>
       <main className="max-w-5xl mx-auto px-4 py-6 w-full flex-1">
-        <View focusSlug={viewKey === "#/console" || viewKey === "#/chat" || viewKey === "#/bundle" ? focusSlug : undefined} />
+        <Suspense fallback={<ViewFallback />}>
+          <View focusSlug={viewKey === "#/console" || viewKey === "#/chat" || viewKey === "#/bundle" ? focusSlug : undefined} />
+        </Suspense>
       </main>
       {viewKey === "#/console" ? <ComplianceLine /> : <FamilyFooter />}
     </div>

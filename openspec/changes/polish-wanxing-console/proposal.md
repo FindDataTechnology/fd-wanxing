@@ -2,12 +2,12 @@
 
 ## Why
 
-萬星部署者控制台（wanxing-web `#/console` 五 tab：舰队/任务/桌面机位/消耗/运维）功能已齐，但 IA 与体验欠账集中：FleetView 单文件 40.7K，七个管理面板（配置/记录/记忆/额度/嵌入/允许清单/分成）顺序堆叠在部署卡片下方，开一个面板整页拉长一截；写操作反馈靠零散 inline 文案，没有统一 toast；消耗视图的每日序列是手搓 div 横条，看不出趋势；整个 SPA 单 bundle 408KB 无代码分割；视觉上 text-[10px] 正文约 22 处、无品牌 accent（全 slate+amber）、无骨架屏（六处「加载中」文字）、aria 属性全站仅 3 处。2026-10-24 explore 定稿（ai-memory `wanxing-console-polish-plan`）：IA/体验重构 + impeccable 视觉打磨合成一个 change 两阶段，本刀落地。
+萬星部署者控制台（wanxing-web `#/console` 五 tab：舰队/任务/桌面机位/消耗/运维）功能已齐，但 IA 与体验欠账集中：FleetView 单文件 40.7K，六个管理面板（配置/记录/记忆/额度/嵌入/允许清单）顺序堆叠在部署卡片下方，开一个面板整页拉长一截；写操作反馈靠零散 inline 文案，没有统一 toast；消耗视图的每日序列是手搓 div 横条，看不出趋势；整个 SPA 单 bundle 408KB 无代码分割；视觉上 text-[10px] 正文约 22 处、无品牌 accent（全 slate+amber）、无骨架屏（六处「加载中」文字）、aria 属性全站仅 3 处。2026-10-24 explore 定稿（ai-memory `wanxing-console-polish-plan`）：IA/体验重构 + impeccable 视觉打磨合成一个 change 两阶段，本刀落地。
 
 ## What Changes
 
 **Phase 1（IA/体验）**
-- fleet tab 管理面板收编为**抽屉**：七面板从「卡片下方顺序堆叠」改为右侧抽屉，一次一个；面板行为、端点、data-testid 全部不变，深链 `#/console/<slug>` 开对应部署的抽屉。
+- fleet tab 管理面板收编为**抽屉**：六面板从「卡片下方顺序堆叠」改为右侧抽屉，一次一个；面板行为、端点、data-testid 全部不变，深链 `#/console/<slug>` 开对应部署的抽屉。
 - **统一 toast**：写操作（保存配置/嵌入设置/暂停恢复/额度编辑/遗忘）成功以自动消失的 toast 反馈；错误仍就地分语（既有面板/卡片横幅），toast 不吞错误细节。
 - **每日序列真图**：消耗视图的每日序列用 echarts 柱状图渲染（x=day，系列按口径 source/basis 分组），替换手搓 div 条；口径分列语义与 `stats-daily` testid 保留。
 - **控制台代码分割**：登录后重面（console/chat/collections）改 `React.lazy` + Suspense，构建多 chunk；对外公开面（intro/catalog/docs）与嵌入面（embed）不切。

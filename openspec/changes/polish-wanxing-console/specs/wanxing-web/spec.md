@@ -2,7 +2,7 @@
 
 ### Requirement: The fleet tab opens management panels in a drawer
 
-The fleet tab SHALL open each deployment management panel (服务配置/调用记录/记忆/额度/嵌入/允许清单/分成) inside a right-side drawer that overlays the page — one panel at a time, closable by the close affordance, the Escape key, and the overlay — instead of stacking panels below the deployment cards. The pause/resume action SHALL stay on the card. Every panel's behavior, endpoint usage, error states, and `data-testid` identifiers SHALL be unchanged by the move; the deep link `#/console/<slug>` SHALL open that deployment's config panel in the drawer.
+The fleet tab SHALL open each deployment management panel (服务配置/调用记录/记忆/额度/嵌入/允许清单) inside a right-side drawer that overlays the page — one panel at a time, closable by the close affordance, the Escape key, and the overlay — instead of stacking panels below the deployment cards. The pause/resume action SHALL stay on the card. Every panel's behavior, endpoint usage, error states, and `data-testid` identifiers SHALL be unchanged by the move; the deep link `#/console/<slug>` SHALL open that deployment's config panel in the drawer.
 
 #### Scenario: a panel opens over the list, not below it
 
