@@ -23,6 +23,6 @@
 
 ## 4. 出片与验收
 
-- [ ] 4.1 fd-build-channel 判路 → wanxing-web 出片 → gitee fd-infra-deploy 滚 tag → ArgoCD Healthy。验证：digest 双证。
-- [ ] 4.2 生产验收：aloadtree 登录 console 五 tab 走查（抽屉六面板、toast、每日图、骨架、accent）。验证：浏览器真机眼见 + 截图存证。
-- [ ] 4.3 台账 + 主 spec 同步（wanxing-web delta 合入）+ 归档 + 记忆更新。
+- [x] 4.1 fd-build-channel 判路（org 额度耗尽 → 私有通用池 testaction005/build-pool T2）→ 快照 e4435f6（源真 sha 03cf026）→ **BUILD_DOCKERFILE 被抹回落 ./Dockerfile 现行逮获即修**（首跑 cancel、改 ./Dockerfile.web 重跑 40070309787 绿）→ hkccr digest 79f445e6 → relay 手动补单 OK → gitee fd-infra-deploy 2a868c8 滚 tag → ArgoCD all-services-prod Synced/Healthy。验证：digest 双证（pod imageID = registry digest = 79f445e6，两 pod 零重启）。
+- [x] 4.2 生产验收：ops 服务令牌通道登录（aloadtree 密码记忆页空缺，走 setOpsToken 同产走查）五 tab 全过 + 抽屉六面板（配置/记录/记忆/额度/嵌入/允许清单真数据）+ Esc/深链 `#/console/<slug>` + toast「额度已保存」（原值 0 无副作用写触发）+ 每日序列 echarts 真图（fleet/local 双口径）+ collections 骨架屏眼见 + accent 朱红全套。验证：`gui-test-screenshots/prod-*.png` 14 张存证。
+- [x] 4.3 台账 + 主 spec 同步（wanxing-web delta 5 ADDED 合入，主 spec「panels opening below」旧句预修为 drawer 语义）+ 归档（archive/2026-10-24-polish-wanxing-console）+ 记忆更新。
