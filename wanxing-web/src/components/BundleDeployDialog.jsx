@@ -47,7 +47,7 @@ export function BundleDeployDialog({ collectionId, entries, onDone = () => {} })
           <span className="text-slate-500">计费键（你的 sub2api sk-…，全部条目共用）</span>
           <input type="password" value={billingKey} onChange={(e) => setBillingKey(e.target.value)} placeholder="sk-…"
             className={`${inputCls} w-full`} data-testid="bundle-billing-key" />
-          <span className="block text-[10px] text-slate-400">
+          <span className="block text-[11px] text-slate-400">
             在 <a href="https://token.finddatatech.cloud" target="_blank" rel="noreferrer" className="underline">计费面板</a> 创建；套装内每个条目的回合按分钟实扣此键。
           </span>
         </label>
@@ -61,7 +61,7 @@ export function BundleDeployDialog({ collectionId, entries, onDone = () => {} })
       <button
         disabled={busy || !billingKey}
         onClick={submit}
-        className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+        className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40"
         data-testid="bundle-deploy-submit"
       >
         {busy ? "部署中…" : `一键部署 ${entries} 个条目`}
@@ -75,16 +75,16 @@ export function BundleDeployDialog({ collectionId, entries, onDone = () => {} })
               </span>
               <span className="font-mono text-slate-400">{r.packId}{r.agentId ? "/" + r.agentId : ""}</span>
               {r.slugs?.length > 0 && (
-                <a href={`#/chat/${encodeURIComponent(r.slugs[0])}`} className="text-sky-600 dark:text-sky-400 hover:underline">{r.slugs[0]}</a>
+                <a href={`#/chat/${encodeURIComponent(r.slugs[0])}`} className="text-accent dark:text-accent hover:underline">{r.slugs[0]}</a>
               )}
               {r.error && <span className="text-amber-600 dark:text-amber-400 truncate" title={typeof r.error === "string" ? r.error : JSON.stringify(r.error)}>{typeof r.error === "string" ? r.error : JSON.stringify(r.error)}</span>}
             </div>
           ))}
           {results.deployedSlugs?.length > 0 && results.results?.some((r) => r.verdict !== "deployed") && (
-            <div className="text-[10px] text-slate-400">部分成功——被拒/跳过的条目不回滚已上线者；修正后可重跑（部署幂等）。</div>
+            <div className="text-[11px] text-slate-400">部分成功——被拒/跳过的条目不回滚已上线者；修正后可重跑（部署幂等）。</div>
           )}
           {results.deployedSlugs?.length === 0 && (
-            <div className="text-[10px] text-slate-400">本轮没有新上线的条目。</div>
+            <div className="text-[11px] text-slate-400">本轮没有新上线的条目。</div>
           )}
         </div>
       )}

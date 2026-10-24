@@ -380,19 +380,19 @@ export function FleetView({ focusSlug } = {}) {
                     </span>
                     <span className="font-semibold text-sm">{d.name ?? d.slug}</span>
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{d.visibility === "private" ? "私有" : "公开"}</span>
-                    <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-sky-600 dark:text-sky-400 hover:underline">对话 →</a>
+                    <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-accent dark:text-accent hover:underline">对话 →</a>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-xs" data-testid={`fleet-signals-${d.slug}`}>
                     <div>
-                      <div className="text-slate-400 text-[10px]">近 7 天回合</div>
+                      <div className="text-slate-400 text-[11px]">近 7 天回合</div>
                       <div className="font-semibold">{unknown ? "…" : (sig?.turns7d ?? 0)}</div>
                     </div>
                     <div>
-                      <div className="text-slate-400 text-[10px]">近 30 天分钟</div>
+                      <div className="text-slate-400 text-[11px]">近 30 天分钟</div>
                       <div className="font-semibold">{unknown ? "…" : (sig?.minutes30d ?? 0)}</div>
                     </div>
                     <div>
-                      <div className="text-slate-400 text-[10px]">近 30 天结算</div>
+                      <div className="text-slate-400 text-[11px]">近 30 天结算</div>
                       <div className="font-semibold">{unknown ? "…" : `$${(sig?.usd30d ?? 0).toFixed(2)}`}</div>
                     </div>
                   </div>
@@ -480,7 +480,7 @@ export function FleetView({ focusSlug } = {}) {
                       ))}
                     </datalist>
                     {(cfg.data.lanes ?? []).length > 0 && (
-                      <span className="block text-[10px] text-slate-400">部署键车道：{cfg.data.lanes.join(" · ")}</span>
+                      <span className="block text-[11px] text-slate-400">部署键车道：{cfg.data.lanes.join(" · ")}</span>
                     )}
                   </label>
                 </div>
@@ -488,7 +488,7 @@ export function FleetView({ focusSlug } = {}) {
                   <button
                     disabled={cfgBusy}
                     onClick={() => saveConfig(cfg.slug)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                    className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40"
                   >
                     {cfgBusy ? "保存中…" : "保存"}
                   </button>
@@ -515,13 +515,13 @@ export function FleetView({ focusSlug } = {}) {
                   }}
                   className="flex gap-2"
                 >
-                  <input
+                  <input aria-label="调用者邮箱"
                     value={newEmail}
                     onChange={(e) => setNewEmail(e.target.value)}
                     placeholder="调用者邮箱（须已在计费面板登录过一次）"
                     className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
                   />
-                  <button className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">添加</button>
+                  <button className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs">添加</button>
                 </form>
                 {alNote && <div className="text-xs text-amber-600 dark:text-amber-400">{alNote}</div>}
               </div>
@@ -558,7 +558,7 @@ export function FleetView({ focusSlug } = {}) {
                       <div className="space-y-1">
                         {(memory.doc?.items ?? []).map((it, i) => (
                           <div key={`${it.path}-${i}`} className="flex items-center gap-2 text-xs border-b border-slate-100 dark:border-slate-900 py-1">
-                            <span className={`px-1.5 rounded text-[10px] ${it.layer === "L2" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : it.layer === "L0" ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"}`}>{it.layer}</span>
+                            <span className={`px-1.5 rounded text-[11px] ${it.layer === "L2" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" : it.layer === "L0" ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"}`}>{it.layer}</span>
                             <span className="font-mono truncate flex-1" title={it.path}>{it.title}</span>
                             <span className="text-slate-400">{it.ts ? new Date(it.ts).toLocaleString("zh-CN", { hour12: false }) : "?"}</span>
                             {(it.layer === "L1" || it.layer === "L2") && (
@@ -567,14 +567,14 @@ export function FleetView({ focusSlug } = {}) {
                                   <span className="text-amber-600 dark:text-amber-400">确认遗忘？</span>
                                   <button
                                     onClick={() => { forgetMemoryItem(memory.slug, it.path); setMemoryArmed(null); }}
-                                    className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px]"
+                                    className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[11px]"
                                   >
                                     确认
                                   </button>
-                                  <button onClick={() => setMemoryArmed(null)} className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px]">取消</button>
+                                  <button onClick={() => setMemoryArmed(null)} className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[11px]">取消</button>
                                 </span>
                               ) : (
-                                <button onClick={() => setMemoryArmed(it.path)} className="px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-[10px]">遗忘</button>
+                                <button onClick={() => setMemoryArmed(it.path)} className="px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-[11px]">遗忘</button>
                               )
                             )}
                           </div>
@@ -650,19 +650,19 @@ export function FleetView({ focusSlug } = {}) {
                   }}
                   className="flex gap-2 items-center"
                 >
-                  <input
+                  <input aria-label="对话额度新上限（分钟，0=关闭）"
                     value={alwDraft}
                     onChange={(e) => setAlwDraft(e.target.value)}
                     inputMode="numeric"
                     placeholder="新上限（分钟，0=关闭）"
                     className="w-48 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
                   />
-                  <button disabled={alwBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+                  <button disabled={alwBusy} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
                     {alwBusy ? "保存中…" : "保存"}
                   </button>
                   {alwNote && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote}</span>}
                 </form>
-                <div className="text-[10px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
+                <div className="text-[11px] text-slate-400">一次性限额：访客对话按分钟实扣你的部署计费键，扣完即止、随时可调。</div>
               </div>
             )}
             {panel === "embed" && embedS && (
@@ -691,7 +691,7 @@ export function FleetView({ focusSlug } = {}) {
                   <button
                     disabled={embedBusy}
                     onClick={() => saveEmbed(embedS.slug)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                    className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40"
                   >
                     {embedBusy ? "保存中…" : "保存"}
                   </button>
@@ -699,11 +699,11 @@ export function FleetView({ focusSlug } = {}) {
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs text-slate-500">嵌入代码（贴进产品线页面；宿主上下文/身份递送见文档「嵌入车道」）：</div>
-                  <pre className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-900 p-2 text-[10px] font-mono text-slate-600 dark:text-slate-300">{`<iframe src="${window.location.origin}/#/embed/${embedS.slug}?open=1"
+                  <pre className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-900 p-2 text-[11px] font-mono text-slate-600 dark:text-slate-300">{`<iframe src="${window.location.origin}/#/embed/${embedS.slug}?open=1"
   style="position:fixed;bottom:0;right:0;width:420px;height:640px;border:0;
   background:transparent;z-index:2147483000"
   allow="clipboard-write" title="助手"></iframe>`}</pre>
-                  <div className="text-[10px] text-slate-400">
+                  <div className="text-[11px] text-slate-400">
                     弹窗登录需浏览器允许该 iframe 弹窗（默认允许；若宿主加了 sandbox 需含 allow-popups）。
                     问询卡随对话自动出现；宿主若想让助手执行页面动作（如 navigate/refresh），在 init 消息里声明 <span className="font-mono">intents</span> 动词列表并监听 <span className="font-mono">wx-copilot-intent</span> 回结果——见文档「宿主意图」。
                   </div>
@@ -715,7 +715,7 @@ export function FleetView({ focusSlug } = {}) {
       </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="deploy-panel">
-        <h3 className="font-semibold">部署我的 agent <a href="#/collections" className="ml-2 text-xs font-normal text-sky-600 dark:text-sky-400 hover:underline" data-testid="collections-entry-link">我的集合 →</a></h3>
+        <h3 className="font-semibold">部署我的 agent <a href="#/collections" className="ml-2 text-xs font-normal text-accent dark:text-accent hover:underline" data-testid="collections-entry-link">我的集合 →</a></h3>
         {myPacksErr && <div className="text-xs text-amber-600 dark:text-amber-400">{myPacksErr}</div>}
         {myPacks && (myPacks.packs?.length ?? 0) === 0 && (
           <div className="text-xs text-slate-500">名下暂无已发布的 pack——先在壹座「设置 → 功能集」发布（含 serving 契约的 agent 才可部署）。</div>

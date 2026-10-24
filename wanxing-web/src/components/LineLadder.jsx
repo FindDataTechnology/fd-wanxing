@@ -33,7 +33,7 @@ export function LineLadder() {
               <span className="w-4 text-center text-xs text-slate-500 dark:text-slate-400">{numeral}</span>
               <span>{name}</span>
               {current && (
-                <span className="rounded-full border border-slate-300 px-2 py-px text-[10px] leading-4 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                <span className="rounded-full border border-slate-300 px-2 py-px text-[11px] leading-4 text-slate-500 dark:border-slate-700 dark:text-slate-400">
                   当前站点
                 </span>
               )}

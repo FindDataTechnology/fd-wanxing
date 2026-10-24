@@ -8,7 +8,7 @@ import { authFetch } from "../../auth.js";
 // amber tone starts at 80% of the ceiling; a capped bar never lies about 100%.
 const Watermark = ({ spent, cap, label, testid }) => (
   <div className="min-w-32" data-testid={testid}>
-    <div className="flex justify-between text-[10px] text-slate-400">
+    <div className="flex justify-between text-[11px] text-slate-400">
       <span>{label}</span>
       <span>{spent}/{cap}</span>
     </div>
@@ -98,27 +98,27 @@ export function MissionsView() {
         </div>
       )}
       <form onSubmit={createMission} className="space-y-2">
-        <input
+        <input aria-label="任务目标"
           value={mDraft.goal}
           onChange={(e) => setMDraft({ ...mDraft, goal: e.target.value })}
           placeholder="目标：一句话说清要 planner 做什么"
           className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
         />
         <div className="flex gap-2 items-center flex-wrap">
-          <input
+          <input aria-label="模型（可空=默认）"
             value={mDraft.model}
             onChange={(e) => setMDraft({ ...mDraft, model: e.target.value })}
             placeholder="模型（可空=默认）"
             className="w-40 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
           />
-          <input
+          <input aria-label="时间窗（小时）"
             value={mDraft.hours}
             onChange={(e) => setMDraft({ ...mDraft, hours: e.target.value })}
             inputMode="numeric"
             placeholder="时间窗(小时)"
             className="w-24 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
           />
-          <input
+          <input aria-label="成本上限（分钟）"
             value={mDraft.cap}
             onChange={(e) => setMDraft({ ...mDraft, cap: e.target.value })}
             inputMode="numeric"
@@ -133,7 +133,7 @@ export function MissionsView() {
             <option value="human">人批计划</option>
             <option value="auto">自动执行</option>
           </select>
-          <button disabled={mBusy || !mDraft.goal.trim()} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+          <button disabled={mBusy || !mDraft.goal.trim()} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
             {mBusy ? "处理中…" : "创建任务"}
           </button>
         </div>

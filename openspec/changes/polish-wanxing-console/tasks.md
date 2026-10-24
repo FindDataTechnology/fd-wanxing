@@ -15,11 +15,11 @@
 
 ## 3. Phase 2：视觉基线（critique 先行）
 
-- [ ] 3.1 登录态截图 critique（aloadtree 走查账号：五 tab + 抽屉 + 图表 + 窄屏），产出缺陷清单与 accent 取值定案。验证：截图存 `gui-test-screenshots/`。
-- [ ] 3.2 `@theme` 落 accent 与节奏 token；关键操作/选中态/链接换 accent。验证：走查眼见主色、dark 模式对比度可读。
-- [ ] 3.3 字号阶梯：text-[10px] 清零（正文 ≥12px），辅注统一 text-[11px]。验证：`grep -c 'text-\[10px\]' wanxing-web/src` = 0。
-- [ ] 3.4 骨架屏替换六处「加载中」文字 + 交互控件 aria 基线（按钮名/dialog/live region/label 关联）。验证：走查加载态眼见骨架、键盘 Tab 焦点可见。
-- [ ] 3.5 Phase 2 走查全过 + 构建绿。
+- [x] 3.1 登录态截图 critique（八张：五 tab + 抽屉 + 窄屏 + 浅色，存 `gui-test-screenshots/critique-*.png`），定案缺陷清单（零品牌色/30 处 text-[10px]/六处加载文字/aria 3 处）与 accent 取值 = 站标印章红 #A6402F（SiteMark「家族记号成套」）。验证：截图存 `gui-test-screenshots/`。
+- [x] 3.2 `@theme` 落 accent 四 token（#A6402F + strong/soft/wash，dark 媒体覆盖提亮），31 处主操作/选中态换 `bg-accent`、4 处链接换 accent。验证：走查 computed backgroundColor = rgb(166,64,47)、light/dark 双模式眼见（p2-accent-*.png）。
+- [x] 3.3 字号阶梯：text-[10px] 29 处全部升至 text-[11px]（辅注/徽章），SiteMark 阶梯行 1 处豁免（家族印章记号规范，非正文）。验证：`grep 'text-\[10px\]'` 仅剩 SiteMark。
+- [x] 3.4 骨架屏替换加载文字（Skeleton.jsx Lines/Cards 两形态：ChatView/BundleView/OpsView×2/DeployWizard；CatalogView 计数行是瞬态状态文字保持）+ 16 个真裸输入补 aria-label（label 包裹内免）。验证：走查 DOM 断言「无 <11px 文本」「输入全命名」双 yes。
+- [x] 3.5 Phase 2 走查全过（截图 p2-final-*.png：accent 暗浅双模式、每日图富数据趋势）+ 构建绿。
 
 ## 4. 出片与验收
 

@@ -46,7 +46,7 @@ export function ConsoleView({ focusSlug } = {}) {
         )}
         <button
           onClick={() => loginLogto().catch((e) => alert(String(e?.message || e)))}
-          className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm"
+          className="w-full px-3 py-2.5 rounded-lg bg-accent text-white text-sm"
         >
           使用寻数账号登录（Logto）
         </button>
@@ -87,7 +87,7 @@ export function ConsoleView({ focusSlug } = {}) {
               onClick={() => setTab(key)}
               className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
                 tab === key
-                  ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent"
+                  ? "bg-accent text-white border-transparent"
                   : "border-slate-300 dark:border-slate-700 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100"
               }`}
               data-testid={`console-tab-${key}`}

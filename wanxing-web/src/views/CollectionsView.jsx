@@ -38,7 +38,7 @@ const EntryRow = ({ entry, agentsFor, onChange, onRemove }) => {
           {(agents ?? []).map((a) => <option key={a.id} value={a.id}>{a.name ?? a.id}</option>)}
         </select>
         {entry.agentId && (
-          <span className="text-[10px] text-slate-400">{(agents ?? []).find((a) => a.id === entry.agentId)?.modelWhitelist?.join(" · ") ?? "模型域：按计费键车道"}</span>
+          <span className="text-[11px] text-slate-400">{(agents ?? []).find((a) => a.id === entry.agentId)?.modelWhitelist?.join(" · ") ?? "模型域：按计费键车道"}</span>
         )}
         <button onClick={onRemove} className="ml-auto px-2 py-0.5 rounded border border-rose-300 text-rose-600 dark:text-rose-300 text-xs">移除</button>
       </div>
@@ -235,7 +235,7 @@ export function CollectionsView() {
       <div className="max-w-sm mx-auto mt-16 space-y-4">
         <h1 className="text-xl font-semibold">我的集合</h1>
         <button onClick={() => loginLogto().catch((e) => alert(String(e?.message || e)))}
-          className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm">
+          className="w-full px-3 py-2.5 rounded-lg bg-accent text-white text-sm">
           使用寻数账号登录（Logto）
         </button>
       </div>
@@ -267,7 +267,7 @@ export function CollectionsView() {
               <option value="private">私有（组织分组）</option>
               <option value="public">公开（可部署套装）</option>
             </select>
-            <button disabled={busy || !draft.name.trim()} className="px-3 py-2 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+            <button disabled={busy || !draft.name.trim()} className="px-3 py-2 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
               新建集合
             </button>
           </form>
@@ -325,7 +325,7 @@ export function CollectionsView() {
                   <option key={p.id} value={p.id}>{p.name}（v{p.version}{p.deployed ? " · 在役" : ""}）</option>
                 ))}
               </select>
-              <button onClick={addFromPicker} disabled={!pickerId} className="px-2 py-1 rounded bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">添加</button>
+              <button onClick={addFromPicker} disabled={!pickerId} className="px-2 py-1 rounded bg-accent text-white text-xs disabled:opacity-40">添加</button>
             </div>
             {entryDraft.length === 0 && <div className="text-xs text-slate-500">空集合——从上方添加 pack 引用。</div>}
             {entryDraft.map((entry, i) => (
@@ -338,7 +338,7 @@ export function CollectionsView() {
               />
             ))}
             <div className="flex gap-2 items-center">
-              <button disabled={busy} onClick={saveEntries} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+              <button disabled={busy} onClick={saveEntries} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
                 {busy ? "保存中…" : "保存条目"}
               </button>
               {note && <span className="text-xs text-amber-600 dark:text-amber-400" data-testid="collection-note">{note}</span>}

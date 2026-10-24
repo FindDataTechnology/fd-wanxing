@@ -79,7 +79,7 @@ export function DevicesView() {
         <button
           onClick={() => void mint()}
           disabled={busy}
-          className="text-xs px-3 py-1.5 rounded-full bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+          className="text-xs px-3 py-1.5 rounded-full bg-accent text-white"
           data-testid="devices-mint"
         >
           生成配对码

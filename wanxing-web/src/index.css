@@ -1,7 +1,29 @@
 @import "tailwindcss";
 
+/* polish-wanxing-console D5: the Wanxing accent — the seal red of the site
+   mark (SiteMark SEAL_RED #A6402F, "家族记号成套"). The dark-theme step
+   lightens so filled controls keep contrast on near-black. Applied to
+   primary actions, selected states, and links only — not a site recolor. */
+@theme {
+  --color-accent: #a6402f;
+  --color-accent-strong: #8f3425;
+  --color-accent-soft: #c2604c;
+  --color-accent-wash: #f6eae7;
+}
+
 :root {
   color-scheme: light dark;
+}
+
+/* Tailwind v4 ships dark: via the media query by default, so mirror the
+   override there — a `.dark` class would never apply. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-accent: #d98a77;
+    --color-accent-strong: #e8a894;
+    --color-accent-soft: #b06a58;
+    --color-accent-wash: #2a1512;
+  }
 }
 
 body {

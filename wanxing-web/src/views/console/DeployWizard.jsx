@@ -3,6 +3,7 @@
 // panel's stepped flow. Draft state lives across steps; a refusal on the
 // billing step keeps everything entered.
 import { useEffect, useState } from "react";
+import { SkeletonLines } from "../../components/Skeleton.jsx";
 
 // ── Deployment wizard (add-deploy-wizard, M4①) ──────────────────────────────
 //
@@ -245,9 +246,9 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
               {share?.allowance && <div className="text-slate-500">部署者额度：余 {share.allowance.remainingMinutes}/{share.allowance.limitMinutes} 分钟</div>}
             </div>
             <div className="border-t border-slate-100 dark:border-slate-900 pt-2 space-y-1.5">
-              <div className="text-[10px] text-slate-400">开放对话：设置一次性额度（访客对话按分钟实扣你的计费键，扣完即止）。</div>
+              <div className="text-[11px] text-slate-400">开放对话：设置一次性额度（访客对话按分钟实扣你的计费键，扣完即止）。</div>
               <div className="flex gap-2 items-center">
-                <input
+                <input aria-label="一次性额度（分钟，0=关闭）"
                   value={alwDraft[slug] ?? ""}
                   onChange={(e) => setAlwDraft((p) => ({ ...p, [slug]: e.target.value }))}
                   inputMode="numeric"
@@ -255,12 +256,12 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                   className={`${inputCls} w-32`}
                   data-testid={`wizard-allowance-${slug}`}
                 />
-                <button onClick={() => saveAllowance(slug)} className="px-2 py-1 rounded bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">设置额度</button>
+                <button onClick={() => saveAllowance(slug)} className="px-2 py-1 rounded bg-accent text-white text-xs">设置额度</button>
                 {alwNote[slug] && <span className="text-xs text-amber-600 dark:text-amber-400">{alwNote[slug]}</span>}
               </div>
-              <div className="text-[10px] text-slate-400">API 调用者：把 email 加进允许清单（私有 agent 的调用门）。</div>
+              <div className="text-[11px] text-slate-400">API 调用者：把 email 加进允许清单（私有 agent 的调用门）。</div>
               <div className="flex gap-2 items-center">
-                <input
+                <input aria-label="API 调用者邮箱"
                   value={callerEmail[slug] ?? ""}
                   onChange={(e) => setCallerEmail((p) => ({ ...p, [slug]: e.target.value }))}
                   placeholder="调用者邮箱"
@@ -284,7 +285,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
       </div>
       <div className="flex items-center gap-1 text-xs">
         {STEP_LABELS.map((label, i) => (
-          <span key={label} className={`px-2 py-0.5 rounded-full ${step === i + 1 ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900" : "bg-slate-100 dark:bg-slate-800 text-slate-500"}`}>
+          <span key={label} className={`px-2 py-0.5 rounded-full ${step === i + 1 ? "bg-accent text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500"}`}>
             {i + 1}. {label}
           </span>
         ))}
@@ -303,7 +304,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
               <button
                 key={key}
                 onClick={() => switchSource(key)}
-                className={`text-xs px-2.5 py-1 rounded-full border ${source === key ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
+                className={`text-xs px-2.5 py-1 rounded-full border ${source === key ? "bg-accent text-white border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
                 data-testid={`wizard-source-${key}`}
               >
                 {label}
@@ -332,7 +333,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
           {source === "dir" && (
             <div className="space-y-1">
               {dirErr && <div className="text-xs text-amber-600 dark:text-amber-400">目录读取失败（{dirErr}）<button onClick={loadDirectory} className="underline ml-1">重试</button></div>}
-              {!dirErr && !dirPacks && <div className="text-xs text-slate-500">目录加载中…</div>}
+              {!dirErr && !dirPacks && <SkeletonLines rows={2} />}
               {dirPacks && (dirPacks.packs ?? []).filter((p) => p.deployable).length === 0 && (
                 <div className="text-xs text-slate-500">目录里暂无可部署的 pack（公开且含 serving 契约）。</div>
               )}
@@ -391,7 +392,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="wizard-multi-agent-note">{ONE_KEY_ONE_AGENT_NOTE}</div>
           )}
           <div className="flex gap-2 items-center">
-            <input
+            <input aria-label="部署版本（空=最新）"
               value={version}
               onChange={(e) => setVersion(e.target.value)}
               inputMode="numeric"
@@ -400,7 +401,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             />
             <button
               onClick={() => picked.size > 0 ? setStep(3) : setErr("至少勾选一个 agent 才能继续")}
-              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs"
+              className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs"
             >
               下一步：配置
             </button>
@@ -435,7 +436,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                         {a.modelWhitelist.map((m) => <option key={m} value={m} />)}
                       </datalist>
                     )}
-                    <span className="block text-[10px] text-slate-400">{a.modelWhitelist ? `合法模型：${a.modelWhitelist.join(" · ")}` : "未声明白名单——按计费键车道校验"}</span>
+                    <span className="block text-[11px] text-slate-400">{a.modelWhitelist ? `合法模型：${a.modelWhitelist.join(" · ")}` : "未声明白名单——按计费键车道校验"}</span>
                   </label>
                   <label className="space-y-1">
                     <span className="text-slate-500">回合预算（分钟，留空=声明默认）</span>
@@ -447,7 +448,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                       className={`${inputCls} w-full`}
                       data-testid={`wizard-budget-${id}`}
                     />
-                    <span className="block text-[10px] text-slate-400">C1 硬停：每个回合的分钟上限</span>
+                    <span className="block text-[11px] text-slate-400">C1 硬停：每个回合的分钟上限</span>
                   </label>
                   <label className="space-y-1">
                     <span className="text-slate-500">工作节奏</span>
@@ -459,7 +460,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                     >
                       {RHYTHM_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
                     </select>
-                    <span className="block text-[10px] text-slate-400">驻留 agent 的自主唤醒计划</span>
+                    <span className="block text-[11px] text-slate-400">驻留 agent 的自主唤醒计划</span>
                   </label>
                 </div>
                 {c.rhythmKey === "custom" && (
@@ -476,7 +477,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             );
           })}
           <div className="flex gap-2 items-center">
-            <button onClick={() => setStep(4)} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs">下一步：计费与通知</button>
+            <button onClick={() => setStep(4)} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs">下一步：计费与通知</button>
             <button onClick={() => setStep(2)} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs">上一步</button>
           </div>
         </div>
@@ -499,7 +500,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                 className={`${inputCls} w-full`}
                 data-testid="wizard-billing-key"
               />
-              <span className="block text-[10px] text-slate-400">
+              <span className="block text-[11px] text-slate-400">
                 在 <a href={BILLING_PANEL_URL} target="_blank" rel="noreferrer" className="underline">计费面板</a> 用寻数账号登录后创建；部署的回合按分钟实扣此键。
               </span>
             </label>
@@ -512,7 +513,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
                 className={`${inputCls} w-full`}
                 data-testid="wizard-notify"
               />
-              <span className="block text-[10px] text-slate-400">agent 的报告经此通道送达（运维配置的通道名）</span>
+              <span className="block text-[11px] text-slate-400">agent 的报告经此通道送达（运维配置的通道名）</span>
             </label>
           </div>
           {picked.size > 1 && (
@@ -544,7 +545,7 @@ export function DeployWizard({ packs, loadMyPacks, authFetch }) {
             <button
               disabled={busy || !billingKey}
               onClick={submit}
-              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+              className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40"
               data-testid="wizard-submit"
             >
               {busy ? "部署中…" : "部署为服务"}

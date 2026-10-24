@@ -169,7 +169,7 @@ export function CatalogView() {
         <a
           href={`#/chat/${encodeURIComponent(a.slug)}`}
           data-testid={`chat-cta-${a.slug}`}
-          className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs"
+          className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-accent text-white text-xs"
         >
           对话
         </a>
@@ -245,12 +245,12 @@ export function CatalogView() {
           data-testid="catalog-search"
           className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
         />
-        <span className="text-sm text-slate-500" data-testid="catalog-total">{loading ? "加载中…" : `共 ${total} 个`}</span>
+        <span className="text-sm text-slate-500" data-testid="catalog-total">{loading ? "读取中…" : `共 ${total} 个`}</span>
       </div>
       <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="catalog-chips">
         <button
           onClick={() => pickCategory("")}
-          className={`text-xs px-2.5 py-1 rounded-full border ${!category && !featured && !cluster ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
+          className={`text-xs px-2.5 py-1 rounded-full border ${!category && !featured && !cluster ? "bg-accent text-white border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
           data-testid="chip-all"
         >
           全部{facets ? ` ${facets.total}` : ""}

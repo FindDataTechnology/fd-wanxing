@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { loginLogto, useAuth } from "../auth.js";
 import { BundleDeployDialog } from "../components/BundleDeployDialog.jsx";
+import { SkeletonCards } from "../components/Skeleton.jsx";
 
 export function BundleView({ focusSlug: focusId } = {}) {
   const auth = useAuth();
@@ -33,7 +34,7 @@ export function BundleView({ focusSlug: focusId } = {}) {
       <div className="max-w-lg mx-auto mt-16 text-center space-y-2" data-testid="bundle-notfound">
         <div className="text-2xl">🛖</div>
         <div className="text-sm text-slate-500">套装不存在或未公开——链接可能已失效。</div>
-        <a href="#/catalog" className="text-sky-600 dark:text-sky-400 underline text-sm">去目录逛逛</a>
+        <a href="#/catalog" className="text-accent dark:text-accent underline text-sm">去目录逛逛</a>
       </div>
     );
   }
@@ -44,7 +45,7 @@ export function BundleView({ focusSlug: focusId } = {}) {
       </div>
     );
   }
-  if (!doc) return <div className="mt-16 text-center text-sm text-slate-500">套装加载中…</div>;
+  if (!doc) return <div className="mt-16"><SkeletonCards cards={1} /></div>;
 
   const c = doc.collection;
   return (
@@ -81,7 +82,7 @@ export function BundleView({ focusSlug: focusId } = {}) {
         <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-4 text-center space-y-2" data-testid="bundle-login-prompt">
           <div className="text-sm text-slate-500">登录后可用你自己的计费键一键部署整个套装。</div>
           <button onClick={() => loginLogto({ returnTo: `#/bundle/${c.id}` }).catch((e) => alert(String(e?.message || e)))}
-            className="px-3 py-2 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm">
+            className="px-3 py-2 rounded-lg bg-accent text-white text-sm">
             使用寻数账号登录（Logto）
           </button>
         </div>

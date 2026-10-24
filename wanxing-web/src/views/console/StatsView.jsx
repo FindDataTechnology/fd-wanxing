@@ -154,7 +154,7 @@ function StatementCard() {
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="my-statement-panel">
       <h3 className="font-semibold">API 调用对账</h3>
-      <div className="text-[10px] text-slate-400">即原「我的套餐」——你作为 API 调用方的对账单：套餐是平台发放的包月额度（找运维开通），无套餐时按调用键余额逐分钟实扣。</div>
+      <div className="text-[11px] text-slate-400">即原「我的套餐」——你作为 API 调用方的对账单：套餐是平台发放的包月额度（找运维开通），无套餐时按调用键余额逐分钟实扣。</div>
       {stmtErr && <div className="text-xs text-amber-600 dark:text-amber-400">{stmtErr}</div>}
       {stmt && (
         <div className="text-xs text-slate-500 space-y-1" data-testid="my-statement-body">
@@ -182,7 +182,7 @@ function StatementCard() {
                     type="button"
                     key={n}
                     onClick={() => setDraft({ ...draft, limit: String(n) })}
-                    className={`px-2 py-0.5 rounded-full border ${String(n) === draft.limit ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
+                    className={`px-2 py-0.5 rounded-full border ${String(n) === draft.limit ? "bg-accent text-white border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
                     data-testid={`plan-request-suggest-${n}`}
                   >
                     {n} 分钟
@@ -190,7 +190,7 @@ function StatementCard() {
                 ))}
               </div>
               <div className="flex gap-2 flex-wrap items-center">
-                <input
+                <input aria-label="自定义分钟上限"
                   value={draft.limit}
                   onChange={(e) => setDraft({ ...draft, limit: e.target.value })}
                   inputMode="numeric"
@@ -198,7 +198,7 @@ function StatementCard() {
                   className={`w-36 font-mono ${inputCls}`}
                   data-testid="plan-request-limit"
                 />
-                <input
+                <input aria-label="申请备注（可选）"
                   value={draft.note}
                   onChange={(e) => setDraft({ ...draft, note: e.target.value })}
                   maxLength={200}
@@ -208,14 +208,14 @@ function StatementCard() {
                 />
                 <button
                   disabled={reqBusy}
-                  className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40"
+                  className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40"
                   data-testid="plan-request-submit"
                 >
                   {reqBusy ? "提交中…" : "提交申请"}
                 </button>
               </div>
               {reqNote && <div className="text-amber-600 dark:text-amber-400" data-testid="plan-request-feedback">{reqNote}</div>}
-              <div className="text-[10px] text-slate-400">申请只是把「找运维开通」搬进控制台：由运维审批、批准即经发放路径生效，不从调用键余额扣款；范围 {PLAN_REQUEST_MIN}–{PLAN_REQUEST_MAX} 分钟，有未决申请时也可再提。</div>
+              <div className="text-[11px] text-slate-400">申请只是把「找运维开通」搬进控制台：由运维审批、批准即经发放路径生效，不从调用键余额扣款；范围 {PLAN_REQUEST_MIN}–{PLAN_REQUEST_MAX} 分钟，有未决申请时也可再提。</div>
             </form>
           </details>
           <div className="space-y-1" data-testid="plan-requests-mine">
@@ -289,7 +289,7 @@ export function StatsView() {
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`text-xs px-2.5 py-1 rounded-full border ${days === d ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
+              className={`text-xs px-2.5 py-1 rounded-full border ${days === d ? "bg-accent text-white border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-500"}`}
               data-testid={`stats-days-${d}`}
             >
               {d === 1 ? "24h" : `${d}天`}

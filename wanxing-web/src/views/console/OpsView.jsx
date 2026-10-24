@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
 import { fmtAgo, fmtMs, planRequestBadge } from "./shared.jsx";
+import { SkeletonLines, SkeletonCards } from "../../components/Skeleton.jsx";
 
 const fmtWhen = (ms) => (ms ? new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false }) : "");
 
@@ -219,7 +220,7 @@ export function OpsView() {
           </div>
         </>
       ) : (
-        <div className="text-sm text-slate-500">观测面加载中…</div>
+        <SkeletonCards cards={2} />
       )}
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-2" data-testid="cells-panel">
@@ -254,7 +255,7 @@ export function OpsView() {
           }}
           className="flex gap-2"
         >
-          <input
+          <input aria-label="agent slug"
             value={agent}
             onChange={(e) => setAgent(e.target.value)}
             placeholder="agent slug（见目录页，如 packs-xxxx-agent）"
@@ -290,7 +291,7 @@ export function OpsView() {
             )}
           </h3>
           {queueErr && <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="plan-requests-queue-error">{queueErr}</div>}
-          {!queue && !queueErr && <div className="text-xs text-slate-400">{planErr ? "审批需要 ops 服务令牌。" : "加载中…"}</div>}
+          {!queue && !queueErr && <div className="text-xs text-slate-400">{planErr ? "审批需要 ops 服务令牌。" : <SkeletonLines rows={2} />}</div>}
           {queue && pendingRows.length === 0 && <div className="text-xs text-slate-400">没有待审申请。</div>}
           {pendingRows.map((r) => (
             <div key={r.ref} className="text-xs flex gap-2 items-center flex-wrap border-t border-slate-100 dark:border-slate-800 pt-2" data-testid="plan-request-queue-row" data-ref={r.ref}>
@@ -298,7 +299,7 @@ export function OpsView() {
               <span>申请 <b>{r.limitMinutes}</b> 分钟</span>
               {r.note ? <span className="text-slate-400">「{r.note}」</span> : null}
               <span className="text-slate-400">{fmtWhen(r.createdAt)}</span>
-              <input
+              <input aria-label="审批备注（可选）"
                 value={qNotes[r.ref] ?? ""}
                 onChange={(e) => setQNotes({ ...qNotes, [r.ref]: e.target.value })}
                 maxLength={200}
@@ -340,33 +341,33 @@ export function OpsView() {
               </div>
             </details>
           )}
-          <div className="text-[10px] text-slate-400">批准=经套餐发放路径落上限（与下方手动发放是同一条路，列表随即出现/更新）；驳回只记录备注、不发放。</div>
+          <div className="text-[11px] text-slate-400">批准=经套餐发放路径落上限（与下方手动发放是同一条路，列表随即出现/更新）；驳回只记录备注、不发放。</div>
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plans-panel">
           <h3 className="font-semibold">套餐管理 · ops</h3>
           {planErr && <div className="text-xs text-amber-600 dark:text-amber-400">{planErr}</div>}
           <form onSubmit={savePlan} className="flex gap-2 items-center flex-wrap">
-            <input
+            <input aria-label="调用者邮箱"
               value={planDraft.email}
               onChange={(e) => setPlanDraft({ ...planDraft, email: e.target.value })}
               placeholder="调用者邮箱（sub2api 账户）"
               className="w-56 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
             />
-            <input
+            <input aria-label="分钟上限"
               value={planDraft.limit}
               onChange={(e) => setPlanDraft({ ...planDraft, limit: e.target.value })}
               inputMode="numeric"
               placeholder="分钟上限"
               className="w-28 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
             />
-            <input
+            <input aria-label="备注（可选）"
               value={planDraft.note}
               onChange={(e) => setPlanDraft({ ...planDraft, note: e.target.value })}
               placeholder="备注（可选）"
               className="w-40 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
             />
-            <button disabled={planBusy} className="px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs disabled:opacity-40">
+            <button disabled={planBusy} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
               {planBusy ? "保存中…" : "发放/调整"}
             </button>
           </form>
@@ -383,7 +384,7 @@ export function OpsView() {
             </div>
           )}
           {plans && (plans.plans ?? []).length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
-          <div className="text-[10px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
+          <div className="text-[11px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
         </div>
       </div>
     </div>

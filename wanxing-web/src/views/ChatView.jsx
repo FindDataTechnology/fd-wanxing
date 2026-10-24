@@ -7,6 +7,7 @@
 // pasted sk- key turns subsequent turns into ordinary API-lane calls.
 import { useEffect, useRef, useState } from "react";
 import { authFetch, loginLogto, useAuth } from "../auth.js";
+import { SkeletonLines } from "../components/Skeleton.jsx";
 
 const histKey = (slug) => `wx-chat-history:${slug}`;
 const ctxKey = (slug) => `wx-chat-ctx:${slug}`;
@@ -271,7 +272,7 @@ export function ChatView({ focusSlug } = {}) {
                 alert(String(e?.message || e)),
               )
             }
-            className="w-full px-3 py-2.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm"
+            className="w-full px-3 py-2.5 rounded-lg bg-accent text-white text-sm"
           >
             使用寻数账号登录（Logto）
           </button>
@@ -281,7 +282,7 @@ export function ChatView({ focusSlug } = {}) {
           状态读取失败（{statusErr}）——请稍后再试。
         </div>
       ) : !status ? (
-        <div className="text-sm text-slate-500">加载中…</div>
+        <SkeletonLines rows={2} />
       ) : paused ? (
         <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
           该 agent 已暂停，暂不可对话。
@@ -319,7 +320,7 @@ export function ChatView({ focusSlug } = {}) {
                 key={i}
                 className={
                   m.role === "user"
-                    ? "ml-auto max-w-[85%] rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-3 py-2 whitespace-pre-wrap"
+                    ? "ml-auto max-w-[85%] rounded-lg bg-accent text-white px-3 py-2 whitespace-pre-wrap"
                     : m.role === "error"
                       ? "max-w-[85%] rounded-lg border border-amber-400 text-amber-700 dark:text-amber-300 px-3 py-2"
                       : m.role === "system"
@@ -346,7 +347,7 @@ export function ChatView({ focusSlug } = {}) {
               placeholder={ownKeyMode ? `以你的调用键调用 ${agentName}…` : `向 ${agentName} 说点什么…`}
               className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
             />
-            <button disabled={sending} className="px-4 py-2 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm disabled:opacity-40">
+            <button disabled={sending} className="px-4 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-40">
               {sending ? "回复中…" : "发送"}
             </button>
           </form>

@@ -164,7 +164,7 @@ export function App() {
       href={h}
       className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
         (VIEWS[viewKey] ? viewKey === h : h === "#/")
-          ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+          ? "bg-accent text-white"
           : "hover:bg-slate-200 dark:hover:bg-slate-800"
       }`}
     >
