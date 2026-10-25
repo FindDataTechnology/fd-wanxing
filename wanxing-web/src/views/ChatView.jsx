@@ -335,7 +335,7 @@ export function ChatView({ focusSlug } = {}) {
           </div>
 
           {Array.isArray(matters) && matters.length > 0 && (
-            <details className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-sm" data-testid="chat-matters-panel">
+            <details open className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-sm" data-testid="chat-matters-panel">
               <summary className="cursor-pointer text-xs text-slate-500 select-none">
                 我的事项（{matters.length}）——接待转给主人的问题与回复
               </summary>
