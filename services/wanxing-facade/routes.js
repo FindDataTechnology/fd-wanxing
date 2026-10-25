@@ -350,6 +350,18 @@ export function registerWanxingRoutes(app, {
     agentState: (slug) => face.agentState(slug),
     resolveDeployment,
     forwardHeaders,
+    // Visitor matters (matter-threads V2): the chat page's "我的事项" panel
+    // reads the visitor's own matters through the packs internal surface —
+    // scoped by the SAME opaque visitor scope the chat turns carry, so the
+    // panel and the reception's tool face see exactly the same set.
+    mattersList: async ({ packId, agentId, visitorScope }) => {
+      const r = await packsInternalCall(
+        `/api/packs/internal/matters/${encodeURIComponent(packId)}/${encodeURIComponent(agentId)}?visitor_scope=${encodeURIComponent(visitorScope)}`,
+      );
+      const doc = await r.json().catch(() => null);
+      if (!r.ok) throw Object.assign(new Error(doc?.error || `matters ${r.status}`), { status: r.status });
+      return doc.matters ?? [];
+    },
     hostSettle: async ({ packId, agentId, usageId, minutes, rateUsdPerMin }) => {
       const r = await packsInternalCall(
         `/api/packs/internal/deployments/${encodeURIComponent(packId)}/${encodeURIComponent(agentId)}/host-settle`,

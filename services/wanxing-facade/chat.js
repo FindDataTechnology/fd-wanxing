@@ -92,6 +92,7 @@ export function createChatFace({
   forwardHeaders,
   config, // { agentUrlFor(agentPath) }
   hostSettle = null, // ({ packId, agentId, usageId, minutes, rateUsdPerMin }) → { settled, duplicate } | throws (D5)
+  mattersList = null, // ({ packId, agentId, visitorScope }) → matter rows (visitor-scoped; V2 panel)
   sub2api = null, // the platform's admin client — subsidy settlement resolves WANXING_SUBSIDY_KEY's holder
   subsidyKey = "", // the platform settlement key value (env; never logged)
   subsidyUserId = null, // dedicated subsidy account id (env WANXING_SUBSIDY_USER_ID — wins over the key: the dedicated account needs no key credential at all, upstream has no admin-side key minting)
@@ -344,6 +345,38 @@ export function createChatFace({
     // ── Embed cold-start config (embed lane D5): the widget's first fetch.
     // Public and secret-free — chatability, anonymous availability, agent
     // display fields. No quota internals, no subsidy state, no keys.
+    // ── The visitor's own matters (matter-threads V2 panel): the same
+    // visitor scope the chat turns carry, so the panel shows exactly what the
+    // reception's tool face would show — no more, no less. Visitor-gated
+    // (no login → same 401 as the turn surface); slug-scoped by the same
+    // deployment resolution. Owner fields (deployer email) never leave.
+    app.get("/api/wanxing/v1/chat/:agentSlug/matters", async (req, res) => {
+      const slug = req.params.agentSlug;
+      const visitor = await verifyVisitor(req);
+      if (!visitor) {
+        return res.status(401).json({ error: { code: "VISITOR_AUTH_REQUIRED", message: "a verified tenant login is required" } });
+      }
+      if (!mattersList) return res.status(503).json({ error: { code: "MATTERS_UNAVAILABLE", message: "the matters plane is not configured" } });
+      const dep = await resolveDeployment(slug);
+      if (!dep) return res.json({ matters: [] });
+      try {
+        const visitorScope = sha256(`visitor:${visitor.sub}`).slice(0, 32);
+        const rows = await mattersList({ packId: dep.packId, agentId: dep.agentId, visitorScope });
+        res.json({
+          matters: rows.map((m) => ({
+            id: m.id,
+            summary: m.summary,
+            status: m.status,
+            updatedAt: m.updatedAt,
+            lastReply: [...(m.timeline ?? [])].reverse().find((e) => e.kind === "reply")?.text ?? null,
+          })),
+        });
+      } catch (e) {
+        note("refused", slug, { stage: "matters", code: "MATTERS_LIST_FAILED", channel: "chat", caller: visitor.email || visitor.sub });
+        res.status(502).json({ error: { code: "MATTERS_LIST_FAILED", message: `matters list failed (${String(e?.message || e)})` } });
+      }
+    });
+
     app.get("/api/wanxing/v1/chat/:agentSlug/embed-config", async (req, res) => {
       let state;
       try {
@@ -572,11 +605,17 @@ export function createChatFace({
         if (holdsSlot) core.releaseSlot(caller.userId, slug);
       };
 
+      // Visitor scope (matter-threads visitor boundary): the logged-in
+      // visitor's opaque scope rides message metadata — the runner prefers it
+      // over its session derivation, so the same visitor sees their matters
+      // across conversations and different visitors never collide. Hashed
+      // here; the raw sub never travels to the serving plane.
+      const visitorScope = sha256(`visitor:${visitor.sub}`).slice(0, 32);
       const rpcBody = (m) => JSON.stringify({
         jsonrpc: "2.0",
         id,
         method: m,
-        params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
+        params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId, metadata: { visitor_scope: visitorScope } } },
       });
 
       try {

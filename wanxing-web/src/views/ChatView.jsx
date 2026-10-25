@@ -109,6 +109,26 @@ export function ChatView({ focusSlug } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, auth.token]);
 
+  // My matters (matter-threads V2 panel): the visitor's own escalation threads
+  // on THIS agent — same visitor scope the chat turns carry, so the panel and
+  // the reception agree. Refreshes after every turn (a matter may have been
+  // opened) and on mount.
+  const [matters, setMatters] = useState(null);
+  const refreshMatters = () => {
+    if (!slug || !auth.token) return;
+    authFetch(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/matters`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => setMatters(d.matters ?? []))
+      .catch(() => setMatters(null));
+  };
+  useEffect(() => {
+    refreshMatters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, auth.token]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
@@ -229,6 +249,7 @@ export function ChatView({ focusSlug } = {}) {
       finalBase();
       if (frameErr) setNotice("本回合以错误告终——详见上方消息。");
       refreshStatus();
+      refreshMatters();
     } catch (e) {
       setNotice(String(e?.message || e));
     } finally {
@@ -312,6 +333,41 @@ export function ChatView({ focusSlug } = {}) {
               )
             )}
           </div>
+
+          {Array.isArray(matters) && matters.length > 0 && (
+            <details className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-sm" data-testid="chat-matters-panel">
+              <summary className="cursor-pointer text-xs text-slate-500 select-none">
+                我的事项（{matters.length}）——接待转给主人的问题与回复
+              </summary>
+              <div className="mt-2 space-y-2">
+                {matters.map((m) => (
+                  <div key={m.id} className="border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2" data-testid={`chat-matter-${m.id}`}>
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <span
+                        className={
+                          m.status === "open"
+                            ? "px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                            : m.status === "responded"
+                              ? "px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"
+                              : "px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800"
+                        }
+                      >
+                        {m.status === "open" ? "待回应" : m.status === "responded" ? "已回应" : "已关闭"}
+                      </span>
+                      <code className="truncate">{m.id}</code>
+                      <span className="ml-auto">{new Date(m.updatedAt).toLocaleString()}</span>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap">{m.summary}</p>
+                    {m.lastReply && (
+                      <p className="mt-1 text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
+                        主人回应：{m.lastReply}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 h-[50vh] overflow-y-auto space-y-2 text-sm">
             {messages.length === 0 && <div className="text-slate-400">开始你的第一句——历史只保存在本机浏览器。</div>}
