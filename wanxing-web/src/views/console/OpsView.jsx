@@ -49,6 +49,29 @@ export function OpsView() {
     };
   }, []);
 
+  // 壹座舰队镜像 (add-fleet-cockpit-projection): read-only projection from the
+  // paas cell sampler's second lane. An observer that predates the read face
+  // (404) or an empty mirror HIDES the whole section — never render stale-or-
+  // absent as live; decommissioning is as quiet as the endpoint disappearing.
+  const [mirror, setMirror] = useState(null); // null = hide section
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      authFetch("/api/fleet/v1/cell-fleets")
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`cell-fleets HTTP ${r.status}`);
+          return r.json();
+        })
+        .then((d) => live && setMirror(typeof d?.cells === "object" && d.cells !== null ? d.cells : {}))
+        .catch(() => live && setMirror(null));
+    load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+
   useEffect(() => {
     if (!agent) return;
     let live = true;
@@ -245,6 +268,72 @@ export function OpsView() {
           </div>
         ))}
       </div>
+
+      {mirror && Object.keys(mirror).length > 0 && (
+        <div
+          className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-3"
+          data-testid="fleet-mirror-section"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-semibold">壹座舰队镜像 <span className="text-xs font-normal text-slate-400">（30s/60s 采样只读 · 动作回壹座驾驶舱）</span></div>
+          </div>
+          {Object.entries(mirror).map(([cellId, c]) => (
+            <div key={cellId} className="rounded-lg border border-slate-100 dark:border-slate-900 p-3 space-y-2">
+              <div className="text-xs text-slate-500 flex flex-wrap gap-x-3 items-baseline">
+                <span className="font-mono truncate max-w-72" title={cellId}>{cellId.replace(/^cell:/, "")}</span>
+                <span>样龄 {fmtAgo(Number(c.ageMs ?? 0))}</span>
+                {c.stale && (
+                  <span className="px-1.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid="fleet-mirror-stale">样龄超限（快照超过 3×tick）</span>
+                )}
+              </div>
+              {(c.fleets ?? []).map((f) => (
+                <div key={f.id} className="space-y-1.5 pb-2 border-b border-slate-100 dark:border-slate-900 last:border-b-0" data-testid={`fleet-mirror-fleet-${f.id}`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a
+                      className="font-medium underline decoration-dotted underline-offset-4"
+                      href={`https://platform.finddatatech.cloud/fleets/${encodeURIComponent(f.id)}`}
+                      target="_blank" rel="noreferrer"
+                      data-testid="fleet-mirror-link"
+                    >
+                      {f.name}
+                    </a>
+                    <span className="text-xs px-1.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 font-mono">{f.state}</span>
+                    {Object.entries(f.counts ?? {})
+                      .filter(([k, v]) => ((k === "onDuty" || k === "missing" || k === "failing" || k === "vacant" || k === "passive" || k === "paused") && Number(v) > 0) || k === "total")
+                      .map(([k, v]) => (
+                        <span key={k} className={`text-xs px-1.5 rounded-full ${k === "missing" || k === "failing" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+                          {k} {Number(v)}
+                        </span>
+                      ))}
+                    {Number(f.openDecisions?.count ?? 0) > 0 && (
+                      <span className="text-xs px-1.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid="fleet-mirror-decisions">
+                        待拍板 {f.openDecisions.count} 件
+                      </span>
+                    )}
+                  </div>
+                  {(f.openDecisions?.top ?? []).map((d, i) => (
+                    <div key={i} className="text-xs flex flex-wrap gap-x-2 items-baseline text-slate-600 dark:text-slate-300">
+                      <span className={`px-1 rounded font-mono ${d.severity === "high" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>{d.severity}</span>
+                      <span className="truncate">{d.question}</span>
+                      {d.memberTitle && <span className="text-slate-400">@{d.memberTitle}</span>}
+                      {d.expiresAt && <span className="text-slate-400">{fmtWhen(d.expiresAt)} 过期</span>}
+                    </div>
+                  ))}
+                  {(f.stream ?? []).map((s, i) => (
+                    <div key={i} className="text-xs flex flex-wrap gap-x-2 items-baseline text-slate-500">
+                      <span className="text-slate-400">{s.title}</span>
+                      <span className={`px-1 rounded font-mono ${s.status === "on_duty" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : s.status === "missing" || s.status === "failing" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>{s.status}</span>
+                      {s.at && <span>{fmtWhen(s.at)}</span>}
+                      {s.source && <span className="text-slate-400">[{s.source}]</span>}
+                      {s.summarySnip && <span className="truncate">{s.summarySnip}</span>}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
         <h3 className="font-semibold">单 agent 时间线</h3>

@@ -26,6 +26,12 @@ export const EVENT_KINDS = [
   // cell sampler): periodic snapshots, one per live cell per tick — pure
   // counts, addressed as cell:<userId>.
   "cell_stats",
+  // Fleet cockpit projection (fed by the same paas gateway sampler's second
+  // lane, add-fleet-cockpit-projection): per live cell per tick, one bounded
+  // snapshot ({v:1,sampledAt,fleets:[...]}) of every fleet the cell owner
+  // runs — health counts / open-decision tops / latest report lines, stored
+  // verbatim; the observer never re-derives any of it.
+  "cell_fleets",
 ];
 
 // The mission family (add-mission-board): board synthesis keys off this set.

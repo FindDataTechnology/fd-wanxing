@@ -340,3 +340,46 @@ test("add-fleet-cell-views: unknown kinds still refused (whitelist stays enumera
     srv.close();
   }
 });
+
+// ── add-fleet-cockpit-projection: cell_fleets kind + cell-fleets read face ──
+
+test("projection: cell_fleets ingests, is synthesized latest-wins per cell, staleness flag; unknown kinds still 400", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    // Unknown kind still refuses (whitelist enumerable).
+    const bad = await post(base, { events: [ev({ kind: "cell_fleetz" })] });
+    assert.equal(bad.status, 400);
+
+    const snap = (cell, tag, ts, sampledAt = ts) => ev({
+      id: ulid(ts) + tag, source: "cell-sampler", agent: cell, runner: null, kind: "cell_fleets", ts,
+      payload: { v: 1, sampledAt, fleets: [{ id: `f-${cell}-${tag}`, name: "甲队", state: "active", counts: { onDuty: 2, total: 3 }, openDecisions: { count: 1, top: [{ question: "拍我吗", severity: "high", expiresAt: ts + 3600_000, memberTitle: "CEO" }] }, stream: [{ title: "CEO", status: "on_duty", at: sampledAt, source: "self", metrics: {}, summarySnip: "x" }] }] },
+    });
+    await post(base, {
+      events: [
+        snap("cell:a@x.test", "old", now() - 120_000),
+        snap("cell:a@x.test", "new", now() - 10_000),
+        snap("cell:b@x.test", "stale", now() - 2 * 3600_000),
+      ],
+    });
+
+    const anon = await fetch(`${base}/api/fleet/v1/cell-fleets`);
+    assert.equal(anon.status, 401);
+
+    const r = await fetch(`${base}/api/fleet/v1/cell-fleets`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    assert.equal(r.status, 200);
+    const b = await r.json();
+    assert.deepEqual(Object.keys(b.cells).sort(), ["cell:a@x.test", "cell:b@x.test"]);
+
+    const a = b.cells["cell:a@x.test"];
+    assert.equal(a.fleets[0].id.endsWith("new"), true, "latest snapshot wins");
+    assert.equal(a.stale, false);
+    assert.equal(a.fleets[0].openDecisions.top[0].question, "拍我吗", "payload verbatim");
+
+    const c = b.cells["cell:b@x.test"];
+    assert.equal(c.stale, true, ">3×tick sample age reads stale");
+    assert.ok(c.ageMs >= 2 * 3600_000);
+  } finally {
+    obs.shutdown?.();
+    srv.close();
+  }
+});

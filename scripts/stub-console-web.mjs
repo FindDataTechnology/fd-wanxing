@@ -68,6 +68,42 @@ registerConsoleRoutes(app, {
     if (p.startsWith("/api/fleet/v1/board")) return jsonResponse({ window: "24h", agents_total: 0, states: {}, runners: {}, ingest_lag: [], settled_pending: {}, wake_ms: {}, missions: [], cells: {} });
     if (p.startsWith("/api/fleet/v1/stats/overview")) return jsonResponse({ fleet: [], sub2api: null });
     if (p.startsWith("/api/fleet/v1/stats/daily")) return jsonResponse({ fleet: [] });
+    if (p.startsWith("/api/fleet/v1/cell-fleets")) {
+      // add-fleet-cockpit-projection walk fixtures: CELL_FLEETS_FIXTURE
+      //   full(default): two cells — one fresh with health/decision/stream
+      //                    lines, one 2h-stale
+      //   empty:         200 with zero cells  → section hides
+      //   missing:       404                  → section hides (old observer)
+      const mode = String(process.env.CELL_FLEETS_FIXTURE || "full");
+      if (mode === "missing") return new Response("not found", { status: 404 });
+      if (mode === "empty") return jsonResponse({ window: "6h", cells: {} });
+      const t = Date.now();
+      const mkFleet = (id, name, stale) => ({
+        id, name, state: "active",
+        counts: { onDuty: 2, paused: 1, missing: stale ? 0 : 1, vacant: 0, passive: 1, failing: 0, total: 4 },
+        openDecisions: { count: 2, top: [
+          { question: stale ? "旧快照里的题面" : "双11预算上限要不要放开到 $2000/天？", severity: "high", expiresAt: t + 20 * 3600_000, memberTitle: "CEO" },
+          { question: "开源部 GitHub PAT 谁来申请", severity: "normal", expiresAt: t + 60 * 3600_000, memberTitle: "开源部" },
+        ] },
+        stream: [
+          { title: "CEO", status: "on_duty", at: stale ? t - 2 * 3600_000 : t - 60_000, source: "self", metrics: { patrol_notes: "9/9" }, summarySnip: stale ? "陈旧样例" : "巡视汇总：电商连接器凭据仍缺，投资部拒绝编造 pnl。" },
+          { title: "电商部", status: stale ? "on_duty" : "missing", at: stale ? t - 2 * 3600_000 : t - 1800_000, source: "self", metrics: { sales_week: 0 }, summarySnip: "店铺订单数无法获取，待补岗" },
+        ],
+      });
+      return jsonResponse({
+        window: "6h",
+        cells: {
+          "cell:walker@finddata.tech": {
+            sampledAt: t - 30_000, seen_at: t - 30_000, ageMs: 30_000, stale: false, v: 1,
+            fleets: [mkFleet("fleet_walk_fresh", "公司式舰队", false)],
+          },
+          "cell:leeping@finddata.tech": {
+            sampledAt: t - 2 * 3600_000, seen_at: t - 2 * 3600_000, ageMs: 2 * 3600_000, stale: true, v: 1,
+            fleets: [mkFleet("fleet_walk_stale", "陈旧舰队", true)],
+          },
+        },
+      });
+    }
     return jsonResponse({ rows: [] });
   },
   log: (m) => console.log(`[stub] ${m}`),

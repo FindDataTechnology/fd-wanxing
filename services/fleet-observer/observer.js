@@ -407,6 +407,38 @@ export function createObserver({
     });
   });
 
+  // Fleet cockpit projection (add-fleet-cockpit-projection): freshest
+  // cell_fleets snapshot per cell identity in a bounded raw window. Same
+  // aggregation discipline as the board's cell_stats section — "latest
+  // wins" — but a separate read face so the ops mirror's staleness reads
+  // against the sampler tick, and an older observer + newer console degrade
+  // as 404 (section hides), never render stale-as-live.
+  app.get("/api/fleet/v1/cell-fleets", (req, res) => {
+    if (!requireToken(req, res)) return;
+    const t = now();
+    const hours = Math.min(Math.max(Number(req.query.hours ?? "6") || 6, 1), 48);
+    const rows = store.kindSince(["cell_fleets"], t - hours * 3600_000);
+    const byCell = new Map();
+    for (const e of rows) {
+      const prev = byCell.get(e.agent);
+      if (!prev || e.ts >= prev.ts) byCell.set(e.agent, e);
+    }
+    const staleMs = Math.max(90_000, Number(process.env.CELL_FLEETS_STALE_MS ?? 3 * 60_000));
+    const cells = {};
+    for (const [agent, e] of byCell) {
+      const sampledAt = Number(e.payload?.sampledAt ?? e.ts);
+      cells[agent] = {
+        sampledAt,
+        seen_at: e.ts,
+        ageMs: t - sampledAt,
+        stale: t - sampledAt > staleMs,
+        v: e.payload?.v ?? 1,
+        fleets: Array.isArray(e.payload?.fleets) ? e.payload.fleets : [],
+      };
+    }
+    res.json({ window: `${hours}h`, cells });
+  });
+
   app.get("/api/fleet/v1/agents/:slug/timeline", (req, res) => {
     if (!requireToken(req, res)) return;
     const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit ?? "100"), 10) || 100, 1), 1000);

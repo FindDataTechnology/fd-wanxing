@@ -185,6 +185,12 @@ export function registerConsoleRoutes(app, {
         return `/api/fleet/v1/stats/${p}${q}`;
       }));
     }
+    // Cockpit projection (add-fleet-cockpit-projection): the ops mirror of
+    // paas agent fleets — query string (`hours`) forwards verbatim.
+    app.get("/api/fleet/v1/cell-fleets", fleetForward((req) => {
+      const q = new URL(req.originalUrl, "http://local").search;
+      return `/api/fleet/v1/cell-fleets${q}`;
+    }));
   }
 
   app.get("/api/wanxing/v1/console/deployments", async (req, res) => {
