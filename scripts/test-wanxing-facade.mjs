@@ -791,6 +791,7 @@ function chatHarness({
   store = freshStore(),
   chat = {},
   hostSettleImpl = null,
+  memory = null,
 } = {}) {
   const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1, rpmMax: 1000 } });
   const upstreamCalls = [];
@@ -839,6 +840,7 @@ function chatHarness({
     sub2api: sub,
     subsidyKey: chat.subsidyKey ?? "",
     chat,
+    ...(memory ? { memory } : {}),
     config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
     upstreamFetch: async (url, init) => {
       upstreamCalls.push({ url, init });
@@ -1405,6 +1407,123 @@ test("3.x seat target: message/send deposits to the mailbox with a queued ack; s
       body: JSON.stringify({ ...sendBody("x"), method: "message/stream" }),
     });
     assert.equal(stream.body.error.code, -32601);
+  } finally {
+    await h.close();
+  }
+});
+
+// ── Facade chat memory seam (paas add-unified-memory-and-outputs D7) ────────
+//
+// "facade/智语走 chat-memory 同一条缝": a signed-in visitor's turn carries the
+// block their own 壹座 chat would have produced; an anonymous visitor never
+// touches memory (no email → no root, no request). Every rung degrades open.
+// The seam itself is unit-tested below; the chat face tests prove the wiring
+// reads `visitor.email` and appends to the text actually sent upstream.
+
+const { createMemorySeam } = await import("../services/wanxing-facade/memory.js");
+
+const DIGEST_TEXT = "## 记忆摘要 / Memory digest（fd-memory）\n- 〔L2·reference〕见资料库《组合周报口径.md》";
+
+function memoryStub({ digest = DIGEST_TEXT, fail = false } = {}) {
+  const seen = [];
+  const seam = createMemorySeam({
+    env: { CELL_MEMORY_URL: "http://memory.stub", CELL_MEMORY_PLATFORM_TOKEN: "platform-token" },
+    log: { warn() {} },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url);
+      seen.push({ url: u, method: init.method ?? "GET", body: init.body ? JSON.parse(init.body) : null });
+      if (fail) throw new Error("memory down");
+      const json = (status, payload) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+      if (u.endsWith("/admin/mint")) return json(200, { token: "person-token" });
+      if (u.includes("/digest")) return json(200, { digest });
+      return json(404, {});
+    },
+  });
+  return { seam, seen };
+}
+
+const upstreamText = (h) => {
+  const call = h.upstreamCalls[h.upstreamCalls.length - 1];
+  const body = JSON.parse(call.init.body);
+  return body.params.message.parts[0].text;
+};
+
+test("D7 facade: a signed-in visitor's turn carries their own digest", async () => {
+  const { seam, seen } = memoryStub();
+  const h = chatHarness({ chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 5, rpmMax: 50 }, upstream: () => jsonReply(), memory: seam });
+  try {
+    const r = await h.call(CHAT_URL, chatSend("本周周报怎么出", { token: "tok-alice" }));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const sent = upstreamText(h);
+    assert.ok(sent.startsWith("本周周报怎么出"), "the human's own words lead the turn");
+    assert.ok(sent.endsWith(DIGEST_TEXT), "the digest block rides at the tail");
+    const mint = seen.find((s) => s.url.endsWith("/admin/mint"));
+    assert.equal(mint.body.namespace, "u/alice@visitor.test", "minted for the VISITOR's own root");
+    const digestCall = seen.find((s) => s.url.includes("/digest"));
+    assert.equal(new URL(digestCall.url).searchParams.get("q"), "本周周报怎么出", "query is the message, not a transcript");
+    assert.equal(new URL(digestCall.url).searchParams.get("project"), "default", "same project as the 壹座 chat lane");
+  } finally {
+    await h.close();
+  }
+});
+
+test("D7 facade: an anonymous visitor issues zero memory requests", async () => {
+  const { seam, seen } = memoryStub();
+  const h = chatHarness({
+    chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 5, rpmMax: 50, embed: { anonEnabled: true, anonDailyMinutes: 5, embedSecret: "s3cret" } },
+    upstream: () => jsonReply(),
+    memory: seam,
+  });
+  try {
+    // The anonymous lane is double-gated (global switch + the per-agent
+    // deployer switch) — open the per-agent one on the store, then sign a pass
+    // directly so the test never depends on the mint route's origin gate.
+    h.store.embedSettingsSet("packs-p1-chat", { anonymous: true, origins: ["https://partner.test"], updatedBy: "test" });
+    const { signEphemeral } = await import("../services/wanxing-facade/chat.js");
+    const token = signEphemeral({ vid: "anon-1", slug: "packs-p1-chat", exp: Date.now() + 60_000 }, "s3cret");
+    const r = await h.call(CHAT_URL, chatSend("你好", { token }));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(upstreamText(h), "你好", "anonymous turns are byte-identical to memory-off");
+    assert.equal(seen.length, 0, "no fd-memory traffic for an anonymous visitor");
+  } finally {
+    await h.close();
+  }
+});
+
+test("D7 facade: the kill switch silences the lane and issues zero requests", async () => {
+  const seen = [];
+  const seam = createMemorySeam({
+    env: { CELL_MEMORY_URL: "http://memory.stub", CELL_MEMORY_PLATFORM_TOKEN: "t", WANXING_FACADE_MEMORY_DIGEST: "0" },
+    log: { warn() {} },
+    fetchImpl: async (url, init = {}) => {
+      seen.push({ url: String(url), method: init.method ?? "GET" });
+      return new Response(JSON.stringify({ digest: DIGEST_TEXT }), { headers: { "content-type": "application/json" } });
+    },
+  });
+  const h = chatHarness({ chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 5, rpmMax: 50 }, upstream: () => jsonReply(), memory: seam });
+  try {
+    const r = await h.call(CHAT_URL, chatSend("你好", { token: "tok-bob" }));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(upstreamText(h), "你好");
+    assert.equal(seen.length, 0, "kill switch means zero fd-memory requests");
+  } finally {
+    await h.close();
+  }
+});
+
+test("D7 facade: an unconfigured deployment is inert", async () => {
+  const seam = createMemorySeam({ env: {}, log: { warn() {} }, fetchImpl: async () => { throw new Error("must not be called"); } });
+  assert.equal(seam.enabled, false);
+  assert.equal(await seam.promptWithMemory({ email: "a@b", text: "hi" }), "hi");
+});
+
+test("D7 facade: a memory failure degrades open (turn still answers)", async () => {
+  const { seam } = memoryStub({ fail: true });
+  const h = chatHarness({ chat: { subsidyEnabled: true, subsidyKey: "sk-platform", subsidyDailyMinutes: 5, rpmMax: 50 }, upstream: () => jsonReply(), memory: seam });
+  try {
+    const r = await h.call(CHAT_URL, chatSend("你好", { token: "tok-carol" }));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(upstreamText(h), "你好", "no block when memory is down");
   } finally {
     await h.close();
   }

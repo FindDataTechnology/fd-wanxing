@@ -83,6 +83,8 @@ export function shDayWindow(t = Date.now()) {
   return [start, start + 86_400_000];
 }
 
+import { createMemorySeam } from "./memory.js";
+
 export function createChatFace({
   core,
   store,
@@ -99,7 +101,12 @@ export function createChatFace({
   chat = {}, // { subsidyEnabled, subsidyDailyMinutes, rpmMax, embed: {...} }
   report = null,
   upstreamFetch = fetch,
+  // Memory seam (paas add-unified-memory-and-outputs D7): the facade's chat
+  // surface reads the same fd-memory digest face as 壹座 chat. Injected by
+  // tests; production builds it from env. Off/unconfigured = "" for every turn.
+  memory = null,
 }) {
+  const memorySeam = memory ?? createMemorySeam();
   const embed = chat.embed ?? {};
   const cfg = {
     subsidyEnabled: chat.subsidyEnabled ?? false,
@@ -483,8 +490,12 @@ export function createChatFace({
         return res.status(200).json(jsonRpcError(id, -32601, `Method not found: ${method}`));
       }
       const message = params?.message ?? params;
-      const text = textOf(message);
-      if (!text) return res.status(200).json(jsonRpcError(id, -32604, "empty message"));
+      const asked = textOf(message);
+      if (!asked) return res.status(200).json(jsonRpcError(id, -32604, "empty message"));
+      // Signed-in visitors answer with their own memory; anonymous ones (no
+      // email, tier=anon) never touch it. Degrade open: any failure leaves the
+      // turn byte-identical to the memory-off baseline.
+      const text = visitor.tier === "anon" ? asked : await memorySeam.promptWithMemory({ email: visitor.email, text: asked });
 
       let state;
       try {
