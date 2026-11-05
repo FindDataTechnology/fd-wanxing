@@ -16,6 +16,9 @@ E3 操控面要让嵌入 widget 里的 agent 提议页面动作并由宿主执�
 
 ## 实证与后果
 
-- fingpt 在明示下一次成型 `intent:navigate:/console/usage`；正式识律 pack（skill 内有协议）首探自命名 `nav_usage`——**提示遵守度是运营面问题**（v2 强化 skill 措辞/few-shot），机制层已证。
+- fingpt 在明示下一次成型 `intent:navigate:/console/usage`；正式识律 pack（skill 内有协议）首探自命名 `nav_usage`。
+- **根因（2026-10-22 实测修正）**：不是「提示遵守度」这种运营面问题，而是 `ask_user_question` 的 **schema 描述与本文档的信封约定在同一字段上冲突**——工具说明连着两处写 "stable id for this question"，flash 档模型按 schema 裁决，于是把 `id` 填成语义标签 `nav_usage`。冲突不裁决，加多少遍「路径限五个控制台路由」都无效（只枚举路径的变体仅从 20% 到 28.6%）。
+- **处置**（change `harden-copilot-intent-envelope`）：persona 常驻承载字面完整调用（`intent:navigate:/console/usage` 可照抄只换路径）+ 后果句（不以 `intent:` 开头 ⇒ 普通问询卡、页面不跳、而模型以为成功了）+ 裁决句（工具说明的 "stable id" 是默认约定，本协议下 `id` 就是信封）+ 区分规则（「带我去/打开/回」= 动作；「在哪看/怎么看」= 直接答路径）；skill 不再重复语法。**离线评测门** `scripts/eval-intent-adherence.mjs` 把措辞改动的效果变成数字（v1 20% → 选定变体 100%），真机复验三探针通过（navigate / refresh / 对照项）。
+- **D7 备选仍留在桌面**：若上游 schema 未来把 `id` 语义再收紧到不可覆盖，则改走「seam 侧新增结构化字段」的路线；现方案的前提是 id 为自由字符串。
 - 匿名访客与登录访客同白名单（navigate/refresh 只影响访客自己的页面）；未来写动词必须加 tier 门。
 - 否决：解析 option label 前缀（污染给人看的文案）、`detail` 塞 JSON（同为文本约定且更不可靠）、引入 CopilotKit（并行会话栈+卡片系统，且不解跨产品身份）。

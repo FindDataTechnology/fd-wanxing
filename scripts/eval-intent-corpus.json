@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "意图信封遵守度评测的固定语料。utterance 一律是自然说法：不带任何格式提示、不提 intent:、不提工具名。expectedId 必须逐字等于生产协议里的信封（含五个控制台路径的原样写法）；expectNoAsk 的对照项验的是「只问在哪看 ≠ 要我带你去」。",
+  "items": [
+    {
+      "key": "usage",
+      "utterance": "带我去用量页",
+      "expectedId": "intent:navigate:/console/usage"
+    },
+    {
+      "key": "quota",
+      "utterance": "打开配额看看",
+      "expectedId": "intent:navigate:/console/quota"
+    },
+    {
+      "key": "billing",
+      "utterance": "我要看账单",
+      "expectedId": "intent:navigate:/console/billing"
+    },
+    {
+      "key": "credentials",
+      "utterance": "怎么拿 key，带我去凭据页",
+      "expectedId": "intent:navigate:/console/credentials"
+    },
+    {
+      "key": "overview",
+      "utterance": "回总览页",
+      "expectedId": "intent:navigate:/console"
+    },
+    {
+      "key": "refresh",
+      "utterance": "刷新一下当前页面",
+      "expectedId": "intent:refresh:"
+    },
+    {
+      "key": "control-where",
+      "utterance": "用量在哪看",
+      "expectNoAsk": true,
+      "note": "只问位置，不想被带走。正确行为是纯文本给出路径，或最多一个不带信封的澄清问。"
+    }
+  ]
+}
