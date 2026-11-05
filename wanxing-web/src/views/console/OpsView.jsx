@@ -20,6 +20,11 @@ export function OpsView() {
   // Ops plan manager (add-serving-plans).
   const [plans, setPlans] = useState(null);
   const [planErr, setPlanErr] = useState("");
+  // Ops-panel visibility (wanxing-first-visitor 5.1): the plans list doubles
+  // as the ops-role probe — 403 means "not ops", and the two ops-only panels
+  // (queue + management) stay hidden instead of rendering into guaranteed
+  // 403 error text. null = probe in flight.
+  const [opsOk, setOpsOk] = useState(null);
   const [planDraft, setPlanDraft] = useState({ email: "", limit: "", note: "" });
   const [planBusy, setPlanBusy] = useState(false);
   // Plan-request queue (add-plan-requests-and-move-statement 2.3): loaded
@@ -100,11 +105,12 @@ export function OpsView() {
   const loadPlans = () =>
     authFetch("/api/wanxing/v1/console/plans")
       .then(async (r) => {
-        if (r.status === 403) throw new Error("套餐管理需要 ops 服务令牌（登录身份不可管理）");
+        if (r.status === 403) { setOpsOk(false); setPlanErr(""); return; }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        setOpsOk(true);
         return r.json();
       })
-      .then((d) => (setPlans(d), setPlanErr(""), loadQueue()))
+      .then((d) => { if (d) { setPlans(d); setPlanErr(""); loadQueue(); } })
       .catch((e) => setPlanErr(String(e?.message || e)));
 
   useEffect(() => {
@@ -367,6 +373,7 @@ export function OpsView() {
           </div>
         )}
 
+        {opsOk !== false && (
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plan-requests-queue">
           <h3 className="font-semibold">
             套餐申请 · 待审
@@ -380,7 +387,7 @@ export function OpsView() {
             )}
           </h3>
           {queueErr && <div className="text-xs text-amber-600 dark:text-amber-400" data-testid="plan-requests-queue-error">{queueErr}</div>}
-          {!queue && !queueErr && <div className="text-xs text-slate-400">{planErr ? "审批需要 ops 服务令牌。" : <SkeletonLines rows={2} />}</div>}
+          {!queue && !queueErr && <div className="text-xs text-slate-400">{planErr ? "审批面加载失败。" : <SkeletonLines rows={2} />}</div>}
           {queue && pendingRows.length === 0 && <div className="text-xs text-slate-400">没有待审申请。</div>}
           {pendingRows.map((r) => (
             <div key={r.ref} className="text-xs flex gap-2 items-center flex-wrap border-t border-slate-100 dark:border-slate-800 pt-2" data-testid="plan-request-queue-row" data-ref={r.ref}>
@@ -432,7 +439,9 @@ export function OpsView() {
           )}
           <div className="text-[11px] text-slate-400">批准=经套餐发放路径落上限（与下方手动发放是同一条路，列表随即出现/更新）；驳回只记录备注、不发放。</div>
         </div>
+        )}
 
+        {opsOk !== false && (
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="plans-panel">
           <h3 className="font-semibold">套餐管理 · ops</h3>
           {planErr && <div className="text-xs text-amber-600 dark:text-amber-400">{planErr}</div>}
@@ -475,6 +484,7 @@ export function OpsView() {
           {plans && (plans.plans ?? []).length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
           <div className="text-[11px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
         </div>
+        )}
       </div>
     </div>
   );
