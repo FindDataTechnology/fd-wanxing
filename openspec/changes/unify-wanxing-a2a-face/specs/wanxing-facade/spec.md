@@ -26,13 +26,13 @@ The facade SHALL deduplicate `message/send` requests by the `Idempotency-Key` he
 
 ## ADDED Requirements
 
-### Requirement: The facade serves deployment management routes in pack addressing
+### Requirement: The facade serves deployment management routes in slug addressing
 
-The facade SHALL expose deployment management routes — caller allowlist list/add/remove and pause/resume — addressed by (packId, agentId) for the ops tool surface, gated by the ops credential (service token) and the deployer console gate (Logto) respectively, carrying the same ownership rules as the console routes; the existing slug-addressed console routes SHALL remain unchanged.
+The facade SHALL expose deployment management routes — caller allowlist list/add/remove and pause/resume — addressed by the deployment slug (the existing console routes ARE the management routes: `/api/wanxing/v1/console/deployments/:slug/...`), gated by the console credential (service token, ownerGate token path) and the deployer console gate (Logto) respectively, carrying the same ownership rules; the ops tool surface (wanxing-ops-mcp) addresses them by slug (design 1.2 conclusion).
 
 #### Scenario: ops-mcp manages a deployment without the paas gateway
 
-- **WHEN** wanxing-ops-mcp calls the management routes with (packId, agentId) and a valid credential
+- **WHEN** wanxing-ops-mcp calls the management routes with the deployment slug and a valid credential
 - **THEN** allowlist and pause/resume operations succeed against the facade directly, with responses in the same shape as the console routes
 
 #### Scenario: Ownership rules carry over
