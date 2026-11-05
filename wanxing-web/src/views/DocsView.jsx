@@ -51,6 +51,16 @@ export function DocsView() {
       </section>
 
       <section>
+        <h2 className="font-semibold mb-2">嵌入车道 · 宿主接入</h2>
+        <p className="text-slate-600 dark:text-slate-400">
+          把 widget 以 iframe 嵌进你的页面：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">{WANXING_BASE}/#/embed/&lt;agentSlug&gt;</code>，
+          宿主经 postMessage 与它握手（init → ready → context → 问询卡 → 意图回执）。
+          <a className="underline" href="/host-demo.html" target="_blank" rel="noreferrer">宿主示例页</a>
+          是可运行的完整参考——自包含单文件，可直接查看源码拷走改造。
+        </p>
+      </section>
+
+      <section>
         <h2 className="font-semibold mb-2">调用示例</h2>
         <A2aSample />
         <p className="mt-2 text-slate-500">
