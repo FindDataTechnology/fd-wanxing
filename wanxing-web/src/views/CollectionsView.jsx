@@ -202,10 +202,32 @@ export function CollectionsView() {
     loadList();
   };
 
+  // Delete with confirm + error state (wanxing-first-visitor 5.2): a failed
+  // DELETE keeps the collection open with a retryable error note — it must
+  // not silently close as if it had succeeded.
+  const [delArmed, setDelArmed] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
   const remove = async () => {
-    await authFetch(`/api/wanxing/v1/console/collections/${encodeURIComponent(detail.id)}`, { method: "DELETE" });
-    setDetail(null);
-    loadList();
+    if (!delArmed) { setDelArmed(true); return; }
+    setDelBusy(true);
+    setNote("");
+    try {
+      const r = await authFetch(`/api/wanxing/v1/console/collections/${encodeURIComponent(detail.id)}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setNote(`删除失败：${d.error || `HTTP ${r.status}`}`);
+        setDelArmed(false);
+        return;
+      }
+      setDetail(null);
+      setDelArmed(false);
+      loadList();
+    } catch (e) {
+      setNote(`删除失败：${String(e?.message || e)}`);
+      setDelArmed(false);
+    } finally {
+      setDelBusy(false);
+    }
   };
 
   const addFromPicker = () => {
@@ -303,7 +325,15 @@ export function CollectionsView() {
               <option value="public">公开（可部署套装）</option>
             </select>
             <button onClick={() => { setDetail(null); setNote(""); }} className="ml-auto px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">← 返回列表</button>
-            <button onClick={remove} className="px-2 py-1 rounded border border-rose-300 text-rose-600 dark:text-rose-300 text-xs">删除集合</button>
+            {delArmed ? (
+              <span className="flex items-center gap-1" data-testid="collection-delete-confirm">
+                <span className="text-xs text-rose-500">确认删除「{detail.name}」？</span>
+                <button onClick={remove} disabled={delBusy} className="px-2 py-1 rounded bg-rose-600 text-white text-xs disabled:opacity-40">{delBusy ? "删除中…" : "确认删除"}</button>
+                <button onClick={() => setDelArmed(false)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">取消</button>
+              </span>
+            ) : (
+              <button onClick={remove} data-testid="collection-delete" className="px-2 py-1 rounded border border-rose-300 text-rose-600 dark:text-rose-300 text-xs">删除集合</button>
+            )}
           </div>
           {shareUrl && (
             <div className="flex gap-2 items-center text-xs" data-testid="collection-share">
