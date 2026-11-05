@@ -336,6 +336,30 @@ test("3.2 catalog and card are public; private agents are absent", async () => {
   await priv.close();
 });
 
+test("3.2b public card redacts non-public provider.url (redact-agent-card-private-endpoints)", async () => {
+  // internal runner address → url key dropped, rest of provider intact
+  const h1 = faceHarness({ entry: { visibility: "public", provider: { organization: "paas-pack", url: "http://100.64.0.8" } } });
+  const c1 = await h1.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json");
+  assert.equal(c1.status, 200);
+  assert.equal(c1.body.provider.url, undefined);
+  assert.equal(c1.body.provider.organization, "paas-pack");
+  // single-label service name also private
+  const h2 = faceHarness({ entry: { visibility: "public", provider: { organization: "o", url: "http://runner:3080" } } });
+  assert.equal((await h2.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json")).body.provider.url, undefined);
+  await h1.close();
+  await h2.close();
+  // public URL passes through verbatim
+  const h3 = faceHarness({ entry: { visibility: "public", provider: { organization: "x", url: "https://mcp.finddatatech.cloud" } } });
+  const c3 = await h3.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json");
+  assert.equal(c3.body.provider.url, "https://mcp.finddatatech.cloud");
+  assert.equal(c3.body.provider.organization, "x");
+  await h3.close();
+  // unparseable → fail closed
+  const h4 = faceHarness({ entry: { visibility: "public", provider: { organization: "x", url: "not a url" } } });
+  assert.equal((await h4.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json")).body.provider.url, undefined);
+  await h4.close();
+});
+
 test("3.1 send: auth → forward on dual internal credentials → wx context → settled ledger row", async () => {
   const upstreamCalls = [];
   const sub = stubSub2api();
