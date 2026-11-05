@@ -7,9 +7,9 @@
 
 ## 2. 幂等硬化回灌（独立可先行上产）
 
-- [ ] 2.1 paas core.js 90c80625 硬化移植 fd `services/wanxing-facade/core.js`：request_hash 绑定 + IDEMPOTENCY_KEY_REUSE 结构化错误 + error 不重放；保留 plan 选举逻辑不动；验证=单测三态（同 key 同 body 重放/异 body 拒/error 重放）绿
-- [ ] 2.2 全 lane 覆盖确认：A2A 与 chat 车道均经 core 准入各测一条；验证=两 lane 各一条幂等回归用例
-- [ ] 2.3 facade 镜像出片滚产（仅硬化增量）；验证=现网 probe 同 key 异 body 400 而非重跑
+- [x] 2.1 paas core.js 90c80625 硬化移植 fd `services/wanxing-facade/core.js`：request_hash 绑定 + IDEMPOTENCY_KEY_REUSE 结构化错误 + error 不重放；保留 plan 选举逻辑不动；验证=单测三态（同 key 同 body 重放/异 body 拒/error 重放）绿
+- [x] 2.2 全 lane 覆盖确认：A2A 与 chat 车道均经 core 准入各测一条；验证=两 lane 各一条幂等回归用例
+- [x] 2.3 facade 镜像出片滚产（仅硬化增量）；验证=现网 probe 同 key 异 body 400 而非重跑
 
 ## 3. 管理路由与 ops-mcp 迁址
 
@@ -23,3 +23,11 @@
 - [ ] 4.2 paas 摘挂 gateway/wanxing 卡片路由 + spec `wanxing-facade` 标 moved 指本仓 + twin 纪律废止注记；验证=paas openspec validate 过、网关镜像滚产后 platform 域 /api/wanxing/v1/a2a/* 返回 404/410 且网关其余面正常
 - [ ] 4.3 两域一致性验收：wanxing 域卡片与（迁移后）platform 域消费方响应等价（字段/redaction 同口径）；验证=同 agent 双域 diff 为空或差异仅域名
 - [ ] 4.4 本 change spec MODIFIED/ADDED 与实现终态对齐（packId 表述按 1.2 结论修正）；`openspec validate unify-wanxing-a2a-face --strict` 过
+
+---
+
+## 2.3 执行记录（2026-11-06，偏差在册）
+
+- 出片：build-pool 正路被并发线重写（workflow env 固定 finddata/fd-cn-report，vars BUILD_* 废弃）——本次快照误推成 fd-cn-report:sha-0b8a5c3 一枚（池仓脏数据，无害待清）。改走 **cheap-3 回退通道**（INFRA-NOTES 备份线）：git archive 干净树 → cheap-3 docker build → push hkccr（digest 9c997bcb）→ relay 回灌 ccr 已核。
+- 滚产：GitOps 77f9fb5 → ArgoCD refresh → facade pod 滚完；/status live 15 agents 零 stale；pod 日志无迁移报错（request_hash ALTER 干净落位）。
+- 409 路径的生产实证待首个带键调用者（三态已被测试锁死：2.3/2.3b）。
