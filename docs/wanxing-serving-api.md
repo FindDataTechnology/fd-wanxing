@@ -23,7 +23,7 @@ GET  {BASE}/api/wanxing/v1/a2a/{agentSlug}/.well-known/agent-card.json   # 公�
 POST {BASE}/api/wanxing/v1/a2a/{agentSlug}                          # A2A 回合（需鉴权）
 ```
 
-`{BASE}` 为萬星域（fd 环境即 `https://wanxing.finddatatech.cloud`；此前 platform 域同名路由随摘挂退役，见页首注）。`agentSlug` 见目录返回（形如 `packs-<packId>-<agentId>`，全小写）。
+`{BASE}` = `https://wanxing.finddatatech.cloud`（萬星域；此前 platform 域同名路由随摘挂退役，见页首注）。`agentSlug` 见目录返回（形如 `packs-<packId>-<agentId>`，全小写）。
 
 ## 调用示例（message/send）
 

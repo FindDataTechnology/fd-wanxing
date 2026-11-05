@@ -1,6 +1,6 @@
 // The integration one-pager, in-site (docs/wanxing-serving-api.md is the
 // source of truth; this page carries the caller essentials).
-import { A2aSample, ClusterA2aSample } from "../components/A2aSample.jsx";
+import { A2aSample, ClusterA2aSample, WANXING_BASE } from "../components/A2aSample.jsx";
 
 const ERRORS = [
   ["401", "INVALID_KEY / UNRESOLVED_KEY", "键形状错 / 键无法解析到账号"],
@@ -27,6 +27,27 @@ export function DocsView() {
           <code className="mx-1 px-1 rounded bg-slate-100 dark:bg-slate-800">message/stream</code>SSE。
           鉴权用你在计费面板自铸的调用键（Bearer），按时长计费、分钟向上取整。
         </p>
+        <div className="mt-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-xs">
+          <span className="font-semibold">服务地址</span>：<code className="font-mono">{WANXING_BASE}</code>
+          （下述示例已写实该地址，可直接复制执行）。完整一页纸见仓库 <code className="font-mono">docs/wanxing-serving-api.md</code>。
+        </div>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">三行快速开始</h2>
+        <ol className="list-decimal pl-5 space-y-1 text-slate-600 dark:text-slate-400">
+          <li>在 <a className="underline" href="https://token.finddatatech.cloud" target="_blank" rel="noreferrer">token.finddatatech.cloud</a> 自铸一个调用键（sk-…）。</li>
+          <li>在<a className="underline" href="#/catalog">目录</a>挑一个 agent，复制其 slug（卡片上可直接复制）。</li>
+          <li>用下方示例发第一条 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">message/send</code>——收到的就是回执。</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">发现端点与调用者偏好</h2>
+        <ul className="list-disc pl-5 space-y-1 text-slate-600 dark:text-slate-400">
+          <li><b>AgentCard 发现</b>（A2A 标准）：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">GET {WANXING_BASE}/api/wanxing/v1/a2a/&lt;agentSlug&gt;/.well-known/agent-card.json</code>——无需鉴权，返回名称/技能/能力声明。</li>
+          <li><b>调用者偏好</b>（收割窗与回调签名）：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">GET/PUT {WANXING_BASE}/api/wanxing/v1/prefs/&lt;agentSlug&gt;</code>（Bearer 调用键）——读取/设置你对该 agent 的回合收割窗与回调配置；不设置则走平台默认。</li>
+        </ul>
       </section>
 
       <section>
