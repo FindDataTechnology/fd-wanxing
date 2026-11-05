@@ -133,6 +133,25 @@ export function ChatView({ focusSlug } = {}) {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
+  // Local history exits (wanxing-first-visitor 5.3): clear (confirmed, two-step)
+  // and export (download the local transcript). Local-first by contract — the
+  // server persists no content, so export covers THIS device's turns only.
+  const [clearArmed, setClearArmed] = useState(false);
+  const clearHistory = () => {
+    if (!clearArmed) { setClearArmed(true); return; }
+    setMessages([]);
+    saveHist(slug, []);
+    setClearArmed(false);
+  };
+  const exportHistory = () => {
+    const blob = new Blob([JSON.stringify({ agent: slug, exportedAt: new Date().toISOString(), turns: messages }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `wanxing-chat-${slug}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   if (!slug) {
     return <div className="text-sm text-slate-500">缺少 agent——从<a className="underline" href="#/catalog">目录</a>进入。</div>;
   }
@@ -408,6 +427,26 @@ export function ChatView({ focusSlug } = {}) {
             </button>
           </form>
           {notice && <div className="text-xs text-amber-600 dark:text-amber-400">{notice}</div>}
+
+          {messages.length > 0 && (
+            <div className="flex items-center gap-3 text-xs text-slate-500" data-testid="chat-history-tools">
+              <button onClick={exportHistory} data-testid="chat-history-export" className="underline hover:text-slate-900 dark:hover:text-slate-100">
+                导出本机记录
+              </button>
+              {clearArmed ? (
+                <span className="flex items-center gap-1.5" data-testid="chat-history-clear-confirm">
+                  <span className="text-rose-500">清空本机对话记录？</span>
+                  <button onClick={clearHistory} className="px-2 py-0.5 rounded bg-rose-600 text-white">确认清空</button>
+                  <button onClick={() => setClearArmed(false)} className="underline">取消</button>
+                </span>
+              ) : (
+                <button onClick={clearHistory} data-testid="chat-history-clear" className="underline hover:text-rose-600">
+                  清空记录
+                </button>
+              )}
+              <span className="text-slate-400">仅本机：换设备不同步，服务端不存内容。</span>
+            </div>
+          )}
 
           {!ownKey && (
             <details className="text-xs text-slate-500" open={exhausted || undefined}>
