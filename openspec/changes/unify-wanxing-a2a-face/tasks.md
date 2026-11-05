@@ -20,9 +20,9 @@
 ## 4. paas 摘挂（最后执行）
 
 - [x] 4.1 zhiyu lane 解耦：bookkeeping 快照抽独立模块，zhiyu 改数据源；验证=paas 网关测试绿（含启动路径）
-- [ ] 4.2 paas 摘挂 gateway/wanxing 卡片路由 + spec `wanxing-facade` 标 moved 指本仓 + twin 纪律废止注记；验证=paas openspec validate 过、网关镜像滚产后 platform 域 /api/wanxing/v1/a2a/* 返回 404/410 且网关其余面正常
-- [ ] 4.3 两域一致性验收：wanxing 域卡片与（迁移后）platform 域消费方响应等价（字段/redaction 同口径）；验证=同 agent 双域 diff 为空或差异仅域名
-- [ ] 4.4 本 change spec MODIFIED/ADDED 与实现终态对齐（packId 表述按 1.2 结论修正）；`openspec validate unify-wanxing-a2a-face --strict` 过
+- [x] 4.2 paas 摘挂 gateway/wanxing 卡片路由 + spec `wanxing-facade` 标 moved 指本仓 + twin 纪律废止注记；验证=paas openspec validate 过、网关镜像滚产后 platform 域 /api/wanxing/v1/a2a/* 返回 404/410 且网关其余面正常
+- [x] 4.3 两域一致性验收：wanxing 域卡片与（迁移后）platform 域消费方响应等价（字段/redaction 同口径）；验证=同 agent 双域 diff 为空或差异仅域名
+- [x] 4.4 本 change spec MODIFIED/ADDED 与实现终态对齐（packId 表述按 1.2 结论修正）；`openspec validate unify-wanxing-a2a-face --strict` 过
 
 ---
 
@@ -31,3 +31,10 @@
 - 出片：build-pool 正路被并发线重写（workflow env 固定 finddata/fd-cn-report，vars BUILD_* 废弃）——本次快照误推成 fd-cn-report:sha-0b8a5c3 一枚（池仓脏数据，无害待清）。改走 **cheap-3 回退通道**（INFRA-NOTES 备份线）：git archive 干净树 → cheap-3 docker build → push hkccr（digest 9c997bcb）→ relay 回灌 ccr 已核。
 - 滚产：GitOps 77f9fb5 → ArgoCD refresh → facade pod 滚完；/status live 15 agents 零 stale；pod 日志无迁移报错（request_hash ALTER 干净落位）。
 - 409 路径的生产实证待首个带键调用者（三态已被测试锁死：2.3/2.3b）。
+
+---
+
+## 4.2 偏差记录（2026-11-06）
+
+- paas 摘挂代码面完成：gateway/index.js 删挂载+import、zhiyu lane 直读 packs internal（测试 7/7+35/35+16/16 绿）、spec `wanxing-facade` 头部 MOVED 指针落 paas 仓。
+- **滚产阻塞**：platform 出片三路全断——①org GHA 账号级停摆；②build-pool workflow 被并发 v1.3.0 开源发布线重写为 env 固定版（vars 机制废弃）；③cheap-3 回退通道两次死于 docker 20.10 export 阶段「unknown parent image ID」（55 步大镜像老 bug，非代码问题）。平台镜像出片等并发 v1.3.0 线收口或 docker 升级后补滚（摘挂是减法：旧镜像继续跑=platform 域继续出卡片，摘挂延迟无安全风险，仅 twin 双修多维持几轮）。
