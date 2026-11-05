@@ -24,8 +24,9 @@ const ConsoleView = lazy(() => import("./views/ConsoleView.jsx").then((m) => ({ 
 const ChatView = lazy(() => import("./views/ChatView.jsx").then((m) => ({ default: m.ChatView })));
 const CollectionsView = lazy(() => import("./views/CollectionsView.jsx").then((m) => ({ default: m.CollectionsView })));
 const BundleView = lazy(() => import("./views/BundleView.jsx").then((m) => ({ default: m.BundleView })));
+const AgentDetailView = lazy(() => import("./views/AgentDetailView.jsx").then((m) => ({ default: m.AgentDetailView })));
 
-const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView, "#/embed": EmbedView };
+const VIEWS = { "#/": IntroView, "#/catalog": CatalogView, "#/docs": DocsView, "#/console": ConsoleView, "#/chat": ChatView, "#/collections": CollectionsView, "#/bundle": BundleView, "#/embed": EmbedView, "#/agent": AgentDetailView };
 
 // Skeleton matching the main column's rhythm — a lazy chunk's first
 // navigation shows this, never a blank flash.
@@ -154,7 +155,7 @@ export function App() {
   // widget (add-embed-copilot-lane) — its slug may carry a ?query of theme
   // parameters, which the view parses itself.
   const [viewKey, focusSlug] = (() => {
-    const m = hash.match(/^(#\/(?:console|catalog|docs|chat|collections|bundle|embed))(\/([^?]+))?/);
+    const m = hash.match(/^(#\/(?:console|catalog|docs|chat|collections|bundle|embed|agent))(\/([^?]+))?/);
     return m ? [m[1], m[3] ? decodeURIComponent(m[3]) : null] : [hash, null];
   })();
   const View = VIEWS[viewKey] ?? IntroView;

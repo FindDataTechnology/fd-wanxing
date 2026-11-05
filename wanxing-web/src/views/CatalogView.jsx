@@ -121,7 +121,9 @@ export function CatalogView() {
   const card = (a) => (
     <div key={a.slug} data-testid={`agent-card-${a.slug}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
       <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="font-semibold">{a.name ?? a.slug}</span>
+        <a href={`#/agent/${encodeURIComponent(a.slug)}`} data-testid={`agent-detail-link-${a.slug}`} className="font-semibold hover:underline" title="查看详情">
+          {a.name ?? a.slug}
+        </a>
         <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
         {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
         {a.cluster && (
