@@ -1,7 +1,7 @@
 // ── Wanxing facade persistence (add-wanxing-serving-api) ─────────────────────
 //
-// The facade's own SQLite file at the gateway data root (the same
-// per-concern isolation rule as packs.db / share-tokens.db): the external
+// The facade's own SQLite file at WANXING_DATA_ROOT (the same
+// per-concern isolation rule as the observer's fleet-events.db): the external
 // usage ledger (v1's authoritative record for external turns — ADR-0014
 // boundary settlement), the idempotency replay window, the per-agent caller
 // allowlist, and the caller debt-suspension state. No key material is ever

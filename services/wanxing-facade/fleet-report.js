@@ -1,8 +1,8 @@
 // ── Facade → fleet-observer reporter (add-fleet-event-backbone 6.3) ─────────
 //
-// Cross-process reporting while the facade still lives in the paas gateway
-// (program slice ② moves it into the Wanxing plane and swaps this for the
-// in-process store write). In-memory queue + timer flush + retry: the
+// Long-term cross-process reporting (2026-10-04 program revision: facade and
+// observer stay independently deployed; this never becomes an in-process
+// store write). In-memory queue + timer flush + retry: the
 // facade's request path never blocks on observability. Settled rows report
 // with the usage row's id as the event id — deterministic, so the pending
 // sweep and the inline settle can both report the same row exactly once on

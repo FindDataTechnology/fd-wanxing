@@ -52,3 +52,35 @@ _Avoid_: 审批、表单、工具卡（指通用工具渲染时另说）
 **宿主意图（Host Intent）**:
 问询的一种：question `id` 形如 `intent:<verb>:<arg>` 时视为宿主页面动作提议，widget 自身不执行——用户点第一个选项才向可信宿主 postMessage `wx-copilot-intent`，宿主按其在 init 里声明的动词白名单执行并回 `wx-copilot-intent-result`，结果随答案回到 agent。无点击不动作；宿主未声明的动词答「当前页面不支持」。
 _Avoid_: 客户端动作（CopilotKit 术语）、ui_intent（早期草案名）
+
+**套餐（Serving Plan）**:
+ops 发给调用者的分钟制预付额度：scoped 到单一 caller、cap=分钟池、按分钟随回合扣减、仅在 API 车道生效（chat 线不受影响）。申请-审批走控制台双视角闭环。
+_Avoid_: 会员、订阅、配额（指主人池时另说）
+
+**集群复合服务单位（Cluster Unit）**:
+多个 served agent 经声明组成、对外以单一 A2A 地址服务的复合单位：回合扇出到各成员、按策略聚合、逐成员独立走账。目录里以集群标记呈现。
+_Avoid_: 机群（Fleet 是全体不是单位）、组合包（指 collections 时另说）
+
+**集合（Collection）**:
+部署者把多个 pack 组织成的命名分组：私有分组或公开套装；公开套装可被访客经 bundle 页一键整体部署。
+_Avoid_: 目录分类（facet 是策展信号不是部署者资产）、集群（指 Cluster Unit 时另说）
+
+**桌面机位（Device Seat）**:
+桌面端 runner 的配对席位：六位码铸造/核销/吊销，配对后经信箱（mailbox）投递与回投任务。归属部署者控制台的机位页。
+_Avoid_: 设备管理（泛指）、节点（指 runner 节点时另说）
+
+**机位信箱（Mailbox）**:
+桌面机位的任务投递/拉取/回投缓冲：任务投进信箱、机位拉取执行、结果回投；console 有查询面（当前无独立 UI 入口）。
+_Avoid_: 队列（指 DAG 执行器时另说）、消息中心
+
+**记忆可见页（Memory Visibility Console）**:
+部署者查看/遗忘某部署记忆条目的控制台面板（layer 筛选、L 徽章、两步确认遗忘），经门面 owner gate 透明代理 fleet visibility lane。
+_Avoid_: 记忆管理（泛指）、知识库
+
+**访客事项（Visitor Matters）**:
+访客在对话/事项面板里可见的自身事项记录（chat 车道带访客 scope 查询端点，「我的事项」视图）。
+_Avoid_: 工单、任务（指 missions 时另说）
+
+**任务（Mission）**:
+四元组定义（定义/输入/验收/纪元）的可提交工作项：部署者经 missions 视图创建与提交，planner 侧审批与状态机推进，纪元回写落账。
+_Avoid_: 需求、TODO（口语）

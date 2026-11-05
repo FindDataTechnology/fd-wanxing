@@ -33,9 +33,29 @@
 
 ## 硬依赖备忘
 
-- ② 必须先于「事件库落位 facade 进程内」的一切假设：③ 先以独立服务立身，facade 迁入
-  （②完成）后才改同进程直写结算事件。
+- ② 必须先于「事件库落位 facade 进程内」的一切假设：③ 先以独立服务立身。**（2026-10-04 修订并定案：facade 与 observer 各自独立部署，fleet-report 跨进程上报为长期形态，永不改同进程直写。）**
 - ① 的目录缓存是 ③ 台账 diff 合成器的地基，两处共用一份实现。
 - 治理随代码走：facade/runner 迁入时其 paas specs（wanxing-facade、agent-runner、
   a2a-agent-serving、agent-residency、agent-delegation 等）fork 当前文本入本仓，paas 侧
   标 moved；in-flight 的 Agent platform program 切片在 paas 原地做完。
+
+## 切片⑤之后的演进（2026-11-06 补记）
+
+切片表停在 10-04；其后治理已**全量转 openspec change/archive 流**（本仓 `openspec/changes/archive/`，
+35+ 归档），本文件不再逐切片更新，只保留已定决策与下方演进大事记。切片状态修订：
+
+- ① 目录热路径：已落地（`add-wanxing-deployments-cache`，bookkeeping 快照缓存 TTL+single-flight，
+  源 change 归档于 paas 仓 2026-10-11）。
+- ② L2 拆面：代码/镜像/清单当日就绪，wanxing 域公开面已由本仓承载；paas 侧 `gateway/wanxing/`
+  仍为 platform 域 twin 面（**摘挂计划见 change `unify-wanxing-a2a-face`**，非本文件范围）。
+- ③④⑤：完成（fleet-observer/ops-console 板/wanxing-web 均现网在跑）。
+
+**agent-runner 裁决（2026-11-06，用户拍板）**：runner 不迁入本仓，与 registry/packs/sub2api
+同列**正式借用边界**（env 可重指，HTTP/既定协议端点）。理由：独立决策以来 runner 在 paas 侧
+56 commits 持续演进、与 platform 镜像/cells/compute-quota 深度共生，迁移成本远超收益；借用
+契约纪律（HTTP+env）已足守住边界。未来如需迁移，另立专项 change 显式推翻本裁决。详见
+[ADR-0005](../adr/0005-agent-runner-is-a-borrowed-contract.md) 与 spec `wanxing-borrowed-contracts`。
+
+其他演进（节选）：chat 车道与匿名梯队、embed/copilot 车道与意图信封、stats 三口径面、
+套餐（serving-plans）申请-审批线、集群复合服务单位、桌面机位与信箱、记忆可见页与记忆缝、
+2026-11-05 卡片脱敏双滚（platform/wanxing 两域同步剔内网 provider.url）。

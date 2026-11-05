@@ -10,8 +10,8 @@
 
 ARG BASE_IMAGE=node:22-bookworm-slim
 # China-mirror opt-in (empty default: the GHA runner is US-based — see
-# docs/IMAGE-RELEASE.md Dockerfile rules; Jenkins passes APT_MIRROR on the
-# China build host).
+# paas repo docs/IMAGE-RELEASE.md Dockerfile rules; Jenkins passes APT_MIRROR
+# on the China build host).
 
 FROM ${BASE_IMAGE} AS builder
 ARG APT_MIRROR=""

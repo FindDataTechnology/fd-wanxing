@@ -1,5 +1,5 @@
 # Container images — GitHub Actions → Tencent TCR, canonical pipeline
-# (docs/IMAGE-RELEASE.md): push hkccr (HK, fast leg), cheap-3 tcr-relay
+# (paas repo docs/IMAGE-RELEASE.md): push hkccr (HK, fast leg), cheap-3 tcr-relay
 # replicates to ccr (≤5min). Cluster references use the ccr prefix after the
 # relay lands the tag.
 #
