@@ -336,6 +336,57 @@ test("3.2 catalog and card are public; private agents are absent", async () => {
   await priv.close();
 });
 
+test("3.2c curated public status serves three aggregates with staleness bits (wanxing-first-visitor 3.1)", async () => {
+  // faceHarness builds the face without settlementPending; rebuild with it.
+  const sub = stubSub2api();
+  const store = freshStore();
+  const core = createWanxingCore({ store, sub2api: sub, config: { ratePerMin: 0.1, rpmMax: 100 } });
+  const defaultEntry = {
+    name: "SpiderHeal", description: "repairs spiders", version: "3", visibility: "public",
+    capabilities: { streaming: true }, skills: [], tags: ["ops"], metadata: {},
+  };
+  const face = createA2aFace({
+    core,
+    resolveDeployment: (slug) => (slug === "packs-p1-heal" ? { agentPath: "/packs/p1/heal" } : null),
+    listDeployments: () => [{ slug: "packs-p1-heal", agentPath: "/packs/p1/heal" }],
+    forwardHeaders: () => ({}),
+    registryFetch: async () => new Response(JSON.stringify(defaultEntry), { headers: { "Content-Type": "application/json" } }),
+    usageTurnsByAgent: () => new Map([["packs-p1-heal", 12]]),
+    settlementPending: () => ({ count: 2, usd: 0.4 }),
+    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+  });
+  const app = express();
+  face.register(app);
+  const server = http.createServer(app).listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const r = await fetch(base + "/api/wanxing/v1/status").then(async (x) => ({ status: x.status, headers: x.headers, body: await x.json() }));
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.agents, { value: 1, stale: false });
+  assert.deepEqual(r.body.turns7d, { value: 12, stale: false });
+  assert.deepEqual(r.body.settlement_pending, { value: { count: 2, usd: 0.4 }, stale: false });
+  assert.match(r.headers.get("cache-control") ?? "", /max-age=60/);
+  assert.equal(JSON.stringify(r.body).includes("100.64"), false, "no internal addresses leak");
+  // A failing source degrades that aggregate to stale, never 500s the payload.
+  const broken = createA2aFace({
+    core,
+    resolveDeployment: async () => { throw new Error("down"); },
+    listDeployments: async () => { throw new Error("down"); },
+    forwardHeaders: () => ({}),
+    registryFetch: async () => new Response("{}", { status: 500 }),
+    settlementPending: () => { throw new Error("down"); },
+    config: { agentUrlFor: (p) => `https://registry.internal/agent${p}/` },
+  });
+  const app2 = express();
+  broken.register(app2);
+  const server2 = http.createServer(app2).listen(0);
+  const r2 = await fetch(`http://127.0.0.1:${server2.address().port}/api/wanxing/v1/status`).then(async (x) => ({ status: x.status, body: await x.json() }));
+  assert.equal(r2.status, 200);
+  assert.equal(r2.body.agents.stale, true);
+  assert.equal(r2.body.agents.value, null);
+  assert.equal(r2.body.settlement_pending.stale, true);
+  await new Promise((res) => { server.close(res); server2.close(res); });
+});
+
 test("3.2b public card redacts non-public provider.url (redact-agent-card-private-endpoints)", async () => {
   // internal runner address → url key dropped, rest of provider intact
   const h1 = faceHarness({ entry: { visibility: "public", provider: { organization: "paas-pack", url: "http://100.64.0.8" } } });

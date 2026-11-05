@@ -13,6 +13,7 @@ import { DocsView } from "./views/DocsView.jsx";
 import { EmbedView } from "./views/EmbedView.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
+import { StatusStrip } from "./components/StatusStrip.jsx";
 import { loginLogto, signOut, useAuth } from "./auth.js";
 
 // polish-wanxing-console: the authenticated-heavy views code-split — the
@@ -123,6 +124,7 @@ function FamilyFooter() {
         <p className="mt-8 text-sm text-slate-600 dark:text-slate-400">
           寻数科技聚焦AI时代下的文本和数据处理的基础设施建设，致力于推动信息平权，最终促进社会公平。
         </p>
+        <StatusStrip />
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-4 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
           <span>© 2026 寻数（FindData）· 萬星 Constellation</span>
           <a className="hover:text-slate-900 dark:hover:text-slate-100" href={ICP_FILING.href} target="_blank" rel="noopener noreferrer">

@@ -280,6 +280,15 @@ export function registerWanxingRoutes(app, {
     report: (ev) => fleetReporter.report(ev),
     forwardHeaders,
     registryFetch: doFetch,
+    // Curated public status aggregate (wanxing-first-visitor 3.1): pending
+    // settlements from the usage ledger — count + usd, nothing else exposed.
+    settlementPending: () => {
+      const rows = store.usagePending();
+      return {
+        count: rows.length,
+        usd: Number(rows.reduce((s, r) => s + (Number(r.minutes_billed) || 0) * (Number(r.rate_usd) || 0), 0).toFixed(4)),
+      };
+    },
     // Caller preferences (add-caller-preferences): the derived external
     // context carries the caller's reap window; a finished turn fires the
     // caller's completion callback (fire-and-forget, beside settlement).

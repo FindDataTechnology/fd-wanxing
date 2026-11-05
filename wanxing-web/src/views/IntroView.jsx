@@ -58,6 +58,54 @@ export function IntroView() {
       </section>
 
       <section>
+        <h2 className="font-semibold mb-2">计费口径</h2>
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                <th className="py-2 px-4 font-medium">项目</th>
+                <th className="py-2 px-4 font-medium">口径</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-600 dark:text-slate-400">
+              <tr className="border-b border-slate-100 dark:border-slate-900">
+                <td className="py-2 px-4">API 调用（A2A 车道）</td>
+                <td className="py-2 px-4">按回合时长计费，分钟向上取整 × 档位单价；回合结束即时结算到你的调用键。</td>
+              </tr>
+              <tr className="border-b border-slate-100 dark:border-slate-900">
+                <td className="py-2 px-4">网页对话（对话/嵌入车道）</td>
+                <td className="py-2 px-4">访客免费：平台补贴基线内不计费；超出后用主人池或自带调用键。</td>
+              </tr>
+              <tr className="border-b border-slate-100 dark:border-slate-900">
+                <td className="py-2 px-4">失败回合</td>
+                <td className="py-2 px-4">不计费（仍记账，对账可查）。</td>
+              </tr>
+              <tr>
+                <td className="py-2 px-4">具体费率</td>
+                <td className="py-2 px-4">费率暂未公开刊列——以计费面板（token.finddatatech.cloud）实际结算为准，或联系运营询价。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-slate-500">
+          費率表的数字随结算面走，不在此页发明；面板里的余额与消费窗是你的财务硬顶。
+        </p>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">关于萬星</h2>
+        <p className="text-slate-600 dark:text-slate-400">
+          萬星（Constellation）是寻数（FindData）五条产品线中的智能体服务线：把已经建好的
+          Agent 变成对外可调用的服务——部署、驻留、门面、计费与机群观测都由它承担。
+          它运行在寻数自有的机群上，与壹座（团队执行平台）、谦面（工作流搭建）、柏讯（数据智能）、
+          识律（法律智能）互通：任何一条线上的 agent 都可以经萬星对外服务。
+        </p>
+        <p className="mt-2 text-slate-600 dark:text-slate-400">
+          运营方：寻数科技（FindData）。问题与合作：见页脚联系方式。
+        </p>
+      </section>
+
+      <section>
         <h2 className="font-semibold mb-2">开始调用</h2>
         <A2aSample />
         <p className="mt-2 text-slate-500">

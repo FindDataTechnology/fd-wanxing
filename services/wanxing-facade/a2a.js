@@ -93,6 +93,7 @@ export function createA2aFace({
   getReapWindow = null, // (caller, slug) → minutes | null (add-caller-preferences)
   onTurnComplete = null, // ({caller, slug, idemKey, outcome, startedAt, endedAt, minutesBilled, traceId}) → void
   chatability = null, // (state) → boolean (add-agent-chat-lane 3.4): catalog and card summaries carry the marker when true; null = never
+  settlementPending = null, // () → { count, usd } | null (wanxing-first-visitor 3.1): usage-ledger pending settlements, for the curated public status aggregate only
   upstreamFetch = fetch, // injection seam for tests
   // Curation + activity signals for the catalog (add-catalog-facets):
   // packsBrowseFetch returns the facet packs browse rows ({id, category,
@@ -450,6 +451,42 @@ export function createA2aFace({
     // are public). Private agents are simply absent from both. Both faces
     // hard-degrade on a hard-stale snapshot (design D2.1); the A2A turn
     // path never does.
+    // ── Curated public status (wanxing-first-visitor 3.1): three aggregates
+    // for the site footer's live strip — catalog size, 7-day external turns,
+    // pending settlements. Each aggregate carries a staleness bit and
+    // degrades independently (one source down never 500s the payload);
+    // the body is curated on purpose — no internals, no per-caller data,
+    // no deep-health report (that stays on the cluster-internal /healthz).
+    app.get("/api/wanxing/v1/status", async (_req, res) => {
+      const agg = (value) => ({ value: value ?? null, stale: value == null });
+      let catalog = null;
+      let turns7d = null;
+      try {
+        await ensureFresh().catch(() => {});
+        if (hardStale()) throw new Error("snapshot hard-stale");
+        const deps = await listDeployments();
+        const turns = await turns7dMap().catch(() => null);
+        if (Array.isArray(deps)) {
+          catalog = 0;
+          turns7d = 0;
+          for (const dep of deps) {
+            const entry = await entryFor(dep.slug, dep);
+            if (!entry || entry.visibility === "private") continue;
+            catalog += 1;
+            turns7d += turns?.get(dep.slug) ?? 0;
+          }
+        }
+      } catch { /* both aggregates fall through stale */ }
+      let pending = null;
+      try { pending = settlementPending?.() ?? null; } catch { /* degrade independently */ }
+      res.set("Cache-Control", "public, max-age=60");
+      res.json({
+        agents: agg(catalog),
+        turns7d: agg(turns7d),
+        settlement_pending: agg(pending ? { count: pending.count, usd: pending.usd } : null),
+      });
+    });
+
     app.get("/api/wanxing/v1/agents", async (req, res) => {
       await ensureFresh().catch(() => {});
       if (hardStale()) return sourceUnavailable(res, "snapshot hard-stale");
