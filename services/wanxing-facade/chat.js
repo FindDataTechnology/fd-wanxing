@@ -693,10 +693,16 @@ export function createChatFace({
           return;
         }
 
+        // Fingerprint = same discipline as the API lane (unify-wanxing-a2a-face
+        // 2.1): method + params over the turn's own body, id excluded — a chat
+        // key reused with different text is key reuse, refused.
         const out = await core.idempotentSend({
           callerId: caller.userId,
           slug,
           idemKey,
+          requestHash: idemKey
+            ? sha256(JSON.stringify({ method, params: { message: { role: "user", parts: [{ kind: "text", text }] }, context_id: contextId } }))
+            : null,
           exec: async () => {
             const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
               method: "POST",

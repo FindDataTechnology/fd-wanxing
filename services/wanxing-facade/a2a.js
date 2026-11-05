@@ -678,6 +678,15 @@ export function createA2aFace({
         const h = req.headers["idempotency-key"];
         return typeof h === "string" && h.trim() ? h.trim().slice(0, 200) : null;
       })();
+      // The fingerprint binds the key to its request body (unify-wanxing-a2a-
+      // face 2.1 — paas fix-agent-serving-stability D2): method + params only
+      // — the JSON-RPC `id` is transport (a network retry regenerates it) and
+      // carries no request identity. contextId is derived below from the same
+      // inputs, so the fingerprint and the flight body can never disagree.
+      const contextId = contextIdFor(message, idemKey, getReapWindow ? getReapWindow(caller, slug) : null);
+      const requestHash = idemKey
+        ? sha256(JSON.stringify({ method, params: { message: { role: "user", parts: [{ kind: "text", text }] }, context_id: contextId } }))
+        : null;
       // Idempotency triage BEFORE the slot (send only — streams never replay):
       // a finished request replays from the ledger (a read), a running flight
       // is JOINED (the turn is already admitted; concurrent duplicates both
@@ -695,7 +704,6 @@ export function createA2aFace({
         holdsSlot = true;
       }
 
-      const contextId = contextIdFor(message, idemKey, getReapWindow ? getReapWindow(caller, slug) : null);
       const startedAt = Date.now();
       if (prior !== "done") note("admitted", slug, { caller: caller.email || caller.userId, idem_key: idemKey || "", transport: method });
 
@@ -787,12 +795,21 @@ export function createA2aFace({
             }
           : null;
         const out = await runSendFlight({
-          caller, slug, state, text, contextId, idemKey, startedAt, rpcId: id, holdsSlot, exec: mailboxExec,
+          caller, slug, state, text, contextId, idemKey, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec,
         });
         // A replay/join leaves without recording anything of its own.
         if (out.replayed) exitReadonly();
         res.status(200).json(out.response);
       } catch (e) {
+        // Key reuse is an admission refusal, not a turn outcome (paas
+        // fix-agent-serving-stability D2): HTTP 409 like TURN_IN_FLIGHT, no
+        // usage row, slot simply released.
+        if (e?.code === "IDEMPOTENCY_KEY_REUSE") {
+          if (holdsSlot) core.releaseSlot(caller.userId, slug);
+          else exitReadonly();
+          note("refused", slug, { stage: "idempotency", code: "IDEMPOTENCY_KEY_REUSE", caller: caller.email || caller.userId, idem_key: idemKey || "" });
+          return res.status(409).json({ error: { code: "IDEMPOTENCY_KEY_REUSE", message: String(e?.message || e) } });
+        }
         if (holdsSlot) finish("error");
         else exitReadonly();
         res.status(200).json(jsonRpcError(id, Number.isInteger(e?.code) ? e.code : -32032, String(e?.message || e)));

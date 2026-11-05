@@ -174,6 +174,52 @@ test("2.3 a replayed key returns the recorded outcome without a second exec", as
   assert.equal(r2.replayed, true);
 });
 
+test("2.3b fingerprint hardening: same key + different body = 409 IDEMPOTENCY_KEY_REUSE; NULL-fingerprint heal; both-sideless replay (unify-wanxing-a2a-face 2.1)", async () => {
+  const core = createWanxingCore({ store: freshStore(), sub2api: stubSub2api() });
+  const ok = (v) => async () => ({ response: { ok: v } });
+  // A recorded success replays on the same fingerprint…
+  await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k1", requestHash: "fp-A", exec: ok("first") });
+  const r1 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k1", requestHash: "fp-A", exec: async () => { throw new Error("must not run"); } });
+  assert.equal(r1.replayed, true);
+  // …and is REFUSED on a different body (the reset-ticket trap).
+  await assert.rejects(
+    () => core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k1", requestHash: "fp-B", exec: ok("swapped") }),
+    (e) => e.code === "IDEMPOTENCY_KEY_REUSE" && e.status === 409,
+  );
+  // Heal case: a pre-fingerprinting NULL-hash recording re-executes once when
+  // a fingerprint-bearing retry arrives, and the backfill binds it.
+  await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k2", exec: ok("legacy") });
+  let ran = 0;
+  const r2 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k2", requestHash: "fp-C", exec: async () => { ran += 1; return { response: { ok: "healed" } }; } });
+  assert.equal(r2.replayed, false);
+  assert.equal(ran, 1, "legacy NULL-hash row re-executed (cannot trust the match)");
+  const r3 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k2", requestHash: "fp-C", exec: async () => { throw new Error("must not run"); } });
+  assert.equal(r3.replayed, true, "backfilled hash replays from then on");
+  // Both sides fingerprintless (older callers): plain replay semantics kept.
+  await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k3", exec: ok("plain") });
+  const r4 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k3", exec: async () => { throw new Error("must not run"); } });
+  assert.equal(r4.replayed, true);
+  // Legacy NULL-hash row + fingerprintless retry keeps replay too.
+  await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k4", exec: ok("legacy2") });
+  const r5 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k4", exec: async () => { throw new Error("must not run"); } });
+  assert.equal(r5.replayed, true);
+  // The store migration: an old file without the column must open cleanly —
+  // rebuild one by hand (the factory exposes no raw db) and reopen.
+  const oldFile = path.join(mkdtempSync(path.join(tmp, "legacy-")), "wanxing.db");
+  {
+    const legacy = createWanxingStore({ file: oldFile });
+    legacy.close();
+  }
+  const Database = (await import("better-sqlite3")).default;
+  const raw = new Database(oldFile);
+  raw.exec(`CREATE TABLE IF NOT EXISTS wanxing_requests (caller_id INTEGER NOT NULL, agent_slug TEXT NOT NULL, idem_key TEXT NOT NULL, state TEXT NOT NULL, response TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (caller_id, agent_slug, idem_key))`);
+  raw.close();
+  const legacyStore = createWanxingStore({ file: oldFile });
+  const core2 = createWanxingCore({ store: legacyStore, sub2api: stubSub2api() });
+  await core2.idempotentSend({ callerId: 1, slug: "a", idemKey: "m", requestHash: "fp", exec: ok("migrated") });
+  assert.equal(legacyStore.requestGet(1, "a", "m").request_hash, "fp");
+});
+
 test("2.3 concurrent duplicates join one flight", async () => {
   const core = createWanxingCore({ store: freshStore(), sub2api: stubSub2api() });
   let execs = 0;
@@ -186,15 +232,24 @@ test("2.3 concurrent duplicates join one flight", async () => {
   assert.deepEqual(a.response, b.response);
 });
 
-test("2.3 a failed exec records the error and replays it", async () => {
+test("2.3 a failed exec records the error and does NOT replay it — the retry re-executes (unify-wanxing-a2a-face 2.1: paas D1 backport)", async () => {
   const core = createWanxingCore({ store: freshStore(), sub2api: stubSub2api() });
+  let attempts = 0;
   const boom = async () => {
+    attempts += 1;
     throw Object.assign(new Error("agent route refused"), { code: -32033 });
   };
-  await assert.rejects(() => core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", exec: boom }));
-  const r2 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", exec: boom });
-  assert.equal(r2.replayed, true);
-  assert.equal(r2.response.error.code, -32033);
+  await assert.rejects(() => core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", requestHash: "fp-1", exec: boom }));
+  // An errored first turn is never replayed: the same key + same body is a
+  // REAL retry — re-executes (pays full admission) and overwrites the row.
+  await assert.rejects(() => core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", requestHash: "fp-1", exec: boom }));
+  assert.equal(attempts, 2);
+  // A later SUCCESS on the same key records and replays from then on.
+  const r3 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", requestHash: "fp-1", exec: async () => ({ response: { ok: true } }) });
+  assert.equal(r3.replayed, false);
+  const r4 = await core.idempotentSend({ callerId: 7, slug: "a", idemKey: "k", requestHash: "fp-1", exec: async () => { throw new Error("must not run"); } });
+  assert.equal(r4.replayed, true);
+  assert.deepEqual(r4.response, { ok: true });
 });
 
 // ── Task 2.4: metering and boundary settlement ───────────────────────────────
