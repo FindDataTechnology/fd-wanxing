@@ -42,3 +42,11 @@
 - 退役 = 经 packs internal API 删除对应 deployment（pack 保留，可重部署；facade 侧 usage 账本行保留——历史不丢）。
 - 重写 = 改 deployment 描述字段（packs internal API）。
 - 预期结果：目录 total 22→15，无「验收/M4①/M5.3/走查」字样；facets 计数同步。
+
+---
+
+## 执行记录（2026-11-06，任务 1.2-1.4 实证）
+
+- 执行方式：registry `PATCH /api/agents/packs/{packId}/{agentId}`（facade pod 内经 `AGENT_SERVING_REGISTRY_URL`+服务令牌），**9 条全 200**——7 条 `{visibility:private}`（含清单外补抓的 `/packs/diag-probe/diag` 诊断探针残留）+ 2 条描述重写（数据侦察员/简报写手去 M4③/M4② 验收句）。
+- 1.4 验证：facade 60s TTL 后实测公网目录 **total 22→15、验收标记残留 0**；facets 计数同步（total 15、categories 7 类、clusters 1）；退役条目公网卡片 404（`AGENT_NOT_FOUND` 语义，与回合路径同口径）——排除纯由 registry/台账状态驱动，facade 零黑名单、零代码改动。
+- 机制注记：部署未删（packs 台账保留、可重部署），facade usage 账本行原样保留——历史不丢。
