@@ -8,5 +8,5 @@
 ## 2. Verify & ship
 
 - [x] 2.1 `node scripts/test-wanxing-facade.mjs` 全绿；`openspec validate redact-agent-card-private-endpoints --strict` 通过
-- [ ] 2.2 提交（显式路径，勿卷并发会话未提交文件）并推送触发 `images.yml` 出 `wanxing-facade:sha-<新>` 镜像
-- [ ] 2.3 GitOps：`fd-infra-deploy` wanxing-facade.yaml 滚新 tag；从 windows-admin 复验 wanxing 域名卡片无内网 provider.url
+- [x] 2.2 提交（显式路径，勿卷并发会话未提交文件）并推送触发 `images.yml` 出 `wanxing-facade:sha-<新>` 镜像
+- [x] 2.3 GitOps：`fd-infra-deploy` wanxing-facade.yaml 滚新 tag；从 windows-admin 复验 wanxing 域名卡片无内网 provider.url
