@@ -25,3 +25,13 @@
 ## Non-goal 重申
 
 不做熔断器/重试库；observer 侧零改动；不改借用契约形状。
+
+## 4.1 核实结论（2026-11-06 实测）
+
+- **agent-runner-serving**（hostNetwork + `dnsPolicy: ClusterFirstWithHostNet`）：pod 内
+  `getent fleet-observer.fd-prod.svc.cluster.local` 解析 ✓、`/healthz` 200 ✓ → 换 Service DNS。
+- **facet / platform**（均 `dnsPolicy: Default`，刻意为之——OIDC fail-fast 走节点 DNS、绕开
+  CoreDNS 陈旧外部记录）：Service DNS 解析 ✗（facet pod 实测 FAIL）→ 保留 ClusterIP/tailnet
+  字面量 + justification 注释（spec 允许的例外）。
+- 旧通道 `100.64.0.8:31881`（cheap-8 NodePort 经 tailscale）双向仍通：保留给 **cheap-1 宿主级
+  runner 容器**（集群外）直投 /ingest 用，NodePort Service 不动。

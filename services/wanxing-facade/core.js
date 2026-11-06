@@ -78,14 +78,29 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     // The liveness probe IS the billing gate: GET /v1/models runs the full
     // balance/group/quota check at zero cost, and returns the gateway's own
     // refusal code when the key is dead or broke.
-    const probe = await sub2api.probeKeyLiveness(key);
+    // Transport-level failures (probeKeyLiveness reports status 0 on
+    // timeout/unreachable; findUserByKey throws the same class —
+    // wanxing-contract-hardening 1.3) are the billing plane being DOWN, not
+    // the key being bad: degrade to the existing structured 503 and never
+    // cache the verdict (the next request should retry). Gateway refusals
+    // (a real status from the gate) keep the 401/402 mapping below.
+    let probe;
+    let holder;
+    try {
+      probe = await sub2api.probeKeyLiveness(key);
+      if (probe.ok) holder = await sub2api.findUserByKey(key);
+    } catch {
+      probe = { ok: false, status: 0, code: null, message: "billing plane unreachable" };
+    }
+    if (!probe.ok && Number(probe.status) === 0) {
+      return authError(503, "WANXING_BILLING_UNAVAILABLE", "the billing plane is unreachable right now; retry shortly");
+    }
     if (!probe.ok) {
       const broke = /BALANCE/i.test(String(probe.code || "") + String(probe.message || ""));
       const verdict = authError(broke ? 402 : 401, broke ? "INSUFFICIENT_BALANCE" : (probe.code || "INVALID_KEY"), probe.message || "the caller key was refused by the billing gate");
       verdicts.set(digest, { at: Date.now(), ok: false, verdict });
       return verdict;
     }
-    const holder = await sub2api.findUserByKey(key);
     if (!holder || !holder.userId) {
       const verdict = authError(401, "UNRESOLVED_KEY", "the caller key cannot be resolved to a sub2api account");
       verdicts.set(digest, { at: Date.now(), ok: false, verdict });

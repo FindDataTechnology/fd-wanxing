@@ -20,11 +20,18 @@
 // Every call takes an injectable fetchImpl; without SUB2API_ADMIN_KEY the
 // client reports degraded() and callers fall back to the pre-③ behavior.
 
+import { fetchWithTimeout, timeoutFromEnv, OUTBOUND_TIMEOUT_DEFAULTS } from "./fetchWithTimeout.js";
+
 const DEFAULT_BASE = process.env.SUB2API_BASE_URL || "http://127.0.0.1:32080";
 
-export function createSub2apiClient({ baseUrl = DEFAULT_BASE, adminKey = process.env.SUB2API_ADMIN_KEY || "", fetchImpl = null } = {}) {
+export function createSub2apiClient({ baseUrl = DEFAULT_BASE, adminKey = process.env.SUB2API_ADMIN_KEY || "", fetchImpl = null, timeoutMs = null } = {}) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
-  const doFetch = fetchImpl ?? ((path, init = {}) => fetch(base + path, init));
+  // Admin calls are admission-path synchronous (findUserByKey) — a hung
+  // sub2api used to stall every admission (wanxing-contract-hardening 1.2).
+  // The 402/4xx mapping below already surfaces failures structurally; the
+  // timeout only bounds the wait.
+  const effectiveTimeout = timeoutMs ?? timeoutFromEnv(process.env, "WANXING_SUB2API_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.sub2api);
+  const doFetch = fetchImpl ?? ((path, init = {}) => fetchWithTimeout(base + path, { ...init, timeoutMs: effectiveTimeout }));
   const degraded = () => !adminKey;
 
   async function call(path, { method = "GET", body, headers = {} } = {}) {
@@ -87,13 +94,15 @@ export function createSub2apiClient({ baseUrl = DEFAULT_BASE, adminKey = process
     // locally (no upstream spend) but runs the full billing gate, so a 2xx
     // proves the key exists, is active, and its account/group are usable.
     // Non-2xx returns the gateway's own code/message (INSUFFICIENT_BALANCE,
-    // INVALID_KEY, …) — no key material ever comes back.
+    // INVALID_KEY, …) — no key material ever comes back. The wait rides the
+    // client-wide bound (doFetch → fetchWithTimeout); a hung plane surfaces
+    // as status 0, which core.authenticate classifies as unreachable, not
+    // as a key refusal (wanxing-contract-hardening 1.3).
     async probeKeyLiveness(key) {
       let res;
       try {
         res = await doFetch("/v1/models", {
           headers: { Authorization: `Bearer ${key}` },
-          signal: AbortSignal.timeout(5000),
         });
       } catch (e) {
         return { ok: false, status: 0, code: null, message: `probe unreachable: ${e.message}` };

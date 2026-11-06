@@ -19,6 +19,7 @@ import { createClusterFace } from "./cluster.js";
 import { createChatFace } from "./chat.js";
 import { createBookkeepingCache, diffDeployments } from "./bookkeeping.js";
 import { createFleetReporter } from "./fleet-report.js";
+import { fetchWithTimeout, timeoutFromEnv, OUTBOUND_TIMEOUT_DEFAULTS } from "./lib/fetchWithTimeout.js";
 import { registerConsoleRoutes } from "./console.js";
 import { createDeviceFace } from "./devices.js";
 import { createMailboxFace, newTaskId } from "./mailbox.js";
@@ -60,9 +61,16 @@ export function registerWanxingRoutes(app, {
   let resolveDeploymentRef = null;
   const core = createWanxingCore({ store, sub2api, resolveDeployment: (slug) => resolveDeploymentRef?.(slug) });
 
+  // Registry outbound is time-bounded (wanxing-contract-hardening 1.1/1.2):
+  // a hung registry used to stall the turn path indefinitely. The abort
+  // surfaces as the existing structured errors (TimeoutError carries its own
+  // -32041 in the turn path; enumeration faces degrade through their stale
+  // channels).
   const doFetch = (p, init = {}) =>
-    (fetchImpl ?? fetch)(`${registryUrl()}${p}`, {
+    fetchWithTimeout(`${registryUrl()}${p}`, {
       ...init,
+      fetchImpl,
+      timeoutMs: timeoutFromEnv(env, "WANXING_REGISTRY_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.registry),
       headers: {
         ...(registryToken() ? { Authorization: `Bearer ${registryToken()}` } : {}),
         ...(init.headers ?? {}),
@@ -85,8 +93,12 @@ export function registerWanxingRoutes(app, {
   const packsInternalBase = () =>
     (env.PACKS_INTERNAL_BASE_URL || `http://127.0.0.1:${env.GATEWAY_PORT || 3080}`).replace(/\/+$/, "");
   const packsInternalCall = (p, init = {}) =>
-    (fetchImpl ?? fetch)(`${packsInternalBase()}${p}`, {
+    fetchWithTimeout(`${packsInternalBase()}${p}`, {
       ...init,
+      fetchImpl,
+      // Packs snapshot fresh/stale windows backstop the enumeration faces;
+      // this bound stops a hung packs host from stalling turn-path callers.
+      timeoutMs: timeoutFromEnv(env, "WANXING_PACKS_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.packs),
       headers: { Authorization: `Bearer ${registryToken()}`, ...(init.headers ?? {}) },
     });
   const packsInternalFetch = async (p) => {
@@ -129,6 +141,9 @@ export function registerWanxingRoutes(app, {
     token: env.FLEET_OBSERVER_TOKEN || "",
     source: "facade",
     fetchImpl: fetchImpl ?? undefined,
+    // Disk spool (wanxing-contract-hardening 3.1): unconfirmed events survive
+    // a restart; the file lives beside the store at the data root.
+    spoolPath: path.join(dataRoot, "fleet-spool.jsonl"),
     log: (m) => console.warn(`[wanxing:fleet] ${m}`),
   });
   fleetReporter.start();

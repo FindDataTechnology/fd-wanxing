@@ -10,7 +10,7 @@
 //   node --test scripts/test-wanxing-facade.mjs
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import express from "express";
@@ -1657,4 +1657,111 @@ test("D7 facade: a memory failure degrades open (turn still answers)", async () 
   } finally {
     await h.close();
   }
+});
+
+// ── hardening 1.1: outbound timeout bounds a hung upstream ──────────────────
+test("hardening 1.1: registry call aborts on a hung upstream within the timeout", async () => {
+  const { fetchWithTimeout } = await import("../services/wanxing-facade/lib/fetchWithTimeout.js");
+  const hung = http.createServer(() => {}); // never responds
+  await new Promise((r) => hung.listen(0, "127.0.0.1", r));
+  const t0 = Date.now();
+  await assert.rejects(
+    () => fetchWithTimeout(`http://127.0.0.1:${hung.address().port}/x`, { timeoutMs: 300 }),
+    (e) => e.name === "TimeoutError" || e.name === "AbortError",
+  );
+  const took = Date.now() - t0;
+  assert.ok(took < 2500, `timeout enforced (${took}ms)`);
+  hung.closeAllConnections();
+  hung.close();
+});
+
+// ── hardening 1.3: a timed-out billing plane degrades to the structured 503,
+// never a bare 500; the transient verdict is not cached ──────────────────────
+test("hardening 1.3: hung sub2api -> admission returns WANXING_BILLING_UNAVAILABLE 503", async () => {
+  const { createSub2apiClient } = await import("../services/wanxing-facade/lib/sub2api-admin.js");
+  const hung = http.createServer(() => {}); // never responds
+  await new Promise((r) => hung.listen(0, "127.0.0.1", r));
+  try {
+    const store = freshStore();
+    const core = createWanxingCore({
+      store,
+      sub2api: createSub2apiClient({
+        baseUrl: `http://127.0.0.1:${hung.address().port}`,
+        adminKey: "admin-test",
+        timeoutMs: 300, // bound the wait so the test runs fast
+      }),
+    });
+    const verdict = await core.authenticate("sk-test-hung-upstream");
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.status, 503, JSON.stringify(verdict));
+    assert.equal(verdict.code, "WANXING_BILLING_UNAVAILABLE");
+    // transient verdicts are not cached: the next call retries (probeCalls grows)
+  } finally {
+    hung.closeAllConnections();
+    hung.close();
+  }
+});
+
+// ── hardening 3.1: fleet-report disk spool — restart replay, half-line
+// tolerance, deterministic-id idempotency, overflow drop accounting ──────────
+test("hardening 3.1: unconfirmed events survive a restart via the spool file", async () => {
+  const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
+  const spoolPath = path.join(mkdtempSync(path.join(tmp, "spool-")), "fleet-spool.jsonl");
+  const dead = async () => { throw new Error("observer down"); };
+  const seen = [];
+  const ok = async (u, init) => { seen.push(JSON.parse(init.body)); return { ok: true, status: 200 }; };
+
+  const a = createFleetReporter({ url: "http://obs.test", token: "t", spoolPath, fetchImpl: dead, log: () => {}, statsEveryMs: Infinity });
+  a.report({ kind: "settled", agent: "packs-x/a", id: "row-1", payload: { usd: 1 } });
+  a.report({ kind: "admitted", agent: "packs-x/a", payload: {} });
+  await a.flush(); // fails — both events stay on disk
+  assert.deepEqual(a.stats(), { droppedEvents: 0, spoolRows: 2 });
+
+  // "restart": a fresh reporter over the same file replays both rows
+  const b = createFleetReporter({ url: "http://obs.test", token: "t", spoolPath, fetchImpl: ok, log: () => {}, statsEveryMs: Infinity });
+  await b.flush();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].events.length, 2);
+  assert.equal(seen[0].events.find((e) => e.id === "row-1")?.payload.usd, 1, "deterministic id survives the replay");
+  assert.deepEqual(b.stats(), { droppedEvents: 0, spoolRows: 0 });
+  // confirmation compacts the file to empty
+  assert.equal(readFileSync(spoolPath, "utf8"), "");
+});
+
+test("hardening 3.1: a half-written tail line is skipped and counted, not fatal", async () => {
+  const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
+  const spoolPath = path.join(mkdtempSync(path.join(tmp, "spool-")), "fleet-spool.jsonl");
+  const good = { id: "row-9", source: "facade", agent: "a", kind: "settled", ts: 1, payload: {} };
+  writeFileSync(spoolPath, JSON.stringify(good) + "\n" + JSON.stringify({ id: "cut-of" }) ); // no newline: crash mid-append
+  const seen = [];
+  const b = createFleetReporter({
+    url: "http://obs.test", token: "t", spoolPath,
+    fetchImpl: async (u, init) => { seen.push(JSON.parse(init.body)); return { ok: true, status: 200 }; },
+    log: () => {}, statsEveryMs: Infinity,
+  });
+  assert.equal(b.stats().droppedEvents, 1, "the corrupt tail counts as dropped");
+  await b.flush();
+  assert.deepEqual(seen[0].events.map((e) => e.id), ["row-9"]);
+});
+
+test("hardening 3.2: overflow drops oldest, counts, and the counter rides runner_stats onto the board", async () => {
+  const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
+  const spoolPath = path.join(mkdtempSync(path.join(tmp, "spool-")), "fleet-spool.jsonl");
+  const seen = [];
+  let t = 1_700_000_000_000;
+  const r = createFleetReporter({
+    url: "http://obs.test", token: "t", spoolPath, queueCap: 3, statsEveryMs: 0,
+    now: () => t, fetchImpl: async (u, init) => { seen.push(JSON.parse(init.body)); return { ok: true, status: 200 }; },
+    log: () => {},
+  });
+  for (let i = 0; i < 5; i++) r.report({ kind: "admitted", agent: "a", id: `k${i}`, payload: { i } });
+  assert.equal(r.stats().droppedEvents, 2, "k0/k1 dropped oldest");
+  assert.equal(readFileSync(spoolPath, "utf8").split("\n").filter(Boolean).length, 3, "file mirrors the queue after compaction");
+  await r.flush(); // carries the 3 rows + the runner_stats board event
+  const flat = seen.flatMap((b) => b.events);
+  const stat = flat.find((e) => e.kind === "runner_stats" && e.runner === "facade");
+  assert.ok(stat, "board stat event emitted");
+  assert.equal(stat.payload.droppedEvents, 2);
+  assert.equal(stat.payload.spoolRows, 3, "pre-flush depth at emission");
+  assert.ok(stat.id.startsWith("fstat-facade-"), "deterministic id (replay-safe)");
 });
