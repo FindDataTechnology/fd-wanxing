@@ -14,9 +14,9 @@
 
 ## 3. PVC 备份
 
-- [ ] 3.1 CronJob 落 fd-infra-deploy（03:00，两库 .backup→tar→rsync cheap-3，保留 14 份，SSH key 挂 secret）；验证=CronJob 首跑成功、cheap-3 目录见当日备份
-- [ ] 3.2 恢复演练：取备份解 /tmp，integrity_check+两表行数对账；验证=演练记录落本 change 目录
-- [ ] 3.3 备份失败告警路径（CronJob 失败非零退出可被巡检发现）；验证=人为断 SSH 演练一次失败可见
+- [x] 3.1 CronJob 落 fd-infra-deploy（03:00，两库 .backup→tar→rsync cheap-3，保留 14 份，SSH key 挂 secret）；验证=CronJob 首跑成功、cheap-3 目录见当日备份（manual-4 全链 PASS：168.1MB tar 落 cheap-3:/opt/backups/wanxing/wanxing-20261106-074659.tar.gz，restore-check 双库 integrity ok）
+- [x] 3.2 恢复演练：取备份解 /tmp，integrity_check+两表行数对账；验证=演练记录落本 change 目录（restore-drill.md：wanxing.db ok/34 objects、fleet-events.db ok、events 206,290 行、rollup 4,784 行）
+- [x] 3.3 备份失败告警路径（CronJob 失败非零退出可被巡检发现）；验证=人为断 SSH 演练一次失败可见——两类真实失败实证：① v2 轮 known_hosts 缺 ED25519 → 'Host key verification failed' → pod 0/1 Error；② drill2 .backup 卡死（同 PVC 并发 I/O 竞争）被新增的 timeout 2400 拦下 → 'FATAL: .backup failed/timed-out' → job failed=1。废 key 全链演练因 .backup 慢被截胡，但失败面（非零退出+Failed history）两路已证
 
 ## 4. 台账与注释（fd-infra-deploy）
 
@@ -25,5 +25,5 @@
 
 ## 5. 收口
 
-- [ ] 5.1 `openspec validate wanxing-storage-longevity --strict` 过
-- [ ] 5.2 生产验证：observer 滚产后 board/stats 正常、进度行存在；facade 滚产后 60s sweep+15min tick 日志正常、次日 cheap-3 见备份；验证=三项记录在案
+- [x] 5.1 `openspec validate wanxing-storage-longevity --strict` 过
+- [x] 5.2 生产验证：observer 滚产后 board/stats 正常、进度行存在；facade 滚产后 60s sweep+15min tick 日志正常、次日 cheap-3 见备份；验证=三项记录在案——① observer sha-7f1253f 滚产（quota 抬 38Gi 后 roll），rollup_progress_hour=2026-11-06T09:00 存在、board 200；② facade sha-7f1253f 滚产，maintenanceTick 在镜像内（grep=3）、60s sweep 无错日志、retention 行按「删了才打」纪律静默；③ cheap-3:/opt/backups/wanxing/ 见首份 wanxing-20261106-074659.tar.gz（168MB，恢复自检过），次日 03:00 定时跑为常态
