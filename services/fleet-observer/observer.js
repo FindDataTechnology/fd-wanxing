@@ -175,21 +175,63 @@ export function createObserver({
     });
   });
 
-  // ── Rollup pass: last 2 full hours + current hour (idempotent overwrite);
-  // boot pass widens to 48h so a restart heals recent hours. Retention rides
-  // along hourly.
+  // ── Rollup pass (wanxing-storage-longevity 1.1): PROGRESS-DRIVEN. The old
+  // pass recomputed a fixed window (current hour + boot 48h), so downtime
+  // beyond 48h left permanent holes. Now: start = the stored
+  // `rollup_progress_hour` (missing/first-run → now − retention, naturally
+  // bounded), end = the current hour; each completed bucket advances the
+  // progress row INSIDE the same transaction that writes it, so a kill
+  // mid-pass resumes exactly where it stopped and re-runs are idempotent
+  // overwrites. The cap (≤ retention window) also bounds a corrupt/rewound
+  // clock from triggering a full-history rescan.
+  const ROLLUP_PROGRESS_KEY = "rollup_progress_hour";
   function rollupPass(bootWindowHours = 3) {
     const t = now();
-    const hours = new Set([hourKeyOf(t), hourKeyOf(t - 3600_000), hourKeyOf(t - 2 * 3600_000)]);
-    if (bootWindowHours > 3) {
-      for (let i = 3; i < bootWindowHours; i++) hours.add(hourKeyOf(t - i * 3600_000));
+    const currentHour = hourKeyOf(t);
+    const prevHour = hourKeyOf(t - 3600_000);
+    const stored = store.metaGet(ROLLUP_PROGRESS_KEY);
+    let startHour = stored;
+    if (!startHour) {
+      // First run / progress lost: the retention window is the oldest data
+      // that can still exist — nothing older can be recomputed anyway.
+      const floor = new Date(t - retentionMs).toISOString().slice(0, 13) + ":00";
+      startHour = floor;
     }
-    let n = 0;
-    for (const hk of hours) {
-      const s = Date.parse(hk.slice(0, 13) + ":00:00Z");
-      n += store.rollupHour(hk, s, s + 3600_000);
+    // Fast path: fully caught up → the usual 3-hour idempotent window.
+    if (startHour >= prevHour) {
+      const hours = new Set([currentHour, prevHour, hourKeyOf(t - 2 * 3600_000)]);
+      let n = 0;
+      for (const hk of hours) {
+        const s = Date.parse(hk.slice(0, 13) + ":00:00Z");
+        n += store.rollupHour(hk, s, s + 3600_000);
+      }
+      store.metaSet(ROLLUP_PROGRESS_KEY, prevHour);
+      return { hours: hours.size, agents: n, catchUp: 0 };
     }
-    return { hours: hours.size, agents: n };
+    // Catch-up: walk every hour bucket from progress → prevHour, capped at
+    // the retention window (a rewound clock must not trigger a rescan past
+    // retained data). Each bucket's rows + the progress advance share one
+    // transaction (rollupHourCommit).
+    const capHours = Math.ceil(retentionMs / 3600_000);
+    let s = Date.parse(startHour.slice(0, 13) + ":00:00Z");
+    const end = Date.parse(prevHour.slice(0, 13) + ":00:00Z");
+    let n = 0, done = 0;
+    while (s <= end && done < capHours) {
+      const hk = hourKeyOf(s);
+      n += store.rollupHourCommit(hk, s, s + 3600_000, ROLLUP_PROGRESS_KEY, hk);
+      s += 3600_000;
+      done += 1;
+    }
+    // The final commit above also advanced progress to prevHour; the current
+    // (incomplete) hour gets its routine idempotent recompute outside progress.
+    {
+      const sk = Date.parse(currentHour.slice(0, 13) + ":00:00Z");
+      n += store.rollupHour(currentHour, sk, sk + 3600_000);
+    }
+    if (done >= capHours && s <= end) {
+      say(`rollup catch-up hit the ${capHours}h retention cap — progress advanced to ${hourKeyOf(s - 3600_000)}`);
+    }
+    return { hours: done + 1, agents: n, catchUp: done };
   }
 
   const rollupTimer = setInterval(() => {
@@ -289,7 +331,7 @@ export function createObserver({
     // 1M/day full-window board read measured 24s — see bench-fleet-million).
     const hourKeys = [];
     for (let i = 0; i < 24; i++) hourKeys.push(hourKeyOf(t - i * 3600_000));
-    if (!booted) { try { rollupPass(48); } catch {} booted = true; }
+    if (!booted) { try { rollupPass(); } catch {} booted = true; } // progress-driven catch-up runs on first pass
     const rows = store.rollupRows(hourKeys);
     const agg = { turns: 0, errors: 0, minutes_billed: 0, usd: 0, budget_kills: 0 };
     const agents = new Set();

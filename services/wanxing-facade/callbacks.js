@@ -40,10 +40,23 @@ export function createCallbackDispatcher({
   const say = log ?? (() => {});
   if (auditFile) mkdirSync(path.dirname(auditFile), { recursive: true });
 
+  // Daily-rotation audit (wanxing-storage-longevity 2.2): the file name
+  // carries the UTC day — one append stream per day, lazily switched on the
+  // first write after midnight. Retention (deleting old days) is the
+  // facade's maintenance tick's job (routes.js), driven by the same base
+  // name; audit writes never break delivery either way.
+  let auditDay = "";
+  let auditCurrent = null;
+  const auditPathFor = (ms) => auditFile.replace(/\.jsonl$/, `-${new Date(ms).toISOString().slice(0, 10).replace(/-/g, "")}.jsonl`);
   const audit = (line) => {
     if (!auditFile) return;
     try {
-      appendFileSync(auditFile, `${JSON.stringify(line)}\n`);
+      const day = new Date(now()).toISOString().slice(0, 10);
+      if (day !== auditDay) {
+        auditDay = day;
+        auditCurrent = auditPathFor(now());
+      }
+      appendFileSync(auditCurrent, `${JSON.stringify(line)}\n`);
     } catch { /* audit must never break delivery */ }
   };
 
@@ -118,5 +131,7 @@ export function createCallbackDispatcher({
     return first;
   }
 
-  return { dispatch, signCallback };
+  // auditForTest: rotation is time-driven, so tests need a direct handle on
+  // the day-file writer (NODE_ENV=test only — not a product surface).
+  return { dispatch, signCallback, ...(process.env.NODE_ENV === "test" ? { auditForTest: audit } : {}) };
 }

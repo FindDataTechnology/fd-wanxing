@@ -383,3 +383,47 @@ test("projection: cell_fleets ingests, is synthesized latest-wins per cell, stal
     srv.close();
   }
 });
+
+// ── storage-longevity 1.1: progress-driven rollup catch-up ──────────────────
+test("rollup progress: a rewound progress row heals the hole in one pass; kill+rerun does not double", async () => {
+  const { obs, srv } = await harness();
+  try {
+    const t0 = now();
+    // Two turns in DIFFERENT hours, 72h apart.
+    const oldHour = t0 - 72 * 3600_000 - 60_000;
+    obs.store.insertMany([
+      { id: "old-1", source: "runner:cheap1", agent: "packs-p1-deployments-a1", kind: "turn_ended", ts: oldHour, ingested_at: t0, payload: JSON.stringify({ outcome: "ok" }) },
+      { id: "now-1", source: "runner:cheap1", agent: "packs-p1-deployments-a1", kind: "turn_ended", ts: t0 - 500, ingested_at: t0, payload: JSON.stringify({ outcome: "ok" }) },
+    ], t0);
+    // Simulate 72h of observer downtime: progress froze at the hour of the
+    // old event. Everything after it is a hole the pass must heal.
+    const progressHour = new Date(oldHour).toISOString().slice(0, 13) + ":00";
+    obs.store.metaSet("rollup_progress_hour", progressHour);
+    const before = obs.store.rollupRows([new Date(oldHour).toISOString().slice(0, 13) + ":00"]);
+    assert.equal(before.length, 0, "hole exists before the pass");
+
+    const pass = obs.rollupPass();
+    assert.ok(pass.catchUp >= 2, `catch-up walked the gap (${pass.catchUp})`);
+    const healed = obs.store.rollupRows([new Date(oldHour).toISOString().slice(0, 13) + ":00"]);
+    assert.equal(healed.length, 1, "72h-old bucket healed");
+    assert.equal(healed[0].turns, 1);
+
+    // Kill+rerun: idempotent overwrite, no doubling.
+    const pass2 = obs.rollupPass();
+    const healed2 = obs.store.rollupRows([new Date(oldHour).toISOString().slice(0, 13) + ":00"]);
+    assert.equal(healed2[0].turns, 1);
+    assert.equal(pass2.catchUp, 0, "second pass is fully caught up");
+    assert.equal(obs.store.metaGet("rollup_progress_hour"), new Date(now() - 3600_000).toISOString().slice(0, 13) + ":00");
+  } finally { obs.close(); srv.close(); }
+});
+
+test("rollup progress: first run on a fresh store is retention-bounded and completes", async () => {
+  const { obs, srv } = await harness();
+  try {
+  const pass = obs.rollupPass();
+  // 336 buckets + current = the whole window walked once, no rescan loop
+  assert.ok(pass.catchUp > 300 && pass.catchUp <= 337, `bounded first walk (${pass.catchUp})`);
+  const pass2 = obs.rollupPass();
+  assert.equal(pass2.catchUp, 0, "second pass caught up");
+  } finally { obs.close(); srv.close(); }
+});

@@ -71,6 +71,16 @@ export function createEventStore({ file }) {
     PRIMARY KEY (hour, agent)
   )`);
 
+  // Rollup progress (wanxing-storage-longevity 1.1): the last fully computed
+  // hour bucket. Lives HERE (same db as rollup_agent_hour) so the progress
+  // write rides the same transaction as the bucket rows it confirms — the
+  // design's "stats.db" mention was a slip; the observed holes are in this
+  // store's rollup face.
+  db.exec(`CREATE TABLE IF NOT EXISTS kv_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
+
   const insEvent = db.prepare(`INSERT OR IGNORE INTO events
     (id, source, agent, runner, kind, ts, ingested_at, trace_id, payload)
     VALUES (@id, @source, @agent, @runner, @kind, @ts, @ingested_at, @trace_id, @payload)`);
@@ -81,8 +91,92 @@ export function createEventStore({ file }) {
     payload: JSON.parse(r.payload || "{}"),
   });
 
+  // Shared hourly accumulation (rollupHour / rollupHourCommit —
+  // wanxing-storage-longevity 1.1): with a progress pair, the bucket rows AND
+  // the progress advance land in one transaction; a killed catch-up pass
+  // resumes from the last CONFIRMED bucket, and recomputes are idempotent
+  // overwrites.
+  const rollupHourImpl = (hourKey, windowStartMs, windowEndMs, progress) => {
+    const rows = db.prepare(`SELECT agent, kind, ts, payload FROM events WHERE ts >= ? AND ts < ? ORDER BY ts`).all(windowStartMs, windowEndMs);
+    const acc = new Map(); // agent → accumulators
+    const wake = new Map(); // agent → [wake_ms…]
+    const pausedAt = new Map(); // agent → open paused ts (hour-clamped)
+    for (const r of rows) {
+      // Cell snapshots (add-fleet-cell-views) never enter the rollup face:
+      // they contribute to no metric, and registering their cell: identities
+      // here would leak them into the board's resident agents_total.
+      if (r.kind === "cell_stats") continue;
+      const a = acc.get(r.agent) ?? { turns: 0, errors: 0, minutes: 0, usd: 0, kills: 0, pausedMs: 0 };
+      const p = JSON.parse(r.payload || "{}");
+      switch (r.kind) {
+        case "turn_ended":
+          a.turns += 1;
+          if (p.outcome === "error") a.errors += 1;
+          break;
+        case "settled":
+          a.minutes += Number(p.minutes_billed) || 0;
+          a.usd += Number(p.usd) || 0;
+          break;
+        case "turn_started":
+          if (Number.isFinite(Number(p.wake_ms))) {
+            (wake.get(r.agent) ?? wake.set(r.agent, []).get(r.agent)).push(Number(p.wake_ms));
+          }
+          break;
+        case "budget_killed": a.kills += 1; break;
+        case "paused": pausedAt.set(r.agent, Math.max(r.ts, windowStartMs)); break;
+        case "resumed": {
+          const from = pausedAt.get(r.agent);
+          if (from != null) {
+            a.pausedMs += Math.min(r.ts, windowEndMs) - from;
+            pausedAt.delete(r.agent);
+          }
+          break;
+        }
+        default: break;
+      }
+      acc.set(r.agent, a);
+    }
+    const pct = (xs) => {
+      if (!xs || xs.length === 0) return null;
+      const s = xs.slice().sort((x, y) => x - y);
+      return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.5))]);
+    };
+    const pct95 = (xs) => {
+      if (!xs || xs.length === 0) return null;
+      const s = xs.slice().sort((x, y) => x - y);
+      return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]);
+    };
+    const put = db.prepare(`INSERT OR REPLACE INTO rollup_agent_hour
+      (hour, agent, turns, errors, minutes_billed, usd, wake_p50_ms, wake_p95_ms, budget_kills, paused_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const metaSet = progress
+      ? db.prepare("INSERT INTO kv_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      : null;
+    const tx = db.transaction(() => {
+      for (const [agent, a] of acc) {
+        put.run(hourKey, agent, a.turns, a.errors, a.minutes, a.usd,
+          pct(wake.get(agent)), pct95(wake.get(agent)), a.kills, a.pausedMs / 60_000);
+      }
+      // Hours with prior rollup rows but no raw events left (retention
+      // cleaned them, or the recompute window shifted) keep their values —
+      // rollups are append-only truth, never recomputed from nothing.
+      if (progress) metaSet.run(progress[0], progress[1]);
+    });
+    tx();
+    return acc.size;
+  };
+
   return {
     close() { db.close(); },
+
+    // ── kv meta (rollup progress, wanxing-storage-longevity 1.1) ───────────
+    metaGet(key) {
+      const r = db.prepare("SELECT value FROM kv_meta WHERE key = ?").get(key);
+      return r ? r.value : null;
+    },
+    metaSet(key, value) {
+      db.prepare("INSERT INTO kv_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    },
 
     // Batch insert; returns how many rows landed (dupes silently ignored —
     // at-least-once upstream means id repeats are the norm, not the error).
@@ -132,69 +226,15 @@ export function createEventStore({ file }) {
 
     // ── Rollup (idempotent recompute per hour) ─────────────────────────────
     rollupHour(hourKey, windowStartMs, windowEndMs) {
-      const rows = db.prepare(`SELECT agent, kind, ts, payload FROM events WHERE ts >= ? AND ts < ? ORDER BY ts`).all(windowStartMs, windowEndMs);
-      const acc = new Map(); // agent → accumulators
-      const wake = new Map(); // agent → [wake_ms…]
-      const pausedAt = new Map(); // agent → open paused ts (hour-clamped)
-      for (const r of rows) {
-        // Cell snapshots (add-fleet-cell-views) never enter the rollup face:
-        // they contribute to no metric, and registering their cell: identities
-        // here would leak them into the board's resident agents_total.
-        if (r.kind === "cell_stats") continue;
-        const a = acc.get(r.agent) ?? { turns: 0, errors: 0, minutes: 0, usd: 0, kills: 0, pausedMs: 0 };
-        const p = JSON.parse(r.payload || "{}");
-        switch (r.kind) {
-          case "turn_ended":
-            a.turns += 1;
-            if (p.outcome === "error") a.errors += 1;
-            break;
-          case "settled":
-            a.minutes += Number(p.minutes_billed) || 0;
-            a.usd += Number(p.usd) || 0;
-            break;
-          case "turn_started":
-            if (Number.isFinite(Number(p.wake_ms))) {
-              (wake.get(r.agent) ?? wake.set(r.agent, []).get(r.agent)).push(Number(p.wake_ms));
-            }
-            break;
-          case "budget_killed": a.kills += 1; break;
-          case "paused": pausedAt.set(r.agent, Math.max(r.ts, windowStartMs)); break;
-          case "resumed": {
-            const from = pausedAt.get(r.agent);
-            if (from != null) {
-              a.pausedMs += Math.min(r.ts, windowEndMs) - from;
-              pausedAt.delete(r.agent);
-            }
-            break;
-          }
-          default: break;
-        }
-        acc.set(r.agent, a);
-      }
-      const pct = (xs) => {
-        if (!xs || xs.length === 0) return null;
-        const s = xs.slice().sort((x, y) => x - y);
-        return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.5))]);
-      };
-      const pct95 = (xs) => {
-        if (!xs || xs.length === 0) return null;
-        const s = xs.slice().sort((x, y) => x - y);
-        return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]);
-      };
-      const put = db.prepare(`INSERT OR REPLACE INTO rollup_agent_hour
-        (hour, agent, turns, errors, minutes_billed, usd, wake_p50_ms, wake_p95_ms, budget_kills, paused_minutes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-      const tx = db.transaction(() => {
-        for (const [agent, a] of acc) {
-          put.run(hourKey, agent, a.turns, a.errors, a.minutes, a.usd,
-            pct(wake.get(agent)), pct95(wake.get(agent)), a.kills, a.pausedMs / 60_000);
-        }
-        // Hours with prior rollup rows but no raw events left (retention
-        // cleaned them, or the recompute window shifted) keep their values —
-        // rollups are append-only truth, never recomputed from nothing.
-      });
-      tx();
-      return acc.size;
+      return rollupHourImpl(hourKey, windowStartMs, windowEndMs, null);
+    },
+
+    // rollupHour + progress advance in ONE transaction
+    // (wanxing-storage-longevity 1.1): a killed pass resumes from the last
+    // bucket it actually confirmed; re-running a computed bucket is an
+    // idempotent overwrite. Same accumulation as rollupHour.
+    rollupHourCommit(hourKey, windowStartMs, windowEndMs, progressKey, progressValue) {
+      return rollupHourImpl(hourKey, windowStartMs, windowEndMs, [progressKey, progressValue]);
     },
 
     rollupRows(hourKeys) {

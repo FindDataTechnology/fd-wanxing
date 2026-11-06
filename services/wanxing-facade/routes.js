@@ -12,6 +12,7 @@
 // allowlist store and core admission checks are unchanged.
 
 import path from "node:path";
+import { readdirSync, rmSync } from "node:fs";
 import { createWanxingStore } from "./store.js";
 import { createWanxingCore, slugFor } from "./core.js";
 import { createA2aFace } from "./a2a.js";
@@ -522,6 +523,38 @@ export function registerWanxingRoutes(app, {
   const sweep = setInterval(() => void sweepOnce().catch(() => {}), 60_000);
   sweep.unref?.();
   void core.settlePending((row) => chatFace.settleChatRow(row)).catch(() => {});
+
+  // Retention tick (wanxing-storage-longevity 2.1/2.2): a low-frequency
+  // maintenance pass beside the settlement sweep — idempotency rows past
+  // their TTL, writebacks past theirs (usage is never touched), and
+  // callback-audit day files past the audit retention. Deletion counts log
+  // one line; env-tunable days, defaults per design.
+  const dayMs = 86_400_000;
+  const requestsTtlMs = Number(env.WANXING_REQUESTS_TTL_DAYS || 7) * dayMs;
+  const writebacksTtlMs = Number(env.WANXING_WRITEBACKS_TTL_DAYS || 30) * dayMs;
+  const auditRetentionDays = Number(env.WANXING_AUDIT_RETENTION_DAYS || 14);
+  const maintenanceTick = () => {
+    const { requests, writebacks } = store.retentionSweep({ requestsTtlMs, writebacksTtlMs });
+    let auditFiles = 0;
+    try {
+      const cutoff = Date.now() - auditRetentionDays * dayMs;
+      for (const f of readdirSync(dataRoot)) {
+        const m = /^callback-audit-(\d{8})\.jsonl$/.exec(f);
+        if (!m) continue;
+        const dayMsTs = Date.parse(`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00Z`);
+        if (Number.isFinite(dayMsTs) && dayMsTs < cutoff) {
+          rmSync(path.join(dataRoot, f));
+          auditFiles += 1;
+        }
+      }
+    } catch { /* dataRoot listing hiccup — next tick */ }
+    if (requests || writebacks || auditFiles) {
+      console.log(`[wanxing:retention] requests=${requests} writebacks=${writebacks} auditFiles=${auditFiles}`);
+    }
+  };
+  maintenanceTick(); // boot pass — old rows go even if the process lives < 15min
+  const maintenance = setInterval(maintenanceTick, 15 * 60_000);
+  maintenance.unref?.();
 
   return {
     core,

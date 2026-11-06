@@ -188,7 +188,9 @@ test("callbacks: signed delivery, bounded retry ladder, audit trail, no secret a
   assert.equal(vPart.slice(3), expect);
   // Secret never rides any request or the audit.
   assert.ok(!JSON.stringify(received).includes("s3cret-sig-key"), "secret absent from requests");
-  const audit = readFileSync(auditFile, "utf8");
+  // Daily rotation (storage-longevity 2.2): the day file carries the UTC date.
+  const auditDay = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const audit = readFileSync(path.join(path.dirname(auditFile), `callback-audit-${auditDay}.jsonl`), "utf8");
   assert.ok(!audit.includes("s3cret-sig-key"), "secret absent from the audit");
   assert.match(audit, /"result":"unreachable"/);
   assert.match(audit, /"result":"delivered"/);
@@ -213,7 +215,9 @@ test("callbacks: window exhaustion logs a final failure without throwing", async
   for (let i = 0; i < 100 && calls < 3; i++) await new Promise((r) => setTimeout(r, 10));
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(calls, 3, "first attempt + two retries");
-  assert.match(readFileSync(auditFile, "utf8"), /"result":"failed"/);
+  // Daily rotation (storage-longevity 2.2): the day file carries the UTC date.
+  const auditDay = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  assert.match(readFileSync(path.join(path.dirname(auditFile), `audit-${auditDay}.jsonl`), "utf8"), /"result":"failed"/);
   store.close();
 });
 

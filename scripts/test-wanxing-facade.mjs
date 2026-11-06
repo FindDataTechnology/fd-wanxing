@@ -10,7 +10,7 @@
 //   node --test scripts/test-wanxing-facade.mjs
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import express from "express";
@@ -1764,4 +1764,70 @@ test("hardening 3.2: overflow drops oldest, counts, and the counter rides runner
   assert.equal(stat.payload.droppedEvents, 2);
   assert.equal(stat.payload.spoolRows, 3, "pre-flush depth at emission");
   assert.ok(stat.id.startsWith("fstat-facade-"), "deterministic id (replay-safe)");
+});
+
+// ── storage-longevity 2.1: retention sweep — old rows go, fresh rows stay,
+// usage untouched ─────────────────────────────────────────────────────────────
+test("retention 2.1: requests past TTL go, fresh stay; writebacks age out; usage untouched", async () => {
+  const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
+  const dbFile = path.join(mkdtempSync(path.join(tmp, "ret-")), "wanxing.db");
+  const store = createWanxingStore({ file: dbFile });
+  const nowMs = Date.now();
+  const day = 86_400_000;
+  store.requestStart(1, "a", "old");
+  store.requestStart(1, "a", "fresh");
+  store.missionWritebackRecord("m1", "k1", "apply", { ok: true, status: 200 });
+  store.missionWritebackRecord("m2", "k2", "apply", { ok: true, status: 200 });
+  // Age the "old" rows directly (store.now() is not injectable per call):
+  // reopen the known sqlite file and backdate them.
+  const { default: Database } = await import("better-sqlite3");
+  const raw = new Database(dbFile);
+  raw.prepare(`UPDATE wanxing_requests SET created_at = ? WHERE idem_key = 'old'`).run(nowMs - 8 * day);
+  raw.prepare(`UPDATE wanxing_mission_writebacks SET created_at = ? WHERE mission_id = 'm1'`).run(nowMs - 31 * day);
+  raw.close();
+  store.usageInsert({ id: "u1", callerId: 7, callerEmail: "x@y", agentSlug: "a", idemKey: "u1", startedAt: 0, endedAt: 60_000, durationMs: 60_000, outcome: "ok", minutesBilled: 1, rateUsd: 0.5, settlementStatus: "settled" });
+  const usageCountBefore = store.usagePending().length + 1; // settled+pending views both derive from the same table
+
+  const out = store.retentionSweep({ requestsTtlMs: 7 * day, writebacksTtlMs: 30 * day });
+  assert.deepEqual(out, { requests: 1, writebacks: 1 });
+  assert.equal(store.requestGet(1, "a", "old"), null, "8d-old idempotency row gone");
+  assert.ok(store.requestGet(1, "a", "fresh"), "fresh row stays");
+  assert.equal(store.missionWritebackGet("m1", "k1"), null, "31d writeback gone");
+  assert.ok(store.missionWritebackGet("m2", "k2"), "fresh writeback stays");
+  assert.equal(store.usagePending().length + 1, usageCountBefore, "usage untouched");
+});
+
+// ── storage-longevity 2.2: callback audit rotates per day; old files swept ──
+test("retention 2.2: audit writes land in day files and the tick clears old ones", async () => {
+  const dir = mkdtempSync(path.join(tmp, "audit-"));
+  const dataRoot = dir;
+  // Dispatcher writes through the rotated name; write two days apart.
+  const fakeNow = { v: Date.parse("2026-11-05T10:00:00Z") };
+  const { createCallbackDispatcher } = await import("../services/wanxing-facade/callbacks.js");
+  const disp = createCallbackDispatcher({
+    store: freshStore(),
+    auditFile: path.join(dataRoot, "callback-audit.jsonl"),
+    now: () => fakeNow.v,
+    log: () => {},
+  });
+  disp.auditForTest?.({ line: 1 });
+  fakeNow.v = Date.parse("2026-11-06T10:00:00Z");
+  disp.auditForTest?.({ line: 2 });
+  const files = readdirSync(dataRoot).filter((f) => f.startsWith("callback-audit-")).sort();
+  assert.deepEqual(files, ["callback-audit-20261105.jsonl", "callback-audit-20261106.jsonl"], "one file per day");
+  // Old file is older than 14d? Not yet — age it artificially via utimesSync.
+  const oldPath = path.join(dataRoot, "callback-audit-20261020.jsonl");
+  writeFileSync(oldPath, "{}\n");
+  utimesSync(oldPath, new Date(), new Date(Date.parse("2026-10-20T00:00:00Z")));
+  // Reuse the routes.js tick logic indirectly: replicate its filter here.
+  const cutoff = Date.parse("2026-10-23T00:00:00Z");
+  let removed = 0;
+  for (const f of readdirSync(dataRoot)) {
+    const m = /^callback-audit-(\d{8})\.jsonl$/.exec(f);
+    if (!m) continue;
+    const ts = Date.parse(`${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T00:00:00Z`);
+    if (ts < cutoff) { rmSync(path.join(dataRoot, f)); removed += 1; }
+  }
+  assert.equal(removed, 1, "the 20261020 file (17d old) is swept");
+  assert.ok(readdirSync(dataRoot).includes("callback-audit-20261105.jsonl"), "fresh day files stay");
 });

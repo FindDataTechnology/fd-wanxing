@@ -749,6 +749,19 @@ export function createWanxingStore({ file }) {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(String(key), String(value), now());
     },
 
+    // ── Retention sweep (wanxing-storage-longevity 2.1) ──────────────────────
+    // The idempotency window only needs to be SHORT-lived (a retry lands
+    // within minutes); 7d is generous headroom. Writebacks are recorded once
+    // (INSERT OR IGNORE + a replay short-circuit) — every row is terminal at
+    // birth, so age alone decides. usage is NEVER touched here: it is the
+    // billing source of truth.
+    retentionSweep({ requestsTtlMs, writebacksTtlMs }) {
+      const nowMs = now();
+      const requests = db.prepare(`DELETE FROM wanxing_requests WHERE created_at < ?`).run(nowMs - requestsTtlMs).changes;
+      const writebacks = db.prepare(`DELETE FROM wanxing_mission_writebacks WHERE created_at < ?`).run(nowMs - writebacksTtlMs).changes;
+      return { requests, writebacks };
+    },
+
     // ── Deployer earnings (add-deployer-revenue-share D2) ────────────────────
     // Insert-or-ignore keyed by usage_id: a second creditShare pass for the
     // same turn (inline vs sweep race, crash-window backfill) is a no-op, and

@@ -2,15 +2,15 @@
 
 ## 1. rollup 进度驱动补算（observer）
 
-- [ ] 1.1 stats.db meta 加 `rollup_progress_hour` 行，rollupPass 改进度驱动（起点=进度、上限=保留期 336h、事务内推进）；验证=单测：进度回拨 72h 后一 tick 补齐空洞、再杀再起重放不叠加
-- [ ] 1.2 首跑/进度缺失回退起点=now-保留期；验证=全新库首跑有界（≤336 桶）完成
-- [ ] 1.3 本地全量测试绿（test-fleet-observer/test-stats-plane）；验证=npm test 过
+- [x] 1.1 stats.db meta 加 `rollup_progress_hour` 行，rollupPass 改进度驱动（起点=进度、上限=保留期 336h、事务内推进）；验证=单测：进度回拨 72h 后一 tick 补齐空洞、再杀再起重放不叠加
+- [x] 1.2 首跑/进度缺失回退起点=now-保留期；验证=全新库首跑有界（≤336 桶）完成
+- [x] 1.3 本地全量测试绿（test-fleet-observer/test-stats-plane）；验证=npm test 过
 
 ## 2. facade 保留策略
 
-- [ ] 2.1 清理 tick（15min）：wanxing_requests 7d / writebacks 终态 30d（env 可调），usage 零触碰；验证=单测旧行清/新行留/usage 行数不变
-- [ ] 2.2 callback-audit 按日轮转+14d 清理；验证=单测跨日切文件、旧文件被清
-- [ ] 2.3 清理动作日志一行（删行数）；验证=本地跑 tick 见日志
+- [x] 2.1 清理 tick（15min）：wanxing_requests 7d / writebacks 终态 30d（env 可调），usage 零触碰；验证=单测旧行清/新行留/usage 行数不变
+- [x] 2.2 callback-audit 按日轮转+14d 清理；验证=单测跨日切文件、旧文件被清
+- [x] 2.3 清理动作日志一行（删行数）；验证=本地跑 tick 见日志
 
 ## 3. PVC 备份
 
