@@ -20,7 +20,7 @@
 ## 4. paas 摘挂（最后执行）
 
 - [x] 4.1 zhiyu lane 解耦：bookkeeping 快照抽独立模块，zhiyu 改数据源；验证=paas 网关测试绿（含启动路径）
-- [x] 4.2 paas 摘挂 gateway/wanxing 卡片路由 + spec `wanxing-facade` 标 moved 指本仓 + twin 纪律废止注记；验证=paas openspec validate 过、网关镜像滚产后 platform 域 /api/wanxing/v1/a2a/* 返回 404/410 且网关其余面正常
+- [x] 4.2 paas 摘挂 gateway/wanxing 卡片路由 + spec `wanxing-facade` 标 moved 指本仓 + twin 纪律废止注记；验证=paas openspec validate 过、网关镜像滚产后 platform 域 /api/wanxing/v1/a2a/* 返回 404/410 且网关其余面正常（**滚产达成（2026-11-06）**：platform sha-d5784e8e5-paas 上产（cheap-3 线 digest fc28c60b：export 竞态经「prune 0B+独占重试」第 4 轮越过；tuna http apt + npmmirror npm×3 行 + npmmirror playwright host 三补丁入 build-dir），pod 1/1 Running；集群内探针 /api/wanxing/v1/{agents,a2a card,ops/usage} 三路由均落 catch-all 401（摘挂语义=不再被专属路由接住，代码面 grep 零 import+注释注记）；fleet-board/memory/owner 其余面注册未动；gateway/wanxing/ 死代码留存无风险）
 - [x] 4.3 两域一致性验收：wanxing 域卡片与（迁移后）platform 域消费方响应等价（字段/redaction 同口径）；验证=同 agent 双域 diff 为空或差异仅域名
 - [x] 4.4 本 change spec MODIFIED/ADDED 与实现终态对齐（packId 表述按 1.2 结论修正）；`openspec validate unify-wanxing-a2a-face --strict` 过
 
