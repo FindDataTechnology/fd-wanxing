@@ -493,7 +493,49 @@ export function registerWanxingRoutes(app, {
     res.json(store.usageBoard());
   });
 
-  app.get("/healthz", (_req, res) => res.json({ ok: true }));
+  // Deep health probe (unify-wanxing-a2a-face 3.3): the three borrowed
+  // dependencies each report under a bounded wait — the probe itself must
+  // never hang on a dead upstream (its own AbortSignal timeout, well under
+  // a second per dependency, raced against the whole answer). A degraded
+  // dependency degrades the response, never 500s it: /healthz stays a
+  // liveness truth ("process is up") plus an honest dependency appendix.
+  app.get("/healthz", async (_req, res) => {
+    const PROBE_MS = 900;
+    const probe = (label, fn) =>
+      fn()
+        .then((detail) => {
+          const d = detail ?? {};
+          const ok = d.ok !== false; // explicit ok:false wins (selfCheck's verdict)
+          return { name: label, ok, ...(d.ok === false ? { error: String(d.reason || d.error || "refused").slice(0, 120) } : d) };
+        })
+        .catch((e) => ({ name: label, ok: false, error: String(e?.message || e).slice(0, 120) }));
+    const within = (p) =>
+      Promise.race([p, new Promise((r) => setTimeout(() => r({ ok: false, error: "probe timeout" }), PROBE_MS))]);
+    const [sub2apiState, registryState, packsState] = await Promise.all([
+      sub2api && typeof sub2api.selfCheck === "function"
+        ? within(probe("sub2api", () => sub2api.selfCheck()))
+        : Promise.resolve(sub2api
+            ? { name: "sub2api", ok: true, note: "probe seam without selfCheck" }
+            : { name: "sub2api", ok: false, error: "not configured" }),
+      within(
+        probe("registry", () =>
+          doFetch("/healthz", { signal: AbortSignal.timeout(PROBE_MS) }).then((r) =>
+            // reachable = any HTTP answer (a 404 from an older registry is
+            // still "the registry is up"); 5xx and transport errors degrade.
+            r.status < 500 ? { ok: true, status: r.status } : { ok: false, error: `status ${r.status}` },
+          ),
+        ),
+      ),
+      within(
+        probe("packs", async () => {
+          const rows = await bookkeeping.rows(); // cached snapshot — no live fetch
+          return { ok: Array.isArray(rows) && rows.length >= 0, cached_rows: rows.length };
+        }),
+      ),
+    ]);
+    const ok = sub2apiState.ok && registryState.ok && packsState.ok;
+    res.json({ ok, dependencies: [sub2apiState, registryState, packsState] });
+  });
 
   // Pending-settlement sweep: retries everything the turn path could not
   // settle inline (sub2api hiccup, process restart). Row ids are the

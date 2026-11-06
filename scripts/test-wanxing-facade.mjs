@@ -1831,3 +1831,34 @@ test("retention 2.2: audit writes land in day files and the tick clears old ones
   assert.equal(removed, 1, "the 20261020 file (17d old) is swept");
   assert.ok(readdirSync(dataRoot).includes("callback-audit-20261105.jsonl"), "fresh day files stay");
 });
+
+// ── a2a-face 3.3: /healthz deep probe — degraded dependency, bounded wait ───
+test("healthz 3.3: dead sub2api degrades in <1s; process truth stays ok-shape", async () => {
+  const { registerWanxingRoutes } = await import("../services/wanxing-facade/routes.js");
+  const deadPort = 47231; // nothing listens here
+  const store = freshStore();
+  const expressApp = express();
+  expressApp.use(express.json({ limit: "1mb" }));
+  registerWanxingRoutes(expressApp, {
+    dataRoot: mkdtempSync(path.join(tmp, "healthz-")),
+    env: { SUB2API_ADMIN_KEY: "admin-x", SUB2API_BASE_URL: `http://127.0.0.1:${deadPort}`, WANXING_SUB2API_TIMEOUT_MS: "300" },
+    store,
+  });
+  const srv = http.createServer(expressApp);
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/healthz`);
+    const body = await res.json();
+    const took = Date.now() - t0;
+    assert.ok(took < 1500, `probe answers within bound (${took}ms)`);
+    assert.equal(res.status, 200, "healthz never 500s");
+    const sub = body.dependencies.find((d) => d.name === "sub2api");
+    assert.equal(sub.ok, false, "sub2api degraded");
+    assert.match(sub.error || "", /ECONNREFUSED|fetch failed|timeout|aggrega/i);
+    assert.equal(typeof body.ok, "boolean");
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});

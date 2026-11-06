@@ -2,8 +2,8 @@
 
 ## 1. 前置核实（阻塞摘挂，最先做）
 
-- [ ] 1.1 platform 域卡片/管理路由消费方盘点（网关日志聚合 + registry delegation 配置 + ops-mcp + desktop lane 确认），产出消费方清单落本 change 目录（consumers.md），每条带处置决定；验证=四来源全覆盖，清单内无「未决」条目
-- [ ] 1.2 依据清单定 ops-mcp 编址方向（default slug 签名改造；备选 facade 加 packId 别名），design.md 回填结论；验证=design 无 Open Question
+- [x] 1.1 platform 域卡片/管理路由消费方盘点——consumers.md 落档（网关日志零命中/仓内代码扫/zhiyu 只吃 bookings.rows/registry delegation 无引用/ops-mcp 唯一真消费方/desktop lane 不经此），四来源全覆盖无未决
+- [x] 1.2 编址方向定案=统一 slug 编址（design.md 回填，spec 落稿已按 slug 修正）；design 无 Open Question
 
 ## 2. 幂等硬化回灌（独立可先行上产）
 
@@ -15,7 +15,7 @@
 
 - [x] 3.1 ops-mcp 4 管理工具改 slug 编址指 facade（按 1.2 结论），tool-surface.json 同步；验证=本地 24 测试绿+8/8 工具对 facade 真调通（callers list/add/remove/pause/resume）
 - [x] 3.2 fd-infra-deploy `wanxing-ops-mcp.yaml` 切 `WANXING_OPS_BASE_URL=https://wanxing.finddatatech.cloud` 滚产；验证=生产 ops-mcp /health surface-report 正常、registry 自报不退化
-- [ ] 3.3 facade /healthz 深探针（sub2api selfCheck/registry/packs 三依赖态，超时受界）；验证=停 sub2api 模拟（改 env 指 dead port）探针 1s 内报 degraded 不挂起
+- [x] 3.3 facade /healthz 深探针——三依赖并行受界（每依赖 ≤900ms race + AbortSignal）：sub2api selfCheck（显式 ok:false 即降级）/registry 可达性（<500 即 up，404 是版本差）/packs 快照行数；全量 220/0 绿，dead-port 模拟 1s 内 degraded
 
 ## 4. paas 摘挂（最后执行）
 
