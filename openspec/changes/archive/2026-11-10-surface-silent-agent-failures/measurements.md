@@ -70,12 +70,23 @@ board: lex = {turns: 5, errors: 0, health: "ok"}   ← 没有任何失败落地
 理由：403 凭证失效 ⇒ 每次必败，且零外部调用方，纯资源浪费 + 噪音。
 恢复方式：`POST /console/deployments/<slug>/resume`（换一个有效计费键后再恢复才是有意义的）。
 
-## 三之二、暴露出的一个真缺口
+## 三之二、暴露出的缺口（已在 paas 侧修复，待演练确认）
 
-`last_error_kind` 只能报 `unknown`：runner 的 `turn_ended` 载荷里不带失败原因
-（`{turn_kind, session, duration_ms, outcome, budget_killed?}`），403 只写进它自己的日志。
-要让面板直接说「凭证失效」而不是「原因未归类」，需要 runner 在 `turn_ended` 里带
-`error_kind`——那是 paas 侧改动，属跨线，本 change 不动，只记录。
+`last_error_kind` 只能报 `unknown`：runner 的 `turn_ended` 载荷里不带失败原因，
+403 只写进它自己的日志。
+
+**已跨线修复**（paas change `classify-out-of-band-billing-rejection`，真源
+`5c3508c4e`，镜像 `sha-eb20ffb`，`agent-runner-c` / `-serving` 已上）：
+
+- 停车判据从「仅 `e.code === -32003`」放宽到「码或形态」——`isBillingRejectionShape`
+  认 401/403 状态字段与 SDK 措辞 `"<status> status code"`。原判据只在
+  `platform/stream` 的 finish+error 帧上成立，而 SDK 的 `APIError` 在那之前就冒泡，
+  所以这个保险对本类故障从未触发。
+- 失败回合的 `turn_ended` 增 `error_kind`（`timeout`/`child_exit`/`llm_failed`/
+  `billing_unconfirmed`；无形态则字段缺席）。
+- 停车权仍在零花费 `/models` 探测：形态只决定值不值得探一次。
+
+证据与演练状态见 paas 仓同 change 的 `measurements.md`。
 
 ## 四、顺带发现并已修
 
@@ -83,6 +94,12 @@ board: lex = {turns: 5, errors: 0, health: "ok"}   ← 没有任何失败落地
 
 ## 五、遗留
 
-1. **凭证失效这一类故障的原因还看不见**（见三之二）：要 runner 带 `error_kind`，跨线。
-2. 同类失效可能还有别处——现在健康信号会自己把它们浮出来，不必再靠人翻台账。
-3. `wx-alpha` 若将来要复活，必须先换有效计费键，否则 resume 后立刻回到 failing。
+1. **凭证失效的原因已进事件流**（见三之二），但那是跨线修复：本仓只读
+   `error_kind`，若 runner 版本早于该修复，字段缺席即 `unknown` —— 读到 `unknown`
+   时先看 runner 镜像 tag，别当成"没有原因"。
+2. `wx-alpha`（阿尔法哨兵）已暂停。它的计费键失效，复活前必须先换键。
+   处置记录见 paas 仓 `classify-out-of-band-billing-rejection/measurements.md`。
+3. **「没有回合」是比「回合失败」更深的一层静默**：`rollover.check()` 只滚热着的
+   子进程，所以冷掉且坏掉的 agent 不会重试 digest。本仓的 `silent` 态能把它显示为
+   "无流量"，但看不出"它本该有流量"。若要把这一层也变成告警，需要把
+   `effective_rhythm` 与「窗口内零回合」做对照——那是另一个 change 的事。
