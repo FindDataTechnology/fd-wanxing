@@ -3,52 +3,91 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>萬星嵌入车道 · 宿主示例页</title>
+<title>萬星副驾 · 一行接入示例页</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; background: #f8fafc; color: #334155; }
   header { padding: 16px 24px; border-bottom: 1px solid #e2e8f0; background: #fff; }
   main { max-width: 960px; margin: 0 auto; padding: 24px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
   p.sub { margin: 0 0 20px; color: #64748b; font-size: 13px; }
   .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
   code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  iframe { width: 100%; height: 520px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; }
-  .log { font-family: ui-monospace, monospace; font-size: 12px; max-height: 220px; overflow-y: auto; background: #0f172a; color: #a5f3fc; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 12px; line-height: 1.6; }
+  .log { font-family: ui-monospace, monospace; font-size: 12px; max-height: 240px; overflow-y: auto; background: #0f172a; color: #a5f3fc; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
   .row { margin: 8px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
-  input { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; width: 340px; }
+  input { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; width: 320px; }
   button { padding: 6px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-size: 13px; }
   button.primary { background: #0f172a; color: #fff; border-color: #0f172a; }
-  .step { color: #94a3b8; font-weight: 600; margin-right: 6px; }
   .ok { color: #059669; }
+  .warn { color: #b45309; }
+  table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  th { color: #64748b; font-weight: 600; }
 </style>
 </head>
 <body>
 <header>
-  <h1>萬星嵌入车道 · 宿主示例页</h1>
-  <p class="sub">自包含、零构建——把本页拷到任意静态托管（或本地 python -m http.server），填 slug 即可跑通 postMessage 协议四步。<b>生产可直接用</b>：本页已挂在 <code>/host-demo.html</code>。</p>
+  <h1>萬星副驾 · 一行接入示例页</h1>
+  <p class="sub">本页就是接入方：一个 <code>&lt;script&gt;</code> 标签挂载这副驾，宿主不写任何 postMessage 协议。<b>本页已挂在 <code>/host-demo.html?line=&lt;线id&gt;</code></b>——换 <code>line</code> 参数即可试不同线。</p>
 </header>
 <main>
   <div class="card">
-    <div class="row"><span class="step">0</span>agent slug：<input id="slug" placeholder="如 packs-ut_bjmuw5kxad83kimpmlg-reception" /> <button id="load" class="primary">载入 widget</button></div>
-    <div class="row"><span class="step">1</span><b>init</b>：widget 载入后宿主发 <code>wx-copilot-init</code>（声明意图动词白名单）→ widget 回 <code>wx-copilot-ready</code></div>
-    <div class="row"><span class="step">2</span><b>context</b>：发 <code>wx-copilot-context</code> 告诉 agent 当前页面（agent 提问时引用）</div>
-    <div class="row"><span class="step">3</span><b>ask 卡</b>：在 widget 里问一个会调 <code>ask_user_question</code> 的问题，卡片在此页面之上渲染</div>
-    <div class="row"><span class="step">4</span><b>intent</b>：agent 提议页面动作（<code>intent:*</code> 问题）→ 用户点第一个选项 → 宿主收 <code>wx-copilot-intent</code>，执行后回 <code>wx-copilot-intent-result</code></div>
+    <h2>1. 最小接入：一个标签</h2>
+    <pre>&lt;script src="https://wanxing.finddatatech.cloud/copilot.js"
+        data-line="lex" async&gt;&lt;/script&gt;</pre>
+    <p class="sub" style="margin:8px 0 0">必须是经典脚本（不要加 <code>type="module"</code>）；<code>data-accent="#rrggbb"</code> 可覆盖线配色，<code>data-open="0"</code> 可让 widget 初始收起。</p>
   </div>
+
   <div class="card">
-    <div class="row"><span class="step">↔</span>宿主事件日志（本页 console 同步打印）</div>
-    <div class="log" id="log">（等待 widget 载入…）</div>
+    <h2>2. 可选钩子：宿主身份 / 页面上下文 / 页面动作</h2>
+    <pre>window.WanxingCopilot = window.WanxingCopilot || {};
+WanxingCopilot.identify = () => ({ token });          // 每回合调用，可返回 null
+WanxingCopilot.context  = () => ({ page, entity });   // 就绪时 + hashchange/popstate 时调用
+WanxingCopilot.intents  = { navigate: (arg) => router.push(arg) };
+WanxingCopilot.pushContext = () => {};                // SPA 用 pushState 跳转后手动调一次
+WanxingCopilot.onEvent = (type, detail) => {};        // 可选：观察协议，不用自己实现</pre>
+    <table>
+      <tr><th>钩子</th><th>不提供时</th></tr>
+      <tr><td><code>identify</code></td><td>widget 用自身梯队：匿名（线已开）或登录升级（会点名登录到哪个平台）</td></tr>
+      <tr><td><code>context</code></td><td>不推页面上下文，agent 只看到用户输入</td></tr>
+      <tr><td><code>intents</code></td><td>agent 的页面动作提议只渲染成普通问询卡，不会出现可执行按钮</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>3. 本页的活体演示</h2>
     <div class="row">
-      <button id="sendCtx">发送 wx-copilot-context（示例页面）</button>
+      <span>线 id：</span><input id="line" placeholder="lex" />
+      <button id="reload" class="primary">按该线重新挂载</button>
       <span id="status" class="ok"></span>
     </div>
-    <div class="row">已声明的意图动词：<code>navigate</code>、<code>refresh</code>——widget 里让 agent 试「带我去目录页」或「刷新一下页面」。</div>
+    <div class="row"><span id="resolved" class="warn"></span></div>
+    <div class="log" id="log">（等待 loader 解析绑定…）</div>
   </div>
-  <iframe id="frame" title="萬星嵌入 widget" />
+
+  <div class="card">
+    <h2>4. 为什么可能「什么都没出现」</h2>
+    <table>
+      <tr><th>解析状态</th><th>loader 行为</th></tr>
+      <tr><td><code>unbound</code> / <code>unknown</code></td><td>不注入；页面 console 记一条原因（该线没绑副驾，或线 id 不合法）</td></tr>
+      <tr><td><code>closed</code></td><td>不注入；原因可能是 <code>agent_paused</code> / <code>agent_missing</code> / <code>agent_private</code> / <code>chat_not_open</code></td></tr>
+      <tr><td><code>ready</code></td><td>注入 widget；<code>anonymous: login_required</code> 时访客会看到登录升级（文案点名平台）</td></tr>
+    </table>
+    <p class="sub" style="margin:8px 0 0">静默死卡比没有入口更糟：配置缺失该在控制台看见，不该由访客承担。</p>
+  </div>
+
+  <div class="card">
+    <h2>5. loader 不可用时（兜底）</h2>
+    <p class="sub" style="margin:0 0 8px">直连 widget 地址仍然可用——它就是 loader 注入的那个 iframe，行为完全一致，只是宿主得自己写协议。</p>
+    <pre>&lt;iframe src="https://wanxing.finddatatech.cloud/#/embed/&lt;agentSlug&gt;?open=1"
+        style="position:fixed;bottom:0;right:0;width:420px;height:640px;border:0;
+               background:transparent;z-index:2147483000"&gt;&lt;/iframe&gt;</pre>
+  </div>
 </main>
+
 <script>
-  var INTENTS = ["navigate", "refresh"]; // 宿主声明的动词白名单：未列出的动词，widget 会答「当前页面不支持」
-  var frame = document.getElementById("frame");
+  // ── The host side of this demo: three optional hooks, no protocol code ────
   var log = document.getElementById("log");
   var lines = [];
   function show(msg) {
@@ -58,46 +97,76 @@
     log.scrollTop = log.scrollHeight;
     console.log("[host-demo]", msg);
   }
-  function note(s) { document.getElementById("status").textContent = s; }
+  function note(s, cls) { var el = document.getElementById("status"); el.textContent = s; el.className = cls || "ok"; }
 
-  // 1) host → widget：init（first init wins the trusted origin——本页 origin 即被信任的宿主）
-  function sendInit() {
-    frame.contentWindow.postMessage({ type: "wx-copilot-init", intents: INTENTS }, "*");
-    show("→ wx-copilot-init { intents: " + JSON.stringify(INTENTS) + " }");
+  var params = new URLSearchParams(location.search);
+  var lineInput = document.getElementById("line");
+  lineInput.value = params.get("line") || "lex";
+
+  window.WanxingCopilot = {
+    // This page has no tenant identity to relay — returning null is the honest
+    // answer, and the widget falls back to its own tier.
+    identify: function () { return null; },
+    context: function () {
+      return { line: "萬星宿主示例页", page: "host-demo.html", entity: "Copilot loader" };
+    },
+    intents: {
+      navigate: function (arg) {
+        var to = String(arg || "");
+        if (!/^\/[A-Za-z0-9/_-]{0,120}$/.test(to)) throw new Error("navigate 只接受站内相对路径");
+        location.hash = to;
+        return { message: "已导航到 " + to };
+      },
+      refresh: function () { setTimeout(function () { location.reload(); }, 120); return { message: "刷新中" }; },
+    },
+    onEvent: function (type, detail) {
+      if (type === "identity") return show("→ wx-copilot-identity { token: " + detail.token + " }");
+      if (type === "intent") return show("← wx-copilot-intent { verb: " + detail.verb + ", arg: " + detail.arg + " }");
+      if (type === "identity-request") return show("← wx-copilot-identity-request");
+      show("← " + type);
+    },
+  };
+
+  function mount(line) {
+    // A fresh resolution per mount: remove the previous widget if any.
+    var old = document.querySelector("iframe[data-wanxing-copilot]");
+    if (old) old.remove();
+    window.WanxingCopilot.__loaderMounted = false;
+    lines = [];
+    log.textContent = "（解析绑定中…）";
+
+    fetch(location.origin + "/api/wanxing/v1/lines/" + encodeURIComponent(line) + "/copilot")
+      .then(function (r) { return r.json(); })
+      .then(function (doc) {
+        var el = document.getElementById("resolved");
+        if (doc.state === "ready") {
+          el.textContent = "解析：ready · agent " + doc.agent.slug + " · anonymous=" + doc.anonymous;
+          el.className = "ok";
+        } else {
+          el.textContent = "解析：" + doc.state + (doc.reason ? " · " + doc.reason : "") + " —— loader 不会注入任何东西";
+          el.className = "warn";
+        }
+      })
+      .catch(function () {
+        document.getElementById("resolved").textContent = "解析请求失败（网络/CORS）";
+      });
+
+    var s = document.createElement("script");
+    s.src = location.origin + "/copilot.js";
+    s.async = true;
+    s.setAttribute("data-line", line);
+    s.setAttribute("data-open", "1");
+    s.onload = function () { show("loader 已加载（data-line=" + line + "）"); };
+    document.head.appendChild(s);
+    history.replaceState(null, "", "?line=" + encodeURIComponent(line));
+    note("已挂载 " + line);
   }
-  // 2) host → widget：context（agent 回合里可引用的页面事实）
-  function sendContext() {
-    var ctx = { line: "万星宿主示例页", page: "host-demo.html", entity: "Wanxing Embed Lane", intent: "演示嵌入协议" };
-    frame.contentWindow.postMessage({ type: "wx-copilot-context", line: ctx.line, page: ctx.page, entity: ctx.entity, intent: ctx.intent }, "*");
-    show("→ wx-copilot-context " + JSON.stringify(ctx));
-    note("context 已发送——在 widget 里问「我现在在哪个页面」试试");
-  }
-  // 4) widget → host：intent 执行与回执
-  function execIntent(msg) {
-    show("← wx-copilot-intent { verb: " + msg.verb + ", arg: " + msg.arg + " }");
-    var ok = true, message = "";
-    if (msg.verb === "navigate") { location.hash = msg.arg || ""; message = "已导航到 " + msg.arg; }
-    else if (msg.verb === "refresh") { location.reload(); return; }
-    else { ok = false; message = "动词未声明"; }
-    frame.contentWindow.postMessage({ type: "wx-copilot-intent-result", askId: msg.askId, questionId: msg.questionId, ok: ok, message: message }, "*");
-    show("→ wx-copilot-intent-result { ok: " + ok + " }");
-  }
-  window.addEventListener("message", function (ev) {
-    var d = ev.data || {};
-    if (d.type === "wx-copilot-ready") { show("← wx-copilot-ready { slug: " + d.slug + " }"); note("握手完成——发送 context 后即可对话"); }
-    else if (d.type === "wx-copilot-identity-request") { show("← wx-copilot-identity-request（本示例未接租户身份，widget 走匿名/自行登录梯队）"); }
-    else if (d.type === "wx-copilot-state") { show("← wx-copilot-state { open: " + d.open + " }"); }
-    else if (d.type === "wx-copilot-intent") { execIntent(d); }
+
+  document.getElementById("reload").addEventListener("click", function () {
+    mount(document.getElementById("line").value.trim() || "lex");
   });
-  document.getElementById("load").addEventListener("click", function () {
-    var slug = document.getElementById("slug").value.trim();
-    if (!slug) { note("先填 slug"); return; }
-    frame.src = location.origin + "/#/embed/" + encodeURIComponent(slug);
-    show("iframe ← " + frame.src);
-    // 等一拍再 init（iframe 加载完才有接收方；first init wins the trusted origin）
-    setTimeout(sendInit, 1200);
-  });
-  document.getElementById("sendCtx").addEventListener("click", sendContext);
+
+  mount(lineInput.value);
 </script>
 </body>
 </html>

@@ -95,3 +95,36 @@ test("ConsoleView-shaped adversarial auth state: expired notice renders as text,
   const s = authState();
   assert.equal(typeof s.notice, "string");
 });
+
+// ── AskCard: one card, both shells (unify-cross-line-copilot 5.3/5.4) ────────
+// Static render only proves it does not crash and that the parts an agent's ask
+// carries (question, options, cancel, countdown slot) reach the DOM.
+
+test("AskCard renders questions, options, and the cancel affordance", async () => {
+  const { AskCard } = await import("../src/components/AskCard.jsx");
+  const ask = {
+    askId: "ask-1",
+    deadlineAt: Date.now() + 60_000,
+    questions: [
+      { id: "q1", header: "选择", question: "去哪个页面？", detail: "只能选一个", options: [{ label: "目录" }, { label: "控制台" }] },
+    ],
+  };
+  const html = renderOk(createElement(AskCard, { ask, onSubmit: () => {} }), "AskCard");
+  assert.ok(html.includes("助手问询"));
+  assert.ok(html.includes("去哪个页面？"));
+  assert.ok(html.includes("目录") && html.includes("控制台"));
+  assert.ok(html.includes("取消"));
+  assert.ok(html.includes("提交回答"));
+});
+
+test("AskCard marks an intent question unsupported when the host declares no verbs", async () => {
+  const { AskCard } = await import("../src/components/AskCard.jsx");
+  const ask = {
+    askId: "ask-2",
+    deadlineAt: Date.now() + 60_000,
+    questions: [{ id: "intent:navigate:/console/usage", question: "带你去用量页？", options: [{ label: "执行" }, { label: "跳过" }] }],
+  };
+  const html = renderOk(createElement(AskCard, { ask, onSubmit: () => {}, hostIntents: [] }), "AskCard intent");
+  assert.ok(html.includes("页面动作"));
+  assert.ok(html.includes("当前页面不支持此操作"));
+});

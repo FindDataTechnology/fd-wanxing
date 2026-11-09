@@ -51,12 +51,27 @@ export function DocsView() {
       </section>
 
       <section>
-        <h2 className="font-semibold mb-2">嵌入车道 · 宿主接入</h2>
+        <h2 className="font-semibold mb-2">嵌入车道 · 一行接入</h2>
         <p className="text-slate-600 dark:text-slate-400">
-          把 widget 以 iframe 嵌进你的页面：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">{WANXING_BASE}/#/embed/&lt;agentSlug&gt;</code>，
-          宿主经 postMessage 与它握手（init → ready → context → 问询卡 → 意图回执）。
+          产品线页面挂一个脚本标签即可，<b>宿主不写任何 postMessage 协议</b>：
+        </p>
+        <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-800 p-3 text-[11px] leading-relaxed">{`<script src="${WANXING_BASE}/copilot.js" data-line="lex" async></script>`}</pre>
+        <p className="mt-2 text-slate-600 dark:text-slate-400">
+          loader 自己解析<b>这条线绑定的副驾</b>、注入 widget、跑完整宿主协议。可选钩子只有三个：
+          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">WanxingCopilot.identify()</code>（每回合的宿主身份）、
+          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">.context()</code>（页面上下文）、
+          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">.intents</code>（页面动作白名单）；
+          不提供任何一个也能工作——只是访客会落到 widget 自己的梯队（匿名或登录升级）。
+        </p>
+        <p className="mt-2 text-slate-600 dark:text-slate-400">
+          该线未绑定副驾、助手已暂停、或没有任何访客梯队可服务时，loader <b>不注入任何东西</b>，只在 console 记一条原因——
+          静默死卡比没有入口更糟。
           <a className="underline" href="/host-demo.html" target="_blank" rel="noreferrer">宿主示例页</a>
-          是可运行的完整参考——自包含单文件，可直接查看源码拷走改造。
+          是可运行的完整参考（<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">?line=&lt;线id&gt;</code> 可换线试）。
+        </p>
+        <p className="mt-2 text-slate-500">
+          直连 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">{WANXING_BASE}/#/embed/&lt;agentSlug&gt;</code>
+          仍然可用（就是 loader 注入的那个 iframe，行为一致），但宿主需自己实现协议；loader 不可用时才走这条路。
         </p>
       </section>
 

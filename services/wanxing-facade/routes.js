@@ -163,6 +163,10 @@ export function registerWanxingRoutes(app, {
     embedAudiences: env.WANXING_EMBED_AUDIENCES || "",
     fetchImpl: fetchImpl ?? undefined,
   });
+  // Line copilot bindings (unify-cross-line-copilot 1.2): the console reports
+  // intent vs EFFECT, and the effect lives where the admission gates do — so
+  // the chat face is referenced late-bound, exactly like chatability below.
+  let chatFaceRef = null;
   registerConsoleRoutes(app, {
     requireToken: (req) => {
       const t = consoleToken();
@@ -205,6 +209,10 @@ export function registerWanxingRoutes(app, {
           headers: { ...(init.headers ?? {}), Authorization: `Bearer ${memToken()}` },
         });
     })(),
+    // Line copilot bindings (unify-cross-line-copilot 1.2): late-bound — the
+    // chat face is created after this registration and owns the gates.
+    resolveLineState: (line) =>
+      chatFaceRef ? chatFaceRef.lineState(line) : Promise.resolve({ state: "closed", reason: "facade_not_ready" }),
     log: (m) => console.log(`[wanxing:console] ${m}`),
   });
 
@@ -286,7 +294,6 @@ export function registerWanxingRoutes(app, {
   // face's catalog marker names the unit's endpoint — the late-bound ref
   // breaks the cycle the same way chatFaceRef does.
   let clusterRef = null;
-  let chatFaceRef = null;
   const face = createA2aFace({
     core,
     resolveDeployment,

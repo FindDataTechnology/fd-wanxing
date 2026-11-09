@@ -8,49 +8,26 @@
 import { useEffect, useRef, useState } from "react";
 import { authFetch, loginLogto, useAuth } from "../auth.js";
 import { SkeletonLines } from "../components/Skeleton.jsx";
+import { AskCard } from "../components/AskCard.jsx";
+import {
+  askSummaryText,
+  clearHistory,
+  contextId,
+  loadHistory,
+  ownKeyOf,
+  parseTurnStream,
+  postAskAnswer,
+  saveHistory,
+  setOwnKey as persistOwnKey,
+} from "../chat-core.js";
 
-const histKey = (slug) => `wx-chat-history:${slug}`;
-const ctxKey = (slug) => `wx-chat-ctx:${slug}`;
-const ownKeyKey = (slug) => `wx-chat-ownkey:${slug}`;
-const HISTORY_CAP = 200;
+// Conversation persistence, stream dispatch, and the ask lane are SHARED with
+// the embed widget (chat-core.js) — this view keeps only its login shell, its
+// allowance bar, and the own-key bridge UI.
+const loadHist = (slug) => loadHistory(slug);
+const saveHist = (slug, messages) => saveHistory(slug, messages);
+const ctxFor = (slug) => contextId(slug);
 const approxTurns = (min) => `约 ${Math.max(1, Math.round(min / 1.5))} 回合`;
-
-const loadHist = (slug) => {
-  try {
-    return JSON.parse(localStorage.getItem(histKey(slug)) ?? "[]");
-  } catch {
-    return [];
-  }
-};
-const saveHist = (slug, messages) => {
-  localStorage.setItem(histKey(slug), JSON.stringify(messages.slice(-HISTORY_CAP)));
-};
-const ctxFor = (slug) => {
-  let v = localStorage.getItem(ctxKey(slug));
-  if (!v) {
-    v = `wx:chat-${crypto.randomUUID()}`;
-    localStorage.setItem(ctxKey(slug), v);
-  }
-  return v;
-};
-
-// Tolerant text extraction over an SSE frame's JSON-RPC document: the runner
-// emits status/message/artifact results whose text parts live at different
-// depths — walk the result tree and concatenate every text part in order.
-const textOfFrame = (doc) => {
-  const out = [];
-  const seen = new Set();
-  const walk = (v) => {
-    if (!v || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v.parts)) {
-      for (const p of v.parts) if (typeof p?.text === "string" && p.text) out.push(p.text);
-    }
-    for (const k of Object.keys(v)) if (k !== "parts") walk(v[k]);
-  };
-  walk(doc?.result ?? doc);
-  return out.join("");
-};
 
 export function ChatView({ focusSlug } = {}) {
   const auth = useAuth();
@@ -68,9 +45,13 @@ export function ChatView({ focusSlug } = {}) {
   }, []);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
-  const [ownKey, setOwnKey] = useState(() => (slug ? localStorage.getItem(ownKeyKey(slug)) ?? "" : ""));
+  const [ownKey, setOwnKey] = useState(() => (slug ? ownKeyOf(slug) : ""));
   const [keyDraft, setKeyDraft] = useState("");
   const [ownKeyMode, setOwnKeyMode] = useState(false);
+  // Ask lane (unify-cross-line-copilot 5.4): the in-site view renders questions
+  // the same way the embed widget does — one shared card, one shared answer
+  // route. This lane has no host page, so no intent verb is ever executable.
+  const [pendingAsk, setPendingAsk] = useState(null); // { askId, questions, deadlineAt, bearer, busy }
   // 402 exhaustion is its own state — the agent stays OPEN (subsidy on), the
   // visitor is simply out of free allowance; rendering it as "not open"
   // would misname the situation and unmount the own-key bridge.
@@ -79,8 +60,9 @@ export function ChatView({ focusSlug } = {}) {
 
   useEffect(() => {
     setMessages(loadHist(slug));
-    setOwnKey(localStorage.getItem(ownKeyKey(slug)) ?? "");
+    setOwnKey(ownKeyOf(slug));
     setOwnKeyMode(false);
+    setPendingAsk(null);
   }, [slug]);
 
   const refreshStatus = () => {
@@ -221,44 +203,22 @@ export function ChatView({ focusSlug } = {}) {
         }
         return;
       }
-      // SSE: accumulate text deltas into one growing assistant bubble.
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let acc = "";
-      let frameErr = false;
-      const push = (text) => {
-        setMessages((prev) => {
-          const base = prev.at(-1)?.role === "assistant" ? prev.slice(0, -1) : prev;
-          const out = [...base, { role: "assistant", text, at: Date.now() }];
-          return out;
-        });
-      };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === "[DONE]") continue;
-          let doc = null;
-          try {
-            doc = JSON.parse(payload);
-          } catch {
-            continue;
-          }
-          if (doc?.error) frameErr = true;
-          const t = textOfFrame(doc);
-          if (t && t !== acc) {
-            acc = t;
-            push(acc);
-          }
-        }
-      }
+      // SSE dispatch comes from chat-core.js — the same parser the embed widget
+      // runs, so an ask reaches both shells identically (5.3: this lane used to
+      // ignore ask frames entirely).
+      const bearer = useKey ? ownKey : auth.token;
+      const { text: acc, frameError: frameErr } = await parseTurnStream(r.body, {
+        onText: (text) =>
+          setMessages((prev) => {
+            const base = prev.at(-1)?.role === "assistant" ? prev.slice(0, -1) : prev;
+            return [...base, { role: "assistant", text, at: Date.now() }];
+          }),
+        onAsk: (a) => {
+          // The own-key bridge rides the API lane, where asks do not exist.
+          if (useKey) return;
+          setPendingAsk({ ...a, bearer, busy: false });
+        },
+      });
       const finalBase = () =>
         setMessages((prev) => {
           const base = prev.at(-1)?.role === "assistant" ? prev : [...prev, { role: "assistant", text: acc || "（无输出）", at: Date.now() }];
@@ -282,17 +242,32 @@ export function ChatView({ focusSlug } = {}) {
       setNotice("调用键以 sk- 开头");
       return;
     }
-    localStorage.setItem(ownKeyKey(slug), k);
+    persistOwnKey(slug, k);
     setOwnKey(k);
     setOwnKeyMode(true);
     setKeyDraft("");
     setNotice("已启用你自己的调用键——后续回合按 API 车道计费。");
   };
   const dropOwnKey = () => {
-    localStorage.removeItem(ownKeyKey(slug));
+    persistOwnKey(slug, "");
     setOwnKey("");
     setOwnKeyMode(false);
     refreshStatus();
+  };
+
+  // Answer (or cancel) the live ask through the shared side route, then record
+  // the resolved summary in the transcript — same wording as the embed widget.
+  const submitAsk = async ({ cancelled = false, answers = null } = {}) => {
+    const ask = pendingAsk;
+    if (!ask || ask.busy) return;
+    setPendingAsk(null);
+    const { note } = await postAskAnswer(slug, ask.bearer, { askId: ask.askId, answers, cancelled });
+    const text = askSummaryText(ask.questions, { cancelled, answers: answers ?? [], note: note || undefined });
+    setMessages((prev) => {
+      const next = [...prev, { role: "ask", text, at: Date.now() }];
+      saveHist(slug, next);
+      return next;
+    });
   };
 
   return (
@@ -305,7 +280,7 @@ export function ChatView({ focusSlug } = {}) {
 
       {!auth.token ? (
         <div className="max-w-sm mx-auto mt-10 space-y-3 text-center">
-          <p className="text-sm text-slate-500">登录后即可与 agent 对话（每日有免费额度）。</p>
+          <p className="text-sm text-slate-500">登录萬星后即可与 agent 对话（每日有免费额度）。</p>
           <button
             onClick={() =>
               loginLogto({ gate: "chat", returnTo: `#/chat/${encodeURIComponent(slug)}` }).catch((e) =>
@@ -409,6 +384,14 @@ export function ChatView({ focusSlug } = {}) {
             <div ref={bottomRef} />
           </div>
 
+          {/* The same answerable card the embed widget renders (5.4). This
+              lane has no host page, so no intent verb is ever executable. */}
+          {pendingAsk && (
+            <div className="mt-2">
+              <AskCard ask={pendingAsk} onSubmit={submitAsk} hostIntents={[]} testId="wx-chat-ask" />
+            </div>
+          )}
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -419,10 +402,17 @@ export function ChatView({ focusSlug } = {}) {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={ownKeyMode ? `以你的调用键调用 ${agentName}…` : `向 ${agentName} 说点什么…`}
-              className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+              placeholder={
+                pendingAsk
+                  ? "请先回答上方问询…"
+                  : ownKeyMode
+                    ? `以你的调用键调用 ${agentName}…`
+                    : `向 ${agentName} 说点什么…`
+              }
+              disabled={Boolean(pendingAsk)}
+              className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm disabled:opacity-60"
             />
-            <button disabled={sending} className="px-4 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-40">
+            <button disabled={sending || Boolean(pendingAsk)} className="px-4 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-40">
               {sending ? "回复中…" : "发送"}
             </button>
           </form>

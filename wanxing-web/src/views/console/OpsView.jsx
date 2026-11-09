@@ -35,6 +35,12 @@ export function OpsView() {
   const [queueErr, setQueueErr] = useState("");
   const [qNotes, setQNotes] = useState({}); // ref → decision note draft
   const [qBusy, setQBusy] = useState(""); // ref in flight
+  // Line copilot bindings (unify-cross-line-copilot 3.1).
+  const [lineCopilots, setLineCopilots] = useState(null); // null = not loaded / not ops
+  const [lineErr, setLineErr] = useState("");
+  const [lineBusy, setLineBusy] = useState(false);
+  const [unbindArm, setUnbindArm] = useState(null); // line awaiting the second click
+  const [lineDraft, setLineDraft] = useState({ line: "", agentSlug: "", accent: "", anonymous: false });
 
   useEffect(() => {
     let live = true;
@@ -110,8 +116,66 @@ export function OpsView() {
         setOpsOk(true);
         return r.json();
       })
-      .then((d) => { if (d) { setPlans(d); setPlanErr(""); loadQueue(); } })
+      .then((d) => { if (d) { setPlans(d); setPlanErr(""); loadQueue(); loadLineCopilots(); } })
       .catch((e) => setPlanErr(String(e?.message || e)));
+
+  // ── Line copilot bindings (unify-cross-line-copilot 3.1) ─────────────────
+  // Ops-only governance list. Every row shows INTENT (what the line asked for)
+  // next to EFFECT (what the gates currently do) — an unopened anonymous gate
+  // must read as a visible configuration gap, not a silent trap for visitors.
+  const loadLineCopilots = () =>
+    authFetch("/api/wanxing/v1/console/line-copilots")
+      .then(async (r) => {
+        if (r.status === 403) { setLineCopilots(null); return; }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => { if (d) { setLineCopilots(d.bindings ?? []); setLineErr(""); } })
+      .catch((e) => setLineErr(String(e?.message || e)));
+
+  const saveLineBinding = async (e) => {
+    e.preventDefault();
+    const line = lineDraft.line.trim().toLowerCase();
+    const agentSlug = lineDraft.agentSlug.trim();
+    if (!line || !agentSlug) { setLineErr("线 id 与部署 slug 都要填"); return; }
+    setLineBusy(true);
+    setLineErr("");
+    try {
+      const r = await authFetch(`/api/wanxing/v1/console/line-copilots/${encodeURIComponent(line)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentSlug,
+          accent: lineDraft.accent.trim(),
+          anonymousIntent: lineDraft.anonymous,
+        }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(d?.error?.message || d?.error || `HTTP ${r.status}`);
+      setLineDraft({ line: "", agentSlug: "", accent: "", anonymous: false });
+      await loadLineCopilots();
+    } catch (err) {
+      setLineErr(String(err?.message || err));
+    } finally {
+      setLineBusy(false);
+    }
+  };
+
+  const unbindLine = async (line) => {
+    if (unbindArm !== line) { setUnbindArm(line); return; }
+    setUnbindArm(null);
+    setLineBusy(true);
+    try {
+      const r = await authFetch(`/api/wanxing/v1/console/line-copilots/${encodeURIComponent(line)}`, { method: "DELETE" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(d?.error?.message || d?.error || `HTTP ${r.status}`);
+      await loadLineCopilots();
+    } catch (err) {
+      setLineErr(String(err?.message || err));
+    } finally {
+      setLineBusy(false);
+    }
+  };
 
   useEffect(() => {
     loadPlans();
@@ -483,6 +547,110 @@ export function OpsView() {
           )}
           {plans && (plans.plans ?? []).length === 0 && <div className="text-xs text-slate-400">尚无套餐。</div>}
           <div className="text-[11px] text-slate-400">套餐是调用者侧的预付分钟包：API 回合按分钟实扣套餐余量，扣完下回合拒、调整即恢复；无套餐的调用者仍按调用键余额结算。</div>
+        </div>
+        )}
+
+        {opsOk !== false && (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="line-copilots-panel">
+          <h3 className="font-semibold">线副驾绑定 · ops</h3>
+          <div className="text-[11px] text-slate-400">
+            一条线对外用哪个助手，是这里的治理记录——产品线页面只要挂一个 <span className="font-mono">copilot.js</span> 标签，
+            副驾就按这里解析。绑定写的是<b>意图</b>，生效仍看现有的两道闸。
+          </div>
+          {lineErr && <div className="text-xs text-amber-600 dark:text-amber-400">{lineErr}</div>}
+
+          {lineCopilots && lineCopilots.length > 0 && (
+            <div className="space-y-1.5" data-testid="line-copilots-list">
+              {lineCopilots.map((b) => (
+                <div key={b.line} className="flex gap-3 items-center flex-wrap text-xs" data-line={b.line} data-state={b.state}>
+                  <span className="font-mono w-20 truncate" title={b.line}>{b.line}</span>
+                  <span className="w-56 truncate" title={b.agentSlug}>{b.agentName || b.agentSlug}</span>
+                  {b.accent ? (
+                    <span
+                      className="inline-block w-3 h-3 rounded-sm border border-slate-300 dark:border-slate-600"
+                      style={{ background: b.accent }}
+                      title={`线配色 ${b.accent}`}
+                    />
+                  ) : null}
+                  <span className="text-slate-400">意图 {b.anonymousIntent ? "匿名开" : "匿名关"}</span>
+                  <span
+                    className={
+                      b.effective === "open"
+                        ? "text-emerald-700 dark:text-emerald-400"
+                        : b.effective === "login_required"
+                          ? "text-amber-700 dark:text-amber-400"
+                          : "text-slate-500"
+                    }
+                    data-testid={`line-effective-${b.line}`}
+                  >
+                    生效 {b.effective === "open" ? "匿名可聊" : b.effective === "login_required" ? "需登录" : `不可用${b.reason ? `（${b.reason}）` : ""}`}
+                  </span>
+                  {b.gap && (
+                    <span
+                      className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                      data-testid={`line-gap-${b.line}`}
+                      title="意图与生效不一致：访客不会得到匿名对话"
+                    >
+                      缺口 · 匿名未开
+                    </span>
+                  )}
+                  <button
+                    onClick={() => unbindLine(b.line)}
+                    disabled={lineBusy}
+                    className={`ml-auto px-2 py-1 rounded border text-xs disabled:opacity-40 ${
+                      unbindArm === b.line
+                        ? "border-amber-400 text-amber-700 dark:text-amber-400"
+                        : "border-slate-300 dark:border-slate-700"
+                    }`}
+                    data-testid={`line-unbind-${b.line}`}
+                  >
+                    {unbindArm === b.line ? "确认解绑？" : "解绑"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {lineCopilots && lineCopilots.length === 0 && (
+            <div className="text-xs text-slate-400">尚无绑定——没有线会挂上副驾。</div>
+          )}
+
+          <form onSubmit={saveLineBinding} className="flex gap-2 items-center flex-wrap pt-1 border-t border-slate-200 dark:border-slate-800">
+            <input aria-label="线 id"
+              value={lineDraft.line}
+              onChange={(e) => setLineDraft({ ...lineDraft, line: e.target.value })}
+              placeholder="线 id（如 lex）"
+              className="w-32 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+            />
+            <input aria-label="部署 slug"
+              value={lineDraft.agentSlug}
+              onChange={(e) => setLineDraft({ ...lineDraft, agentSlug: e.target.value })}
+              placeholder="公开部署 slug"
+              className="w-80 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+            />
+            <input aria-label="线配色"
+              value={lineDraft.accent}
+              onChange={(e) => setLineDraft({ ...lineDraft, accent: e.target.value })}
+              placeholder="#1d4ed8（可选）"
+              className="w-32 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={lineDraft.anonymous}
+                onChange={(e) => setLineDraft({ ...lineDraft, anonymous: e.target.checked })}
+                data-testid="line-anon-intent"
+              />
+              意图允许匿名
+            </label>
+            <button disabled={lineBusy} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs disabled:opacity-40">
+              {lineBusy ? "保存中…" : "绑定/更新"}
+            </button>
+          </form>
+
+          <div className="text-[11px] text-slate-400">
+            出现「缺口」意味着：这条线想看匿名对话，但该部署的匿名开关（或平台匿名总开关）没开——访客点开助手只会看到「登录后开始对话」。
+            去<b>该部署的「嵌入」面板</b>打开「允许匿名访客」即可；两道闸都开之后，这一行会变成「生效 匿名可聊」，缺口消失。
+          </div>
         </div>
         )}
       </div>

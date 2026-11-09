@@ -23,6 +23,10 @@ export function registerConsoleRoutes(app, {
   observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
   memoryFetch = null, // (path, init) → Response against fd-memory (platform seam inside); null = lane unconfigured
   log = null,
+  // Line copilot bindings (unify-cross-line-copilot 1.2): late-bound resolver
+  // from the chat face — the console shows intent vs EFFECT, and the effect
+  // can only be computed where the admission gates live.
+  resolveLineState = null,
 }) {
   const say = log ?? (() => {});
 
@@ -490,6 +494,88 @@ export function registerConsoleRoutes(app, {
   app.get("/api/wanxing/v1/console/plans", async (req, res) => {
     if (!opsOnly(req, res)) return;
     return ok(res, { plans: store.planList() });
+  });
+
+  // ── Line copilot bindings (unify-cross-line-copilot 1.2) ─────────────────
+  // Ops-only governance of "which public deployment is a line's OUTWARD
+  // copilot". A binding is INTENT, not admission: the effective anonymous
+  // tier still comes from the chat face's own gates, so every row reports
+  // both and flags the gap — an unopened gate must read as a visible
+  // configuration gap, never as a silent trap for the line's visitors.
+  const LINE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+  const ACCENT_RE = /^#[0-9a-fA-F]{6}$/;
+
+  app.get("/api/wanxing/v1/console/line-copilots", async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    const out = [];
+    for (const b of store.lineCopilotList()) {
+      let state = { state: "closed", reason: "resolver_unavailable" };
+      if (typeof resolveLineState === "function") {
+        state = await resolveLineState(b.line).catch(() => ({ state: "closed", reason: "deployment_source_unavailable" }));
+      }
+      out.push({
+        ...b,
+        state: state.state,
+        reason: state.reason ?? null,
+        agentName: state.agent?.name ?? null,
+        effective: state.state === "ready" ? state.anonymous : "closed",
+        // intent says anonymous should be open, effect says a visitor without
+        // host identity will be asked to log in (or is refused outright)
+        gap: b.anonymousIntent === true && state.state === "ready" && state.anonymous !== "open",
+      });
+    }
+    return ok(res, { bindings: out });
+  });
+
+  app.put("/api/wanxing/v1/console/line-copilots/:line", express.json({ limit: "4kb" }), async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    const line = String(req.params.line || "");
+    if (!LINE_RE.test(line)) return res.status(400).json({ error: "line must be a slug of 1-32 chars [a-z0-9-]" });
+    const agentSlug = typeof req.body?.agentSlug === "string" ? req.body.agentSlug.trim() : "";
+    const accent = typeof req.body?.accent === "string" ? req.body.accent.trim() : "";
+    if (!agentSlug) return res.status(400).json({ error: "agentSlug required" });
+    if (accent && !ACCENT_RE.test(accent)) return res.status(400).json({ error: "accent must be #rrggbb" });
+
+    // Validation is against the deployment ledger SNAPSHOT only (read-only;
+    // nothing is ever written back into the sibling packs surface).
+    const row = await bookkeeping.resolve(agentSlug).catch(() => null);
+    if (!row) {
+      return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no deployment with that slug in the bookkeeping snapshot" } });
+    }
+    let visibility = null;
+    try {
+      const r = await registryFetch(`/api/agents${row.agentPath}`);
+      if (r.ok) {
+        const e = await r.json();
+        visibility = e?.visibility === "private" ? "private" : "public";
+      }
+    } catch { /* best-effort: an unreachable registry cannot prove public */ }
+    if (visibility === "private") {
+      return res.status(400).json({ error: { code: "AGENT_NOT_PUBLIC", message: "only public deployments can be a line's outward copilot" } });
+    }
+    if (visibility === null) {
+      return res.status(503).json({ error: { code: "AGENT_VISIBILITY_UNKNOWN", message: "registry unreachable — cannot confirm the deployment is public" } });
+    }
+
+    const binding = store.lineCopilotSet(line, {
+      agentSlug,
+      accent,
+      anonymousIntent: req.body?.anonymousIntent === true,
+      updatedBy: "ops",
+    });
+    say(`console: line copilot ${line} → ${agentSlug} (anonymous intent ${binding.anonymousIntent})`);
+    return ok(res, { binding });
+  });
+
+  app.delete("/api/wanxing/v1/console/line-copilots/:line", async (req, res) => {
+    if (!opsOnly(req, res)) return;
+    const line = String(req.params.line || "");
+    if (!LINE_RE.test(line)) return res.status(400).json({ error: "line must be a slug of 1-32 chars [a-z0-9-]" });
+    if (!store.lineCopilotDelete(line)) {
+      return res.status(404).json({ error: { code: "BINDING_NOT_FOUND", message: "no binding for that line" } });
+    }
+    say(`console: line copilot ${line} unbound`);
+    return ok(res, { line, deleted: true });
   });
 
   app.put("/api/wanxing/v1/console/plans", express.json({ limit: "4kb" }), async (req, res) => {

@@ -13,6 +13,16 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
+// snake_case row → the facade's camelCase shape (line copilot bindings).
+const lineCopilotRow = (r) => ({
+  line: r.line,
+  agentSlug: r.agent_slug,
+  accent: r.accent,
+  anonymousIntent: r.anonymous_intent === 1,
+  updatedBy: r.updated_by,
+  updatedAt: r.updated_at,
+});
+
 export function createWanxingStore({ file }) {
   mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
@@ -150,6 +160,23 @@ export function createWanxingStore({ file }) {
     agent_slug TEXT PRIMARY KEY,
     anonymous INTEGER NOT NULL DEFAULT 0,
     origins TEXT NOT NULL DEFAULT '[]',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  )`);
+
+  // Line copilot bindings (unify-cross-line-copilot D1): which public
+  // deployment serves a product line as its OUTWARD copilot. The Wanxing
+  // plane's own governance record — never written into the sibling packs
+  // ledger (borrowed-contract discipline: that ledger stays read-only here).
+  // `anonymous_intent` is the line's INTENT only; admission stays double-
+  // gated (platform switch AND the agent's deployer switch), so intent and
+  // effect can disagree and the console surfaces that gap instead of
+  // pretending it away.
+  db.exec(`CREATE TABLE IF NOT EXISTS wanxing_line_copilots (
+    line TEXT PRIMARY KEY,
+    agent_slug TEXT NOT NULL,
+    accent TEXT NOT NULL DEFAULT '',
+    anonymous_intent INTEGER NOT NULL DEFAULT 0,
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   )`);
@@ -530,6 +557,28 @@ export function createWanxingStore({ file }) {
         ON CONFLICT(agent_slug) DO UPDATE SET anonymous = excluded.anonymous, origins = excluded.origins, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
         .run(agentSlug, nextAnon ? 1 : 0, JSON.stringify(nextOrigins), String(updatedBy || cur.updatedBy || ""), now());
       return this.embedSettingsGet(agentSlug);
+    },
+
+    // ── Line copilot bindings (unify-cross-line-copilot D1) ─────────────────
+    // One row per line: the OUTWARD copilot's deployment slug plus the line's
+    // display accent and its anonymous INTENT (see the table comment — the
+    // intent never admits anyone by itself).
+    lineCopilotGet(line) {
+      const r = db.prepare(`SELECT line, agent_slug, accent, anonymous_intent, updated_by, updated_at FROM wanxing_line_copilots WHERE line = ?`).get(String(line));
+      return r ? lineCopilotRow(r) : null;
+    },
+    lineCopilotList() {
+      return db.prepare(`SELECT line, agent_slug, accent, anonymous_intent, updated_by, updated_at FROM wanxing_line_copilots ORDER BY line`)
+        .all().map(lineCopilotRow);
+    },
+    lineCopilotSet(line, { agentSlug, accent = "", anonymousIntent = false, updatedBy = "" }) {
+      db.prepare(`INSERT INTO wanxing_line_copilots (line, agent_slug, accent, anonymous_intent, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(line) DO UPDATE SET agent_slug = excluded.agent_slug, accent = excluded.accent, anonymous_intent = excluded.anonymous_intent, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+        .run(String(line), String(agentSlug), String(accent || ""), anonymousIntent === true ? 1 : 0, String(updatedBy || ""), now());
+      return this.lineCopilotGet(line);
+    },
+    lineCopilotDelete(line) {
+      return db.prepare(`DELETE FROM wanxing_line_copilots WHERE line = ?`).run(String(line)).changes > 0;
     },
 
     // ── Serving plans (add-serving-plans D1/D5) ─────────────────────────────

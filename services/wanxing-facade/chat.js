@@ -309,6 +309,46 @@ export function createChatFace({
     return b.count <= cfg.mintRpmMax;
   }
 
+  // ── Line copilot resolution (unify-cross-line-copilot 1.3/1.4) ────────────
+  // One resolver for both faces: the public projection a product-line loader
+  // cold-starts on, and the console's intent-vs-effect view. It decides
+  // nothing — it reports what the existing gates already say, so a binding can
+  // never become a second admission path. States:
+  //   unknown  — not a line id at all (answerable, never a 404 a host could
+  //              mistake for success)
+  //   unbound  — a well-formed line with no binding row
+  //   closed   — bound, but no visitor tier can be served (paused / private /
+  //              vanished / neither anonymous nor any allowance is open)
+  //   ready    — at least one tier can chat; `anonymous` says which
+  const lineState = async (line) => {
+    const id = String(line || "");
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) return { state: "unknown" };
+    const binding = store.lineCopilotGet(id);
+    if (!binding) return { state: "unbound" };
+    let st;
+    try {
+      st = await agentState(binding.agentSlug);
+    } catch {
+      return { state: "closed", reason: "deployment_source_unavailable" };
+    }
+    if (!st?.exists) return { state: "closed", reason: "agent_missing" };
+    if (st.visibility === "private") return { state: "closed", reason: "agent_private" };
+    if (st.paused) return { state: "closed", reason: "agent_paused" };
+    const anonymousOpen = anonOpenFor(binding.agentSlug);
+    const tenantPossible = chatable(st);
+    if (!anonymousOpen && !tenantPossible) return { state: "closed", reason: "chat_not_open" };
+    return {
+      state: "ready",
+      agent: {
+        slug: st.slug ?? binding.agentSlug,
+        name: st.entry?.name ?? binding.agentSlug,
+        description: st.entry?.description ?? "",
+      },
+      accent: binding.accent,
+      anonymous: anonymousOpen ? "open" : "login_required",
+    };
+  };
+
   function register(app) {
     // ── Chat status (D7): the page's pre-flight. Anonymous callers get the
     // public shape only; a verified visitor additionally sees their own
@@ -403,6 +443,40 @@ export function createChatFace({
         // The lane relays in-flight asks and answers them on the side route
         // (add-copilot-control-surface): hosts read this to know an intent
         // confirmation round trip is possible.
+        features: { asks: true },
+      });
+    });
+
+    // ── Line copilot resolution (unify-cross-line-copilot 1.3) ───────────────
+    // The public cold-start answer for a product line's loader: which agent
+    // serves the line, and whether any visitor tier can be served at all.
+    // Projection only — the binding's ops metadata stays in the console.
+    app.get("/api/wanxing/v1/lines/:line/copilot", async (req, res) => {
+      // Public cross-origin read (D7): any embedding origin may fetch the
+      // projection. Never pair the wildcard with Allow-Credentials — this
+      // endpoint must stay credential-free, forever.
+      res.set("Access-Control-Allow-Origin", "*");
+      res.set("Cache-Control", "public, max-age=60");
+      const line = String(req.params.line || "");
+      let resolved;
+      try {
+        resolved = await lineState(line);
+      } catch (e) {
+        return res.status(503).json({ line, state: "closed", reason: "deployment_source_unavailable" });
+      }
+      if (resolved.state !== "ready") {
+        return res.status(200).json({
+          line,
+          state: resolved.state,
+          ...(resolved.reason ? { reason: resolved.reason } : {}),
+        });
+      }
+      return res.status(200).json({
+        line,
+        state: "ready",
+        agent: resolved.agent,
+        theme: { accent: resolved.accent || "" },
+        anonymous: resolved.anonymous,
         features: { asks: true },
       });
     });
@@ -793,5 +867,5 @@ export function createChatFace({
     });
   }
 
-  return { register, chatable, hostRemaining, subsidyRemainingToday, settlerFor, settleChatRow, subsidyOpen, anonOpenFor, anonRemainingFor, verifyVisitor };
+  return { register, chatable, hostRemaining, subsidyRemainingToday, settlerFor, settleChatRow, subsidyOpen, anonOpenFor, anonRemainingFor, verifyVisitor, lineState };
 }
