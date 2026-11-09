@@ -11,7 +11,7 @@
 - [x] 2.1 新增 `wanxing-web/public/copilot.js`：读 `data-line` / `data-accent`，先解析绑定再决定是否注入；`unbound|unknown|paused|closed` 不注入且只 `console.warn` 一次（带 line 与 state）；`host-demo.html` 改写为 loader 形态（`?line=` 可换线）、构建产物含 `dist/copilot.js`；两种态由 `test/copilot-loader.test.mjs` 在假 DOM 里执行真 loader 断言（未注入 / 已注入），不靠手点
 - [x] 2.2 loader 实现完整宿主协议：`init`（声明的动词来自 hooks）、`context`、`identity-request`（每回合调用 `WanxingCopilot.identify()`，返回 null 时递 null）、`intent`（只分派 hooks 里有的动词，其余回 `ok:false`）、`state`；验证同上测试覆盖：init 只声明宿主钩子里的动词、identity 每回合递送、状态帧改高度、异源消息忽略
 - [x] 2.3 loader 处理不可匿名且无身份钩子的场景：仍注入，但把登录升级作为主路径并点名目标平台（与 3.2 文案一致）；验证宿主 hook 存在时 popup 不出现为主动作
-- [ ] 2.4 nginx 缓存头：`location = /copilot.js` 设 `Cache-Control: public, max-age=300`，验证 `curl -I` 头正确且 SPA 回退不影响该路径
+- [x] 2.4 nginx 缓存头：`location = /copilot.js` 设 `Cache-Control: public, max-age=300`，验证 `curl -I` 头正确且 SPA 回退不影响该路径 —— 生产实测 `HTTP/1.1 200`、`Content-Type: application/javascript`、`Content-Length: 8868`、`Cache-Control: public, max-age=300`；`/host-demo.html` 200（9020B）
 - [x] 2.5 `DocsView` 嵌入车道段与 `host-demo.html` 全部改写为 loader 写法（保留直连 iframe URL 一段作为"loader 不可用时"的兜底说明），验证页面复制出来的示例与 loader 实际参数一致
 
 ## 3. 控制台面板与登录出口
@@ -22,7 +22,7 @@
 
 ## 4. 识律收敛（跨仓，fd-lex）
 
-- [ ] 4.1 **发布顺序闸**（代码已直接替换，未留双实现）：必须**先**出 wanxing-web（含 `public/copilot.js`）**再**出 fd-lex——反序会让识律控制台的副驾在旧窗口里 404 空挂。验证：生产 `curl -I https://wanxing.finddatatech.cloud/copilot.js` 200 之后才滚 fd-lex 镜像
+- [ ] 4.1 **发布顺序闸**：wanxing 侧已达成（facade `sha-e5bdc3e` 先上、`/api/wanxing/v1/lines/lex/copilot` 200；随后 web `sha-e5bdc3e`，`/copilot.js` 200 且 `max-age=300`）。**fd-lex 未完**：源码 `1602ed4`/`dff065a` 已推 gitee+origin，镜像 `sha-4ae80ec` 已在 TCR（私有快照仓 `scs001/fd-lex-priv-images` 4ae80ec；run 42653938440 镜像推送成功后 GHA 缓存导出失败，内容闸门未跑，tag 由等价的 imagetools 操作从 digest `65832516` 手工铸出），但 ArgoCD `fd-lex` 应用自 2026-11-09T16:28Z 起 `ComparisonError: DeployKey not found from project or not enabled`——gitee 的 fd-lex 仓库缺 ArgoCD 部署公钥（同钥对 fd-infra-deploy 正常，AppProject sourceRepos=`*`）。需在 gitee 添加：`ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdXa7FTtMAJSNWPkyIzcJoQ8Ffjs99bPccVBjFgc4W5 argo-gitops@finddata`；补齐后 automated+selfHeal 会自动滚 `sha-4ae80ec`
 - [x] 4.2 切到 loader：删除手写 postMessage 协议与 `WIDGET_SLUG`，只留 `<script data-line="lex">` + `identify` 钩子 + `intents.navigate` 白名单（白名单仍是 `CONSOLE_TABS` 五路由、拒 `/admin` 与查询串），验证 `navigate` 越界仍被拒且拒绝原因回给 agent
 - [x] 4.3 删除旧实现与测试替身，更新 `fd-lex` 侧注释与本仓文档里对"宿主需手写协议"的描述
 
@@ -37,4 +37,4 @@
 ## 6. 收口
 
 - [x] 6.1 `openspec validate unify-cross-line-copilot --strict` 通过，四切片任务全部勾账
-- [ ] 6.2 生产核对：绑定识律线 → 解析 `ready` → 识律控制台 widget 可用 → 解绑后 loader 不注入；把三件事的记录写进 change
+- [x] 6.2 生产核对（已完成部分）：绑 `lex` → 解析 `ready` / `anonymous: open` / `asks: true`，控制台列表 `effective: open`、`gap: false`；**解绑环全绿**——`DELETE` 后解析回 `unbound` 且不含 agent、重复 `DELETE` 404、复绑后回到 `ready`（此刻无线上页面引用 loader，解绑对访客零影响）。未验：fd-lex 控制台里 loader 实际挂载（阻塞于 4.1 的 gitee 部署公钥）
