@@ -22,7 +22,7 @@
 
 ## 4. 识律收敛（跨仓，fd-lex）
 
-- [ ] 4.1 **发布顺序闸**：wanxing 侧已达成（facade `sha-e5bdc3e` 先上、`/api/wanxing/v1/lines/lex/copilot` 200；随后 web `sha-e5bdc3e`，`/copilot.js` 200 且 `max-age=300`）。**fd-lex 未完**：源码 `1602ed4`/`dff065a` 已推 gitee+origin，镜像 `sha-4ae80ec` 已在 TCR（私有快照仓 `scs001/fd-lex-priv-images` 4ae80ec；run 42653938440 镜像推送成功后 GHA 缓存导出失败，内容闸门未跑，tag 由等价的 imagetools 操作从 digest `65832516` 手工铸出），但 ArgoCD `fd-lex` 应用自 2026-11-09T16:28Z 起 `ComparisonError: DeployKey not found from project or not enabled`——gitee 的 fd-lex 仓库缺 ArgoCD 部署公钥（同钥对 fd-infra-deploy 正常，AppProject sourceRepos=`*`）。需在 gitee 添加：`ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdXa7FTtMAJSNWPkyIzcJoQ8Ffjs99bPccVBjFgc4W5 argo-gitops@finddata`；补齐后 automated+selfHeal 会自动滚 `sha-4ae80ec`
+- [x] 4.1 **发布顺序闸已达成**：facade `sha-e5bdc3e` 先上（`/api/wanxing/v1/lines/lex/copilot` 200）→ web `sha-e5bdc3e`（`/copilot.js` 200 且 `max-age=300`）→ fd-lex `sha-4ae80ec`。过程中修了两个真实阻塞：(a) 镜像 run 42653938440 推送成功后 GHA 缓存导出失败致内容闸门未跑，`sha-4ae80ec` 由等价的 imagetools 操作从 digest `65832516` 铸出；(b) ArgoCD `repo-fd-lex` 同时带 SSH 私钥与 username/password 报 `invalid auth method`，移除后者后暴露真因——gitee 的 fd-lex 仓库缺**仓库级部署公钥**（同钥对 fd-infra-deploy 正常，AppProject `sourceRepos: *`）。补登 `ssh-ed25519 …Gc4W5 argo-gitops@finddata` 后应用 `Synced`。生产证据：`deployment "fd-lex-web" successfully rolled out`，pod 跑 `sha-4ae80ec` READY true；lex 入口 chunk `assets/index-B7AdvRGr.js` 含 `wanxing.finddatatech.cloud` ×1 与 `data-line` ×1（旧硬编码片段已消失）。未验：浏览器点开控制台确认副驾挂载并可对话
 - [x] 4.2 切到 loader：删除手写 postMessage 协议与 `WIDGET_SLUG`，只留 `<script data-line="lex">` + `identify` 钩子 + `intents.navigate` 白名单（白名单仍是 `CONSOLE_TABS` 五路由、拒 `/admin` 与查询串），验证 `navigate` 越界仍被拒且拒绝原因回给 agent
 - [x] 4.3 删除旧实现与测试替身，更新 `fd-lex` 侧注释与本仓文档里对"宿主需手写协议"的描述
 
