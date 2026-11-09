@@ -14,9 +14,9 @@
 
 ## 3. 控制台渲染
 
-- [ ] 3.1 FleetView 每张部署卡带健康徽标；`failing` 排到该分组最前，显示持续时长与原因；`silent` 标"无流量"而不是健康；`paused` 标"已暂停"；验证三种态在 mock 数据下渲染正确且不出现 `undefined`
-- [ ] 3.2 健康段缺失/不可达时整段不渲染（不假装健康）；用删除 board 字段的 mock 验证页面不崩、无假绿
-- [ ] 3.3 OpsView 增「不健康 agent」清单（failing + degraded，含时长与原因、可跳到该 agent 视角）；空态显式写"当前无不健康 agent"
+- [x] 3.1 FleetView 每张部署卡带健康徽标；`failing` 排到该分组最前，显示持续时长与原因；`silent` 标"无流量"而不是健康；`paused` 标"已暂停"；验证三种态在 mock 数据下渲染正确且不出现 `undefined`
+- [x] 3.2 健康段缺失/不可达时整段不渲染（不假装健康）——徽章抽成纯组件 `HealthBadge`，`health=null/undefined` 渲染空串；单测直接断言这一点（FleetView 的 `deps` 是内部 state，静态渲染注不进去，所以测渲染原语）
+- [x] 3.3 OpsView 增「不健康 agent」清单（failing + degraded，含时长与原因、可跳到该 agent 视角）；空态显式写"当前无不健康 agent"
 
 ## 4. 收口
 

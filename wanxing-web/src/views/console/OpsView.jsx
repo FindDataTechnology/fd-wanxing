@@ -6,7 +6,7 @@
 // identities read).
 import { useEffect, useState } from "react";
 import { authFetch } from "../../auth.js";
-import { fmtAgo, fmtMs, planRequestBadge } from "./shared.jsx";
+import { fmtAgo, fmtMs, planRequestBadge, fmtSpan, healthCauseLabel } from "./shared.jsx";
 import { SkeletonLines, SkeletonCards } from "../../components/Skeleton.jsx";
 
 const fmtWhen = (ms) => (ms ? new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false }) : "");
@@ -502,6 +502,38 @@ export function OpsView() {
             </details>
           )}
           <div className="text-[11px] text-slate-400">批准=经套餐发放路径落上限（与下方手动发放是同一条路，列表随即出现/更新）；驳回只记录备注、不发放。</div>
+        </div>
+        )}
+
+        {board && Array.isArray(board.agent_health) && (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="unhealthy-agents-panel">
+          <h3 className="font-semibold">不健康 agent · 机群</h3>
+          {(() => {
+            const bad = board.agent_health.filter((h) => h.health === "failing" || h.health === "degraded");
+            if (bad.length === 0) {
+              return <div className="text-xs text-slate-500" data-testid="unhealthy-empty">当前没有持续失败或部分失败的 agent。</div>;
+            }
+            return (
+              <div className="space-y-1.5" data-testid="unhealthy-list">
+                {bad.map((h) => (
+                  <div key={h.agent} className="flex gap-3 items-center flex-wrap text-xs" data-agent={h.agent} data-health={h.health}>
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] ${h.health === "failing" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>
+                      {h.health === "failing" ? "持续失败" : "部分失败"}
+                    </span>
+                    <span className="font-mono truncate max-w-[22rem]" title={h.agent}>{h.agent}</span>
+                    <span className="text-slate-500">{h.since != null ? `已 ${fmtSpan(Date.now() - h.since)}` : "—"}</span>
+                    <span className="text-slate-500">{h.consecutive ? `连续 ${h.consecutive} 回合` : `${h.errors}/${h.turns} 回合失败`}</span>
+                    <span className="text-slate-500">{h.lastErrorKind ? healthCauseLabel(h.lastErrorKind) : "—"}</span>
+                    <a className="ml-auto underline text-slate-500" href={`#/chat/${encodeURIComponent(h.agent)}`}>看这个 agent →</a>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          <div className="text-[11px] text-slate-400">
+            判据：窗口内全失败且连续失败量达到阈值＝持续失败；有成功也有失败且失败率超阈值＝部分失败。
+            暂停中的 agent 不计入；零回合的标「无流量」而不是故障。
+          </div>
         </div>
         )}
 

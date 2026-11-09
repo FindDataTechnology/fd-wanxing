@@ -128,3 +128,46 @@ test("AskCard marks an intent question unsupported when the host declares no ver
   assert.ok(html.includes("页面动作"));
   assert.ok(html.includes("当前页面不支持此操作"));
 });
+
+// ── Health helpers + fleet ordering (surface-silent-agent-failures 3.1/3.2) ──
+// The two things worth locking statically: a duration reads as a duration (the
+// number that makes an outage impossible to mistake for a blip), and a missing
+// cause is not silently rendered as a known one.
+
+test("3.1 fmtSpan: minutes, hours, days — junk degrades to '?'", async () => {
+  const { fmtSpan } = await import("../src/views/console/shared.jsx");
+  assert.equal(fmtSpan(30_000), "1 分钟");        // floor at 1 minute, never "0 分钟"
+  assert.equal(fmtSpan(90 * 60_000), "2 小时");
+  assert.equal(fmtSpan(3 * 24 * 3600_000), "3 天");
+  assert.equal(fmtSpan(null), "?");
+  assert.equal(fmtSpan(-1), "?");
+});
+
+test("3.1 healthCauseLabel: null renders nothing, unknown says so", async () => {
+  const { healthCauseLabel } = await import("../src/views/console/shared.jsx");
+  assert.equal(healthCauseLabel(null), "");
+  assert.equal(healthCauseLabel("unknown"), "原因未归类");
+  assert.equal(healthCauseLabel("cold_start"), "冷启动失败");
+  assert.equal(healthCauseLabel("something-new"), "原因未归类");
+});
+
+test("3.2 a missing health entry renders nothing — never a healthy-looking marker", async () => {
+  const { HealthBadge } = await import("../src/views/console/shared.jsx");
+  // The section was unavailable (or the agent is fine): no chip at all. This is
+  // the "we could not read it" case, which must not look like "all good".
+  assert.equal(renderToStaticMarkup(createElement(HealthBadge, { health: null, slug: "s1" })), "");
+  assert.equal(renderToStaticMarkup(createElement(HealthBadge, { health: undefined, slug: "s1" })), "");
+
+  // A real failure does render, and names its duration + cause.
+  const failing = renderToStaticMarkup(createElement(HealthBadge, {
+    health: { health: "failing", since: Date.now() - 2 * 3600_000, lastErrorKind: "cold_start" },
+    slug: "s1",
+  }));
+  assert.ok(failing.includes("持续失败"));
+  assert.ok(failing.includes("冷启动失败"));
+
+  // Zero traffic is its own marker, not a failure and not a pass.
+  const silent = renderToStaticMarkup(createElement(HealthBadge, { health: { health: "silent" }, slug: "s1" }));
+  assert.ok(silent.includes("无流量"));
+  assert.ok(!silent.includes("失败"));
+});

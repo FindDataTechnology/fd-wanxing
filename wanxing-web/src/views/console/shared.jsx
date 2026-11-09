@@ -3,6 +3,60 @@
 export const fmtMs = (ms) => (ms == null ? "n/a" : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
 export const fmtAgo = (ms) => (ms == null ? "?" : ms >= 60_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 1000)}s`);
 
+// A duration a human reads at a glance: minutes under an hour, hours under a
+// day, days beyond. Used for "failing for …" — the number that makes an outage
+// impossible to mistake for a blip.
+export const fmtSpan = (ms) => {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "?";
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${Math.max(1, m)} 分钟`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} 小时`;
+  return `${Math.round(h / 24)} 天`;
+};
+
+// Failure cause as the user should read it. `null` means "no failure" and is
+// rendered as nothing; `unknown` means "failed, cause not classified" and says
+// so rather than pretending.
+export const healthCauseLabel = (k) => {
+  if (k == null) return "";
+  return ({ cold_start: "冷启动失败", upstream: "上游失败", rate_limited: "被限流", budget: "预算耗尽" })[k] ?? "原因未归类";
+};
+
+// Health marker for a deployment card. Renders NOTHING when health is absent
+// (the section was unavailable, or the agent is fine) — a missing signal must
+// never read as "healthy", and "ok" is the unremarkable case that needs no chip.
+export const HealthBadge = ({ health, slug }) => {
+  if (!health || !health.health) return null;
+  const { health: state, since, lastErrorKind } = health;
+  if (state === "failing" || state === "degraded") {
+    const failing = state === "failing";
+    return (
+      <span
+        data-testid={`fleet-health-${slug}`}
+        title={lastErrorKind ? `最近失败：${healthCauseLabel(lastErrorKind)}` : undefined}
+        className={`px-1.5 py-0.5 rounded text-[11px] ${
+          failing
+            ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+            : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+        }`}
+      >
+        {failing ? "持续失败" : "部分失败"}
+        {since != null ? ` · ${fmtSpan(Date.now() - since)}` : ""}
+        {lastErrorKind ? ` · ${healthCauseLabel(lastErrorKind)}` : ""}
+      </span>
+    );
+  }
+  if (state === "silent") {
+    return (
+      <span data-testid={`fleet-health-${slug}`} className="px-1.5 py-0.5 rounded text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500" title="窗口内零回合：可能刚部署、也可能没人用——不是故障">
+        无流量
+      </span>
+    );
+  }
+  return null; // ok / paused carry their own existing chips
+};
+
 export const channelLabel = (c) => (c === "chat" ? "对话" : c === "api" ? "API" : c ?? "?");
 
 export const sourceBadge = (dim) => {

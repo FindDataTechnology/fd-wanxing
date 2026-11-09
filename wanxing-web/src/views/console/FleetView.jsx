@@ -14,7 +14,11 @@ import { authFetch } from "../../auth.js";
 import { DeployWizard } from "./DeployWizard.jsx";
 import { Drawer } from "../../components/Drawer.jsx";
 import { useToast } from "../../components/Toast.jsx";
-import { channelLabel, sourceBadge } from "./shared.jsx";
+import { channelLabel, sourceBadge, HealthBadge } from "./shared.jsx";
+
+// A deployment nobody can use must not sit below ones that work. Only
+// failing/degraded reorder; everything else keeps its original position.
+const healthRank = (h) => (h?.health === "failing" ? 0 : h?.health === "degraded" ? 1 : 2);
 
 export function FleetView({ focusSlug } = {}) {
   const toast = useToast();
@@ -63,6 +67,11 @@ export function FleetView({ focusSlug } = {}) {
   // Cockpit summary (add-cockpit-views, M4④b): per-slug usage aggregates +
   // allowances — the cards' signal column, polled with the deployments list.
   const [summary, setSummary] = useState(null);
+  // Agent health (surface-silent-agent-failures 3.1): keyed by agent slug, the
+  // same identity the deployments list and the event stream use. null = the
+  // section is unavailable, and the cards then show NO health marker at all —
+  // a missing signal must never render as "healthy".
+  const [healthByAgent, setHealthByAgent] = useState(null);
   const [earnErr, setEarnErr] = useState("");
   // Ownership feedback (fix-fleet-scope-and-owner-gates): a refused or failed
   // panel load reports at the card that launched it — never solely inside the
@@ -129,6 +138,15 @@ export function FleetView({ focusSlug } = {}) {
       .then((d) => setSummary(d))
       .catch(() => { /* cards degrade their signal columns honestly */ });
 
+  const loadHealth = () =>
+    authFetch("/api/fleet/v1/board")
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d || !Array.isArray(d.agent_health)) { setHealthByAgent(null); return; }
+        setHealthByAgent(Object.fromEntries(d.agent_health.map((h) => [h.agent, h])));
+      })
+      .catch(() => setHealthByAgent(null));
+
   const loadDeps = () =>
     authFetch("/api/wanxing/v1/console/deployments")
       .then(async (r) => {
@@ -140,9 +158,11 @@ export function FleetView({ focusSlug } = {}) {
   useEffect(() => {
     loadDeps();
     loadSummary();
+    loadHealth();
     const t = setInterval(() => {
       loadDeps();
       loadSummary();
+      loadHealth();
     }, 60_000);
     return () => clearInterval(t);
   }, []);
@@ -367,17 +387,21 @@ export function FleetView({ focusSlug } = {}) {
         )}
         {deps && (
           <div className="grid gap-3 sm:grid-cols-2" data-testid="fleet-cards">
-            {(deps.deployments ?? []).map((d) => {
+            {([...(deps.deployments ?? [])]
+              .sort((a, b) => healthRank(healthByAgent?.[a.slug]) - healthRank(healthByAgent?.[b.slug])))
+              .map((d) => {
               // The summary's signal columns degrade to placeholders — never
               // fake zeros — when the summary call hasn't landed.
               const sig = summary?.agents?.[d.slug] ?? null;
               const unknown = summary === null;
+              const hh = healthByAgent?.[d.slug] ?? null;
               return (
                 <div key={d.slug} className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5" data-testid={`fleet-card-${d.slug}`}>
                   <div className="flex items-baseline gap-2 flex-wrap">
                     <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${d.paused ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"}`}>
                       {d.paused ? "已暂停" : "运行中"}
                     </span>
+                    <HealthBadge health={hh} slug={d.slug} />
                     <span className="font-semibold text-sm">{d.name ?? d.slug}</span>
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{d.visibility === "private" ? "私有" : "公开"}</span>
                     <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-accent dark:text-accent hover:underline">对话 →</a>
