@@ -32,6 +32,12 @@ export const EVENT_KINDS = [
   // runs — health counts / open-decision tops / latest report lines, stored
   // verbatim; the observer never re-derives any of it.
   "cell_fleets",
+  // Agent health transitions (surface-silent-agent-failures 2.2): emitted by
+  // THIS observer at most once per transition — never per failing turn, so a
+  // 19-day outage is two rows, not thousands. Ingest rejects unknown kinds
+  // with 400 (observer.js:74), so these must be enumerated in the same
+  // release that starts emitting them.
+  "agent_unhealthy", "agent_healthy",
 ];
 
 // The mission family (add-mission-board): board synthesis keys off this set.

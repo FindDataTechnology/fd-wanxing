@@ -11,6 +11,7 @@ import express from "express";
 import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS } from "./store.js";
 import { createBookkeeper } from "./bookkeeper.js";
 import { createStatsStore, packOfAgent } from "./stats-store.js";
+import { deriveFleetHealth } from "./health.js";
 import { ulid } from "./ulid.js";
 
 const hourKeyOf = (tsMs) => new Date(tsMs).toISOString().slice(0, 13) + ":00";
@@ -56,6 +57,87 @@ export function createObserver({
   const bookEmit = (ev) => {
     store.insertMany([{ ...ev, id: ulid(), source: "bookkeeper", ingested_at: now() }], now());
   };
+
+  // Agent health config (surface-silent-agent-failures 1.2): three INDEPENDENT
+  // knobs. None is derived from a poll or rollup interval — a threshold is an
+  // expression of patience, not of cadence (the two were conflated once and the
+  // policy went inert).
+  const healthCfg = {
+    windowHours: Number(process.env.FLEET_HEALTH_WINDOW_HOURS ?? 24) || 24,
+    failingMinConsecutive: Number(process.env.FLEET_HEALTH_FAILING_MIN ?? 3) || 3,
+    degradedErrorRate: Number(process.env.FLEET_HEALTH_DEGRADED_RATE ?? 0.3),
+  };
+  // Transition memory (2.2): in-memory only — recomputed from the rollup after a
+  // restart, and deduped on `since` so a restart cannot re-announce a known
+  // outage. Deliberately not a table: this is derived state, not history.
+  const healthMemory = new Map(); // agent → { health, since, lastErrorKind }
+
+  // The pass itself (2.1/2.2): one computation over the rollup, emitting at most
+  // one transition event per agent. It runs on the rollup cadence so a silent
+  // outage is announced even when no one has a panel open; the board only reads
+  // the cached result (refreshing when the cache is older than two intervals —
+  // a fresh boot or a long-idle observer still answers correctly).
+  let lastHealth = { at: 0, items: [] };
+  function evaluateHealth() {
+    const t = now();
+    const hourKeys = [];
+    for (let i = 0; i < healthCfg.windowHours; i++) hourKeys.push(hourKeyOf(t - i * 3_600_000));
+    const rows = store.rollupRows(hourKeys);
+
+    const pausedByAgent = new Map();
+    for (const e of store.kindSince(["paused", "resumed"], t - healthCfg.windowHours * 3_600_000)) {
+      pausedByAgent.set(e.agent, e.kind === "paused"); // oldest→newest, last wins
+    }
+    // No pause/resumed record at all = never paused: a POSITIVE fact from an
+    // explicit event family, not an inference from silence.
+    for (const r of rows) if (!pausedByAgent.has(r.agent)) pausedByAgent.set(r.agent, false);
+
+    const items = deriveFleetHealth(rows, {
+      pausedByAgent,
+      failingMinConsecutive: healthCfg.failingMinConsecutive,
+      degradedErrorRate: healthCfg.degradedErrorRate,
+      now: t,
+    }).map((h) => ({ ...h, window_hours: healthCfg.windowHours }));
+
+    for (const h of items) {
+      const before = healthMemory.get(h.agent);
+      const wasFailing = before?.health === "failing";
+      if (h.health === "failing" && !(wasFailing && before.since === h.since)) {
+        store.insertMany([{
+          id: ulid(), source: "observer", agent: h.agent, runner: null,
+          kind: "agent_unhealthy", ts: t, ingested_at: t,
+          payload: JSON.stringify({
+            since: h.since, consecutive: h.consecutive,
+            last_error_kind: h.lastErrorKind, window_hours: healthCfg.windowHours,
+          }),
+        }], t);
+      } else if (h.health !== "failing" && wasFailing) {
+        store.insertMany([{
+          id: ulid(), source: "observer", agent: h.agent, runner: null,
+          kind: "agent_healthy", ts: t, ingested_at: t,
+          payload: JSON.stringify({
+            since: before.since, recovered_as: h.health,
+            last_error_kind: before.lastErrorKind ?? null, window_hours: healthCfg.windowHours,
+          }),
+        }], t);
+      }
+      healthMemory.set(h.agent, {
+        health: h.health,
+        since: h.health === "failing" ? h.since : (wasFailing ? before.since : null),
+        lastErrorKind: h.lastErrorKind ?? before?.lastErrorKind ?? null,
+      });
+    }
+    lastHealth = { at: t, items };
+    return items;
+  }
+
+  // Read face: cached, refreshed when older than two rollup intervals.
+  function healthSnapshot() {
+    if (now() - lastHealth.at >= 2 * rollupIntervalMs) {
+      try { return evaluateHealth(); } catch (e) { say(`health pass failed: ${e.message}`); }
+    }
+    return lastHealth.items;
+  }
   const bookkeeper = registryUrl
     ? createBookkeeper({ registryUrl, token: registryToken, fetchImpl, now, emit: bookEmit, log: say, intervalMs: pollIntervalMs })
     : null;
@@ -236,7 +318,10 @@ export function createObserver({
 
   const rollupTimer = setInterval(() => {
     try { rollupPass(); } catch (e) { say(`rollup failed: ${e.message}`); }
-    try { store.retain(now(), retentionMs); } catch { /* next pass */ }
+    // Health rides the rollup cadence, NOT the board read: a silently-failing
+    // agent must be announced even when nobody opens a panel. Board reads only
+    // refresh it when the cached pass is older than two intervals.
+    try { evaluateHealth(); } catch (e) { say(`health pass failed: ${e.message}`); }
     // Stats hygiene rides along: daily rollup for yesterday+today + detail prune.
     try {
       const dayNow = new Date(now()).toISOString().slice(0, 10);
@@ -428,6 +513,13 @@ export function createObserver({
       shortterm.workers_idle += Number(e.payload?.workers?.idle) || 0;
       shortterm.workers_cap += Number(e.payload?.workers?.cap) || 0;
     }
+
+    // Agent health (surface-silent-agent-failures 2.1): served from the pass the
+    // observer runs on its own cadence; a stale pass (or a fresh boot) refreshes
+    // on demand so a panel never reads an empty section.
+    const agentHealth = healthSnapshot();
+
+
     res.json({
       window: "24h",
       states_window: "2h",
@@ -444,6 +536,8 @@ export function createObserver({
       reaped,
       wake_ms: { p50: pct(wake, 0.5), p95: pct(wake, 0.95) },
       settled_pending: settledPending,
+      // Additive only: existing consumers keep every field above unchanged.
+      agent_health: agentHealth,
       missions,
       ingest_lag: store.ingestLag(t), // arrival vs event-age bases kept apart
     });
@@ -496,6 +590,10 @@ export function createObserver({
     statsStore,
     bookkeeper,
     rollupPass,
+    // Health is a schedulable pass like the rollup: the bootstrap owns the
+    // timer, tests drive it by hand.
+    evaluateHealth,
+    healthSnapshot,
     sub2apiPull,
     // Schedulers are explicit: the bootstrap (index.js) starts them; tests
     // drive polls/passes by hand.
