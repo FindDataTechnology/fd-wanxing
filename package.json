@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "description": "萬星：Agent 服务的对外运行与服务平台（constellation 线）",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node services/fleet-observer/index.js",
-    "test": "node --test scripts/test-*.mjs"
+    "test": "NODE_ENV=test node --test scripts/test-*.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
