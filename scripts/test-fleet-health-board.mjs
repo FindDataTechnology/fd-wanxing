@@ -99,6 +99,31 @@ test("2.1 board exposes agent_health and leaves the existing shape untouched", a
   }
 });
 
+// ── infrastructure identities are not agents ────────────────────────────────
+
+test("2.1 cell:* identities never appear in agent_health", async () => {
+  const h = await harness();
+  try {
+    await fetch(`${h.base}/ingest`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ events: [
+        // A cell snapshot rides the same ingest and creates a rollup row with
+        // zero turns — it is infrastructure, not an agent with no traffic.
+        { id: "c1", source: "sampler", agent: "cell:1da519d4c1c0bf89", kind: "cell_fleets", ts: BASE - HOUR, payload: { v: 1 } },
+        ...turn("real", 1, { ok: true }).events,
+      ] }),
+    });
+    h.tick();
+    const board = await h.call("/api/fleet/v1/board");
+    const agents = (board.body.agent_health ?? []).map((x) => x.agent);
+    assert.ok(!agents.some((a) => a.startsWith("cell:")), `cell identity leaked: ${JSON.stringify(agents)}`);
+    assert.ok(agents.includes("real"));
+  } finally {
+    await h.close();
+  }
+});
+
 // ── 2.2 edge events: one per transition, deduped on since ──────────────────
 
 test("2.2 a transition emits one agent_unhealthy, repeats emit nothing, recovery pairs", async () => {

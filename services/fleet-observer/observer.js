@@ -84,15 +84,20 @@ export function createObserver({
     for (let i = 0; i < healthCfg.windowHours; i++) hourKeys.push(hourKeyOf(t - i * 3_600_000));
     const rows = store.rollupRows(hourKeys);
 
+    // Infrastructure identities are not agents. The rollup registers anything
+    // that appears in an event stream (cell snapshots ride the same ingest), so
+    // `cell:*` rows would otherwise be published as "silent agents" — pure
+    // payload noise that dilutes the one list people are supposed to trust.
+    const agentRows = rows.filter((r) => !String(r.agent ?? "").startsWith("cell:"));
     const pausedByAgent = new Map();
     for (const e of store.kindSince(["paused", "resumed"], t - healthCfg.windowHours * 3_600_000)) {
       pausedByAgent.set(e.agent, e.kind === "paused"); // oldest→newest, last wins
     }
     // No pause/resumed record at all = never paused: a POSITIVE fact from an
     // explicit event family, not an inference from silence.
-    for (const r of rows) if (!pausedByAgent.has(r.agent)) pausedByAgent.set(r.agent, false);
+    for (const r of agentRows) if (!pausedByAgent.has(r.agent)) pausedByAgent.set(r.agent, false);
 
-    const items = deriveFleetHealth(rows, {
+    const items = deriveFleetHealth(agentRows, {
       pausedByAgent,
       failingMinConsecutive: healthCfg.failingMinConsecutive,
       degradedErrorRate: healthCfg.degradedErrorRate,
