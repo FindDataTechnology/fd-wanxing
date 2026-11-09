@@ -24,6 +24,7 @@
 - **謙面 registry**（运行时真相+路由；paas ADR-0015）与 **packs 部署台账**（packs internal API，env 可重指）
 - **sub2api 计费面**（调用键/部署键/结算）
 - **agent-runner**（多租户运行时；2026-11-06 起正式列为借用边界）
+- **副驾技能**：正式源是两个外部仓——源文在 `finddata-skills`（gitee），registry 条目只是它的投影；见 [ADR-0006](docs/adr/0006-copilot-skills-source-of-truth.md)
 
 对兄弟线只经 HTTP 契约访问、env 可重指——这条纪律守住，L3（对外私有交付）才有得谈。
 四条边界的变量编址清单见 spec `wanxing-borrowed-contracts`。
