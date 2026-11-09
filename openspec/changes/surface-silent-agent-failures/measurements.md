@@ -43,15 +43,46 @@ board: lex = {turns: 5, errors: 0, health: "ok"}   ← 没有任何失败落地
 
 演练后已立即恢复该技能，并实测 `delta 帧数 105`，四条 `content` 全 200。
 
-## 三、恢复半边：只在自动化里验过
+## 三、恢复半边：已在生产闭环
 
-`agent_healthy` 的配对（同一 `since`、且只在离开 `failing` 时发一次）由 `scripts/test-fleet-health-board.mjs` 的 "2.2" 覆盖。**生产里尚未观察到一次真实恢复**——唯一持续失败的 `wx-alpha` 至今仍失败（它是真的坏了），而我的受控造坏没落地失败。
+`wx-alpha` 的根因查清了——不是技能、不是模型，是**计费键被拒**：
+
+```
+[agent-runner] rollover failed for packs-4FHjSKpibRr2d0_9BXaCqQ-wx-alpha: 403 status code (no body)
+```
+
+每分钟一条，`billing_key_ref = pk_43810d87616fb1c70a63e94c` 失效，所以每个定时回合在
+开新会话时就撞 403。它是私有、占位技能（`wx-wizard-check` =「验收占位技能」）、零外部
+调用方的验收残留，每分钟烧一次且必然失败。
+
+暂停它之后，两条事件共享同一个 `since`，配对完整：
+
+```
+浮出    agent_unhealthy  {"since":1794164400000,"consecutive":1358,"last_error_kind":"unknown"}
+恢复    agent_healthy    {"since":1794164400000,"recovered_as":"paused","last_error_kind":"unknown"}
+健康态  failing(1389/1389) → paused，consecutive 0
+```
+
+这就是 4.2 要的「造坏 → 浮出 → 恢复」——只不过不是造的，是本来就在坏。
+
+**处置记录**：2026-11-10 由我（非该线负责人）通过运营凭据暂停
+`packs-4fhjskpibrr2d0_9bxacqq-wx-alpha`（`POST /console/deployments/<slug>/pause`）。
+理由：403 凭证失效 ⇒ 每次必败，且零外部调用方，纯资源浪费 + 噪音。
+恢复方式：`POST /console/deployments/<slug>/resume`（换一个有效计费键后再恢复才是有意义的）。
+
+## 三之二、暴露出的一个真缺口
+
+`last_error_kind` 只能报 `unknown`：runner 的 `turn_ended` 载荷里不带失败原因
+（`{turn_kind, session, duration_ms, outcome, budget_killed?}`），403 只写进它自己的日志。
+要让面板直接说「凭证失效」而不是「原因未归类」，需要 runner 在 `turn_ended` 里带
+`error_kind`——那是 paas 侧改动，属跨线，本 change 不动，只记录。
 
 ## 四、顺带发现并已修
 
 `agent_health` 里混进了 `cell:*` 基础设施身份（cell 快照与 agent 事件共用同一条 ingest，rollup 写一行 `turns=0`，于是被当成"无流量的 agent"）。已过滤：32 条、`cell:*` 归零。
 
-## 五、待办
+## 五、遗留
 
-1. **`wx-alpha`（阿尔法哨兵）的处置**：它是验收占位 agent（唯一技能是「验收占位技能」，无 mcpServers、无外部调用方），每分钟一回合、每回合失败。暂停它会把健康态变成 `paused`（并触发一次 `agent_healthy` 恢复事件）——但那属于别人的部署，未经裁决不动。
-2. 若要做完整的"恢复"生产证据，最干净的对象是它：暂停/修好之后应看到 `agent_healthy`。
+1. **凭证失效这一类故障的原因还看不见**（见三之二）：要 runner 带 `error_kind`，跨线。
+2. 同类失效可能还有别处——现在健康信号会自己把它们浮出来，不必再靠人翻台账。
+3. `wx-alpha` 若将来要复活，必须先换有效计费键，否则 resume 后立刻回到 failing。
