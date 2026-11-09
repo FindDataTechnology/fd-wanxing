@@ -32,6 +32,12 @@ jobs:
           node-version: 22
       # Release gate (wanxing-release-gate): tests run BEFORE any image push —
       # a red test means no new tags, existing images untouched.
+      # 2026-11-09 补 install：test job 从前只跑 npm test 不装依赖，报
+      # Cannot find package 'express' / 'better-sqlite3' 时看起来像测试失败。
+      - name: Install (root)
+        run: npm ci
+      - name: Install (wanxing-web)
+        run: npm ci --prefix wanxing-web
       - name: Backend tests (facade / fleet-observer / stats-collector)
         run: npm test
       - name: Frontend tests (wanxing-web)
