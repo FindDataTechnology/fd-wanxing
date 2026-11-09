@@ -11,9 +11,10 @@
 # cheap-3 /etc/tcr-relay/repos.conf must list each <namespace>/<repo>.
 name: images
 
+# 2026-11-09 按 image-quota-allocation R2 停用私有仓自动出片：出片由
+# scs001/fd-wanxing-images 承担（该仓已转公开，走免费线；已用 git tree 核对内容一致）。
+# 本仓 CI 因组织私有额度耗尽而全部瞬时失败，无产出。保留手动入口以便回滚。
 on:
-  push:
-    branches: [master, main]
   workflow_dispatch:
 
 env:
