@@ -21,4 +21,4 @@
 ## 4. 收口
 
 - [x] 4.1 `openspec validate surface-silent-agent-failures --strict` 通过；测试三套全绿（facade 243 / web 51 / lex 74），web 构建绿
-- [ ] 4.2 上产后核对：识律那条若再次坏掉，面板应在 `FLEET_HEALTH_FAILING_MIN` 个回合内把它排到最前；记录一次真实的"造坏 → 浮出 → 恢复"演练
+- [ ] 4.2 上产后核对（**部分达成，见 `measurements.md`**）：真实「浮出」已在生产发生——`wx-alpha`（验收占位 agent，每分钟一 digest 回合）1378/1378 全失败、边沿事件 `agent_unhealthy` 发出（`consecutive: 1358`）；**「恢复」未在生产观察到**：受控造坏（删技能）被热会话吸收、未落地失败，已恢复并复测正常。另记录一条设计含义：冷启动类故障的检出延迟 = 会话冷启动间隔，不是 N 个回合。待办：`wx-alpha` 处置（暂停会触发一次真实 `agent_healthy` 恢复事件，但属他人部署，待裁决）
