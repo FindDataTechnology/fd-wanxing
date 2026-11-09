@@ -20,5 +20,5 @@
 
 ## 4. 收口
 
-- [ ] 4.1 `openspec validate surface-silent-agent-failures --strict` 通过；测试三套全绿（facade / web / lex）
+- [x] 4.1 `openspec validate surface-silent-agent-failures --strict` 通过；测试三套全绿（facade 243 / web 51 / lex 74），web 构建绿
 - [ ] 4.2 上产后核对：识律那条若再次坏掉，面板应在 `FLEET_HEALTH_FAILING_MIN` 个回合内把它排到最前；记录一次真实的"造坏 → 浮出 → 恢复"演练
