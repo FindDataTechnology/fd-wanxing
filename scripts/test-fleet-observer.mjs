@@ -681,3 +681,34 @@ test("contract: lease lifecycle kinds are accepted; unknown kinds still refuse t
     obs.close(); srv.close(); clockMs = 1_800_001_234_567;
   }
 });
+
+// ── Cell-relayed turns must not distort the stats plane (1.6 follow-through) ──
+//
+// The relay sends `tokens` as a total (input+output), the same field the runner
+// sends, and null when the provider reported no usage. The stats double-write
+// only records a row when `tokens` is finite, so an unpriced cell turn must
+// leave NO row (a fabricated 0 would deflate every average) and a priced one
+// must land exactly once — even when the sampler re-sends the same turn.
+test("stats: cell-relayed turn_ended writes one row when priced, none when usage is absent", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const t = now();
+    const mk = (id, tokens) => ({
+      id, source: "cell-sampler", agent: "cell:u1", kind: "turn_ended", ts: t,
+      payload: { turn_kind: "cron", outcome: "ok", ...(tokens == null ? {} : { tokens }) },
+    });
+    await post(base, { events: [mk("turn:t-priced", 15), mk("turn:t-unpriced", null)] });
+
+    const grouped = obs.statsStore.grouped(0, "agent");
+    const row = grouped.find((r) => r.agent === "cell:u1");
+    assert.ok(row, "the priced turn landed");
+    assert.equal(Number(row.tokens_out), 15);
+
+    // Re-sample of the same turn (at-least-once): deterministic id → deduped.
+    await post(base, { events: [mk("turn:t-priced", 15)] });
+    const again = obs.statsStore.grouped(0, "agent").find((r) => r.agent === "cell:u1");
+    assert.equal(Number(again.tokens_out), 15, "a re-sent turn is not counted twice");
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});
