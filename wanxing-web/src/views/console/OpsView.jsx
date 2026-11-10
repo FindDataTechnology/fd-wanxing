@@ -337,6 +337,27 @@ export function OpsView() {
                   {m.spent != null && <span>{m.spent} 分钟</span>}
                 </div>
               ))}
+              <div className="font-semibold pt-2">工作租约</div>
+              {!board.leases ? (
+                <div className="text-slate-500">租约读取面不可用（observer 未升级）</div>
+              ) : !board.leases.available ? (
+                // 空流 ≠ 健康流：没有发送方时明说，不渲染成"没有卡住的租约"。
+                <div className="text-slate-500">无租约事件（发送方尚未上线）</div>
+              ) : (
+                <>
+                  <div className="text-xs">
+                    在持 <b>{board.leases.active}</b> · 窗口内过期 <b className={board.leases.expired_in_window > 0 ? "text-rose-600 dark:text-rose-400" : ""}>{board.leases.expired_in_window}</b>
+                  </div>
+                  {(board.leases.units ?? []).slice(0, 5).map((u) => (
+                    <div key={u.unit} className="font-mono text-xs flex gap-2 items-center">
+                      <span className={`px-1.5 rounded ${u.state === "expired" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{u.state}</span>
+                      <span className="truncate">{u.unit}</span>
+                      {u.holder && <span className="text-slate-400 truncate">{u.holder}</span>}
+                      <span className="text-slate-400">{fmtAgo(u.age_ms)}</span>
+                    </div>
+                  ))}
+                </>
+              )}
               <div className="font-semibold pt-2">摄取滞后</div>
               {lag.length === 0 && <div className="text-slate-500">无近期事件</div>}
               {lag.map((l) => (
