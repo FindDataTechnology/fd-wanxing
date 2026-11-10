@@ -60,6 +60,19 @@ export const EVENT_KINDS = [
   // runs — health counts / open-decision tops / latest report lines, stored
   // verbatim; the observer never re-derives any of it.
   "cell_fleets",
+  // Borrowed-boundary kinds the agent-runner emits (ADR-0005: the runner lives
+  // in paas, so the facade-source scan below cannot see it). Measured
+  // 2026-11-10 by cross-checking `#fleetEmit("…")` in
+  // paas/agent-runner/manager.js against this list: THREE were missing, and
+  // the oldest had been emitting since 2026-10-06 —
+  //   workspace_quota_exceeded  2026-10-06 adb89aa04
+  //   billing_unparked          2026-10-21 eccae8cff
+  //   billing_parked            2026-11-10 44c198cfd
+  // Each one refuses its WHOLE batch (same failure as the `minted` incident),
+  // so the runner's spool could not drain whenever it emitted one. The drift
+  // test at the bottom of scripts/test-fleet-observer.mjs now scans the sibling
+  // paas checkout when present.
+  "workspace_quota_exceeded", "billing_parked", "billing_unparked",
   // Agent health transitions (surface-silent-agent-failures 2.2): emitted by
   // THIS observer at most once per transition — never per failing turn, so a
   // 19-day outage is two rows, not thousands. Ingest rejects unknown kinds

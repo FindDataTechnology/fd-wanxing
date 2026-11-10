@@ -112,8 +112,12 @@ export function createObserver({
     // payload noise that dilutes the one list people are supposed to trust.
     const agentRows = rows.filter((r) => !String(r.agent ?? "").startsWith("cell:"));
     const pausedByAgent = new Map();
-    for (const e of store.kindSince(["paused", "resumed"], t - healthCfg.windowHours * 3_600_000)) {
-      pausedByAgent.set(e.agent, e.kind === "paused"); // oldest→newest, last wins
+    // Billing parking counts as paused (add-agent-led-multi-host-lease 1.6): the
+    // runner refuses every turn for a parked agent (`isParked`), so without this
+    // it enters the rollup with zero turns and gets reported as a silent/failing
+    // agent — noise invented by admitting the event, not a real outage.
+    for (const e of store.kindSince(["paused", "resumed", "billing_parked", "billing_unparked"], t - healthCfg.windowHours * 3_600_000)) {
+      pausedByAgent.set(e.agent, e.kind === "paused" || e.kind === "billing_parked"); // oldest→newest, last wins
     }
     // No pause/resumed record at all = never paused: a POSITIVE fact from an
     // explicit event family, not an inference from silence.

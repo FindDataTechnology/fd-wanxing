@@ -470,6 +470,44 @@ test("contract: every kind the facade emits is accepted by ingest", async () => 
   );
 });
 
+// ── The borrowed boundary: the agent-runner also emits into this whitelist ──
+//
+// ADR-0005 keeps the runner in paas, so the scan above (which walks this repo's
+// facade sources) structurally cannot see it. Measured 2026-11-10: three
+// runner-emitted kinds were absent from EVENT_KINDS, the oldest since
+// 2026-10-06 — each one refuses its whole batch and wedges the runner's spool.
+// This scan runs against the sibling checkout when it exists. When it does not
+// exist (this repo alone in CI), the test SKIPS with that reason rather than
+// passing: "did not look" must never be reported as "found nothing".
+test("contract: every kind the agent-runner emits is accepted by ingest", async (t) => {
+  const { existsSync, readFileSync, readdirSync } = await import("node:fs");
+  const runnerDir = new URL("../../paas/agent-runner/", import.meta.url);
+  if (!existsSync(runnerDir)) {
+    return t.skip("paas/agent-runner not checked out beside this repo — the borrowed-boundary contract was NOT verified");
+  }
+  const emitted = new Map(); // kind -> [file:line]
+  for (const f of readdirSync(runnerDir).filter((x) => x.endsWith(".js"))) {
+    const src = readFileSync(new URL(f, runnerDir), "utf8");
+    src.split("\n").forEach((line, i) => {
+      for (const m of line.matchAll(/#fleetEmit\(\s*"([a-z_.]+)"/g)) {
+        if (!emitted.has(m[1])) emitted.set(m[1], []);
+        emitted.get(m[1]).push(`${f}:${i + 1}`);
+      }
+    });
+  }
+  assert.ok(emitted.size >= 5, `runner emitters found (${emitted.size}) — the scan itself must not go blind`);
+
+  const { EVENT_KINDS } = await import("../services/fleet-observer/store.js");
+  const allowed = new Set(EVENT_KINDS);
+  const missing = [...emitted.keys()].filter((k) => !allowed.has(k));
+  assert.deepEqual(
+    missing,
+    [],
+    `agent-runner emits kind(s) the observer rejects with 400 (one such event blocks the whole batch):\n` +
+      missing.map((k) => `  ${k} ← ${emitted.get(k).join(", ")}`).join("\n"),
+  );
+});
+
 test("contract: an unknown kind still 400s, and the 400 body names the offender", async () => {
   const { obs, srv, base } = await harness();
   try {
