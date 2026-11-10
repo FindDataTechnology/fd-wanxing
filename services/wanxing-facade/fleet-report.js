@@ -164,7 +164,20 @@ export function createFleetReporter({ url, token, source = "facade", fetchImpl =
         body: JSON.stringify({ events: body }),
       });
       if (!res.ok) {
-        say(`flush refused (${res.status}) — keeping ${queue.length}`);
+        // Read WHY before dropping the response (wanxing-facade spool backlog,
+        // 2026-11-10): the 400 body names the offending event
+        // (`{"error":"invalid event: {…}"}`), and this line used to log only the
+        // status. That is why 340 events sat in the spool for days with nothing
+        // but `flush refused (400) — keeping N` to go on: one unknown `kind`
+        // rejects the WHOLE batch, so the queue could never shrink, and the
+        // reason was being thrown away one line above the log. Bounded read —
+        // an error body is a diagnostic, not a payload.
+        let why = "";
+        try {
+          const text = await res.text();
+          why = String(text || "").replace(/\s+/g, " ").trim().slice(0, 300);
+        } catch { /* body already consumed / unreadable — log the status alone */ }
+        say(`flush refused (${res.status})${why ? ` — ${why}` : ""} — keeping ${queue.length}`);
         return;
       }
       queue.splice(0, batch.length);
