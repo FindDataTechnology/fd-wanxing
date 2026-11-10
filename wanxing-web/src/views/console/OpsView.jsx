@@ -231,6 +231,20 @@ export function OpsView() {
 
   const states = board?.states ?? {};
   const runners = Object.entries(board?.runners ?? {});
+  // 存活判定 (add-agent-led-multi-host-lease 2.x): board.runners 只是"最近 30 分钟说过话
+  // 的快照"，机器一停键就消失，界面上"安静"和"死了"长得一样。liveness 直接回答
+  // "上次听到它是什么时候"，三态 ok/stale/lost；缺失=observer 未升级，要说明而不是当正常。
+  const liveness = board?.runner_liveness ?? null;
+  const liveOf = (id) => (liveness ? liveness[id] ?? null : null);
+  const presenceCls = (p) =>
+    p === "ok" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+      : p === "stale" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+        : p === "lost" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+  const presenceLabel = (p) => (p === "ok" ? "在线" : p === "stale" ? "迟报" : p === "lost" ? "失联" : "未知");
+  // 失联的 runner 已经从 30 分钟快照里掉出去了——那正是它们最需要被看见的时候，
+  // 所以先把 liveness 里没进快照的补进列表，否则"掉线"反而在界面上消失。
+  const silentOnly = Object.keys(liveness ?? {}).filter((id) => !(id in (board?.runners ?? {})));
   const lag = board?.ingest_lag ?? [];
   const pending = board?.settled_pending ?? {};
   const wake = board?.wake_ms ?? {};
@@ -282,12 +296,36 @@ export function OpsView() {
             </div>
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-2">
               <div className="font-semibold">runners</div>
-              {runners.length === 0 && <div className="text-slate-500">窗口内无 runner_stats</div>}
-              {runners.map(([id, s]) => (
-                <div key={id} className="font-mono text-xs">
-                  {id}{s.pod ? <span className="ml-1 px-1 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" title="pod 共宿模式（密度档）">pod</span> : null} — child {s.children ?? "?"}/{s.agents ?? "?"} · {Math.round(s.budget_mb ?? 0)}/{s.budget_mb_limit ?? "?"}MB{Number(s.queued) > 0 ? ` · 排队 ${s.queued}` : ""}
-                </div>
-              ))}
+              {!liveness && runners.length === 0 && <div className="text-slate-500">窗口内无 runner_stats</div>}
+              {liveness === null && runners.length > 0 && (
+                <div className="text-xs text-slate-500">存活判定不可用（observer 未升级）</div>
+              )}
+              {runners.map(([id, s]) => {
+                const lv = liveOf(id);
+                return (
+                  <div key={id} className="font-mono text-xs">
+                    {id}{s.pod ? <span className="ml-1 px-1 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" title="pod 共宿模式（密度档）">pod</span> : null}
+                    {lv && (
+                      <span className={`ml-1 px-1 rounded ${presenceCls(lv.presence)}`} title={`最后一拍 ${fmtAgo(lv.age_ms)} 前 · 窗口内 ${lv.beats ?? 0} 拍`}>
+                        {presenceLabel(lv.presence)} {fmtAgo(lv.age_ms)}
+                      </span>
+                    )}
+                    {" "}— child {s.children ?? "?"}/{s.agents ?? "?"} · {Math.round(s.budget_mb ?? 0)}/{s.budget_mb_limit ?? "?"}MB{Number(s.queued) > 0 ? ` · 排队 ${s.queued}` : ""}
+                  </div>
+                );
+              })}
+              {silentOnly.map((id) => {
+                const lv = liveOf(id);
+                return (
+                  <div key={id} className="font-mono text-xs">
+                    {id}
+                    <span className={`ml-1 px-1 rounded ${presenceCls(lv.presence)}`} title={`最后一拍 ${fmtAgo(lv.age_ms)} 前 · 窗口内 ${lv.beats ?? 0} 拍`}>
+                      {presenceLabel(lv.presence)} {fmtAgo(lv.age_ms)}
+                    </span>
+                    <span className="text-slate-500 ml-1">已脱离 30m 快照</span>
+                  </div>
+                );
+              })}
               <div className="font-semibold pt-2">任务（24h）</div>
               {board.missions === undefined && <div className="text-slate-500">暂无数据（observer 未升级）</div>}
               {board.missions?.length === 0 && <div className="text-slate-500">窗口内无任务</div>}
