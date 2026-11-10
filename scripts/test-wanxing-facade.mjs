@@ -1728,6 +1728,39 @@ test("hardening 3.1: unconfirmed events survive a restart via the spool file", a
   assert.equal(readFileSync(spoolPath, "utf8"), "");
 });
 
+// ── Required by the 2026-11-10 400 incident with no guard (0.5) ──────────────
+//
+// The fix that reads the refusal body and keeps the queue landed with only a
+// comment: `if (!res.ok) { … return; }` before `queue.splice`. Nothing asserted
+// it, so a later "cleanup" could drop the `return` and silently start throwing
+// away unconfirmed events on a 400 — the exact bug that left 340 rows stuck.
+test("0.5: a 400 keeps the queue and surfaces the rejection reason", async () => {
+  const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
+  const spoolPath = path.join(mkdtempSync(path.join(tmp, "spool-")), "fleet-spool.jsonl");
+  const lines = [];
+  const rejecting = async () => ({
+    ok: false,
+    status: 400,
+    text: async () => '{"error":"invalid event: unknown kind \\"ticket.leased\\""}',
+  });
+  const r = createFleetReporter({
+    url: "http://obs.test", token: "t", spoolPath,
+    fetchImpl: rejecting, log: (m) => lines.push(String(m)), statsEveryMs: Infinity,
+  });
+  r.report({ kind: "settled", agent: "packs-x/a", id: "row-9", payload: { usd: 1 } });
+  await r.flush();
+
+  assert.deepEqual(r.stats(), { droppedEvents: 0, spoolRows: 1 }, "a refused batch is NOT dropped");
+  assert.ok(
+    lines.some((l) => l.includes("flush refused (400)") && l.includes("ticket.leased")),
+    `the refusal reason must reach the log, got: ${JSON.stringify(lines)}`,
+  );
+  assert.equal(
+    readFileSync(spoolPath, "utf8").split("\n").filter(Boolean).length, 1,
+    "the spool file still holds the unconfirmed event",
+  );
+});
+
 test("hardening 3.1: a half-written tail line is skipped and counted, not fatal", async () => {
   const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
   const spoolPath = path.join(mkdtempSync(path.join(tmp, "spool-")), "fleet-spool.jsonl");

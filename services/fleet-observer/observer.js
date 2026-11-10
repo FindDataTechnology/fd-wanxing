@@ -91,6 +91,15 @@ export function createObserver({
   // the cached result (refreshing when the cache is older than two intervals —
   // a fresh boot or a long-idle observer still answers correctly).
   let lastHealth = { at: 0, items: [] };
+
+  // Retention observability (add-agent-led-multi-host-lease 0.3): a retention
+  // policy that is NOT RUNNING must be distinguishable from one that ran and
+  // found nothing to delete. `at` is the last SUCCESSFUL pass, `error` keeps the
+  // last failure — otherwise a wedged DELETE looks exactly like a healthy empty
+  // window, which is how the clause stayed unwired for days: the spec was right,
+  // the caller was gone, and nothing anywhere said so.
+  let lastRetention = { at: 0, rows: 0, error: null };
+
   function evaluateHealth() {
     const t = now();
     const hourKeys = [];
@@ -172,6 +181,30 @@ export function createObserver({
     }
     return lastHealth.items;
   }
+  // Retention snapshot: public read face for the pass below. Never throws —
+  // /healthz is the readinessProbe, and a retention problem MUST NOT take the
+  // pod out of the rotation. It reports the condition instead of failing on it.
+  function retentionSnapshot() {
+    const t = now();
+    const intervalMs = Math.max(1, rollupIntervalMs);
+    const ageMs = lastRetention.at ? t - lastRetention.at : null;
+    const state = lastRetention.error
+      ? "failing"
+      : ageMs == null
+        ? "never"
+        : ageMs > 3 * intervalMs
+          ? "stale"
+          : "ok";
+    return {
+      state, // ok | stale | never | failing — "never" is the unwired-policy case
+      retained_at: lastRetention.at || null,
+      retained_rows: lastRetention.rows,
+      age_ms: ageMs,
+      error: lastRetention.error,
+      window_ms: retentionMs,
+    };
+  }
+
   const bookkeeper = registryUrl
     ? createBookkeeper({ registryUrl, token: registryToken, fetchImpl, now, emit: bookEmit, log: say, intervalMs: pollIntervalMs })
     : null;
@@ -350,7 +383,11 @@ export function createObserver({
     return { hours: done + 1, agents: n, catchUp: done };
   }
 
-  const rollupTimer = setInterval(() => {
+  // One maintenance beat = rollup → health → stats hygiene → retention. Named
+  // and exported so tests drive it by hand (same convention as `rollupPass` and
+  // `evaluateHealth`): a pass that can only run on a 60s timer is a pass that
+  // cannot be tested, which is how the retention call went missing.
+  function maintenancePass() {
     try { rollupPass(); } catch (e) { say(`rollup failed: ${e.message}`); }
     // Health rides the rollup cadence, NOT the board read: a silently-failing
     // agent must be announced even when nobody opens a panel. Board reads only
@@ -363,7 +400,21 @@ export function createObserver({
       statsStore.rollupDay(new Date(now() - 86_400_000).toISOString().slice(0, 10));
       statsStore.pruneDetail(now());
     } catch (e) { say(`stats rollup failed: ${e.message}`); }
-  }, rollupIntervalMs);
+    // Retention rides the same cadence (fleet-observability: raw events expire
+    // after `retentionMs`, hour rollups stay forever). This call was lost when
+    // the timer was rewritten in 20fcb86 — `store.retain()` survived with no
+    // caller, the events table grew unbounded, and nothing looked wrong. Bound
+    // it here so the pass and the policy share one clock.
+    try {
+      const retainedRows = store.retain(now(), retentionMs);
+      lastRetention = { at: now(), rows: retainedRows, error: null };
+    } catch (e) {
+      lastRetention = { ...lastRetention, error: e.message };
+      say(`retention failed: ${e.message}`);
+    }
+  }
+
+  const rollupTimer = setInterval(maintenancePass, rollupIntervalMs);
   rollupTimer.unref?.();
 
   // ── sub2api pull (add-stats-plane-v1 D3): hourly, read-only admin API,
@@ -616,7 +667,7 @@ export function createObserver({
     res.json({ agent: req.params.slug, events: store.timeline(req.params.slug, { since, limit }) });
   });
 
-  app.get("/healthz", (_req, res) => res.json({ ok: true }));
+  app.get("/healthz", (_req, res) => res.json({ ok: true, retention: retentionSnapshot() }));
 
   return {
     app,
@@ -628,6 +679,10 @@ export function createObserver({
     // timer, tests drive it by hand.
     evaluateHealth,
     healthSnapshot,
+    retentionSnapshot,
+    // The maintenance beat, for tests: timer-owned in production, hand-driven
+    // in tests (a pass reachable only from a 60s interval is untestable).
+    maintenancePass,
     sub2apiPull,
     // Schedulers are explicit: the bootstrap (index.js) starts them; tests
     // drive polls/passes by hand.

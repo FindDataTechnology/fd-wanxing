@@ -482,3 +482,77 @@ test("contract: an unknown kind still 400s, and the 400 body names the offender"
     obs.close(); srv.close();
   }
 });
+
+// ── Retention is a PASS, not a function (add-agent-led-multi-host-lease 0.2) ──
+//
+// The earlier "retention keeps rollups" test calls obs.store.retain() DIRECTLY,
+// so it stayed green for days while production never invoked it: the call was
+// dropped when the rollup timer was rewritten (20fcb86). A test that reaches
+// past the scheduler cannot tell you the scheduler calls anything — these drive
+// the real beat.
+test("maintenance: the scheduled pass actually expires raw events and keeps rollups", async () => {
+  const { obs, srv } = await harness();
+  try {
+    const t0 = now();
+    obs.store.insertMany([ev({ id: ulid(t0), ts: t0 })], t0);
+    const key = new Date(t0).toISOString().slice(0, 13) + ":00";
+    obs.rollupPass(48);
+    const rollupsBefore = obs.store.rollupRows([key]).length;
+    assert.ok(rollupsBefore > 0, "rollup row exists before retention");
+
+    // 20 days later: the raw row is past the 14-day window, the rollup is not.
+    clockMs += 20 * 24 * 3600_000;
+    obs.maintenancePass();
+
+    assert.equal(obs.store.timeline("packs-p1-deployments-a1", { limit: 100 }).length, 0, "raw row expired");
+    assert.equal(obs.store.rollupRows([key]).length, rollupsBefore, "rollup rows survive retention");
+    const snap = obs.retentionSnapshot();
+    assert.equal(snap.state, "ok");
+    assert.equal(snap.retained_at, clockMs, "the pass records when it ran");
+    assert.ok(snap.retained_rows >= 1, `retained_rows=${snap.retained_rows}`);
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});
+
+test("maintenance: a retention policy that never ran is distinguishable from one that found nothing", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    // Fresh observer, timer has not fired yet: "never", NOT "ok with 0 rows".
+    assert.equal(obs.retentionSnapshot().state, "never");
+    const res = await fetch(`${base}/healthz`);
+    assert.equal(res.status, 200, "readiness must not fail on a retention problem");
+    assert.equal((await res.json()).retention.state, "never");
+
+    obs.maintenancePass();
+    const ok = obs.retentionSnapshot();
+    assert.equal(ok.state, "ok");
+    assert.equal(ok.error, null);
+
+    // A wedged DELETE must not look like a healthy empty window.
+    const realRetain = obs.store.retain;
+    obs.store.retain = () => { throw new Error("disk full"); };
+    obs.maintenancePass();
+    const failing = obs.retentionSnapshot();
+    assert.equal(failing.state, "failing");
+    assert.match(String(failing.error), /disk full/);
+    assert.equal((await (await fetch(`${base}/healthz`)).json()).retention.state, "failing");
+    obs.store.retain = realRetain;
+  } finally {
+    obs.close(); srv.close();
+  }
+});
+
+test("maintenance: a stale pass is reported as stale, not ok", async () => {
+  const { obs, srv } = await harness();
+  try {
+    obs.maintenancePass();
+    assert.equal(obs.retentionSnapshot().state, "ok");
+    // The timer owns the beat; if it stops (or the process is wedged), the
+    // snapshot must say so instead of repeating the last success forever.
+    clockMs += 5 * 60_000; // five 60s intervals later
+    assert.equal(obs.retentionSnapshot().state, "stale");
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});

@@ -10,6 +10,24 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
+// ── Release order for new kinds (add-agent-led-multi-host-lease 0.4) ────────
+//
+// Adding a kind is a TWO-SIDED change and the order is not free:
+//
+//   1. deploy the observer (this whitelist) FIRST,
+//   2. deploy the sender (facade / runner / gateway sampler) SECOND.
+//
+// The reverse order rejects every batch that carries the new kind with a 400
+// (observer.js `POST /ingest`), so the sender's spool grows and can never
+// drain until the observer catches up — measured 2026-11-10 as 340 stuck rows
+// from a single unknown `minted`. Rejection is deliberate and stays: silently
+// dropping an unknown kind would trade a loud, fixable failure for a quiet,
+// unfixable one ("unobservable ≠ healthy").
+//
+// Two guards keep this honest: scripts/test-fleet-observer.mjs scans the facade
+// sources for emitted kinds and fails when one is missing here, and the same
+// file asserts that an unknown kind still rejects the WHOLE batch (so the
+// failure mode stays the documented one, not a partial accept).
 export const EVENT_KINDS = [
   "deployed", "undeployed", "paused", "resumed",
   "woken", "reaped", "budget_killed",
