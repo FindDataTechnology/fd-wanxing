@@ -712,3 +712,42 @@ test("stats: cell-relayed turn_ended writes one row when priced, none when usage
     obs.close(); srv.close(); clockMs = 1_800_001_234_567;
   }
 });
+
+// ── Lease read face: empty stream ≠ healthy stream (Phase 4 read side) ────────
+test("leases: no events is 'unavailable', not 'nothing expired'; latest per unit wins", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const t = now();
+    assert.equal(obs.leaseSnapshot().available, false, "no sender yet — must not read as healthy");
+    assert.equal(obs.leaseSnapshot().expired_in_window, 0);
+
+    const ev = (unit, kind, ts, holder = "runner:cheap1") => ({
+      id: ulid(ts), source: "probe", agent: "a", kind, ts, payload: { unit, holder, attempt: 1 },
+    });
+    await post(base, {
+      events: [
+        ev("u1", "lease.claimed", t - 3000),
+        ev("u1", "lease.renewed", t - 2000),
+        ev("u1", "lease.expired", t - 1000), // u1 ends expired
+        ev("u2", "lease.claimed", t - 500),  // u2 still held
+      ],
+    });
+
+    const snap = obs.leaseSnapshot();
+    assert.equal(snap.available, true);
+    assert.equal(snap.events, 4);
+    assert.equal(snap.expired_in_window, 1, "expiry counted as an event, not inferred from silence");
+    assert.equal(snap.active, 1, "only u2 is still held");
+    const byUnit = Object.fromEntries(snap.units.map((u) => [u.unit, u]));
+    assert.equal(byUnit.u1.state, "expired", "latest event per unit wins");
+    assert.equal(byUnit.u2.state, "claimed");
+    assert.equal(byUnit.u1.holder, "runner:cheap1");
+
+    // And the board carries it, so an operator can see it without a query tool.
+    const board = await (await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } })).json();
+    assert.equal(board.leases.available, true);
+    assert.equal(board.leases.expired_in_window, 1);
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});

@@ -250,6 +250,50 @@ export function createObserver({
     return out;
   }
 
+  // Work-lease read face (add-agent-led-multi-host-lease Phase 4) ─────────────
+  //
+  // The three kinds are pre-registered in store.js but NO sender exists yet, so
+  // this must answer honestly on an empty stream instead of returning zeros that
+  // read as "no leases are stuck". An empty stream and a healthy stream are
+  // different facts and only one of them means anything.
+  //
+  // State = the LAST event per unit inside a bounded raw window. Expiry is an
+  // event, never an inference from silence: a lease whose holder vanished shows
+  // `expired` because a sender said so. Until Phase 4 ships a sender, the honest
+  // answer is `available: false`, not "fine".
+  const LEASE_KINDS = ["lease.claimed", "lease.renewed", "lease.expired"];
+  function leaseSnapshot(windowMs = 24 * 3600_000) {
+    const t = now();
+    const rows = store.kindSince(LEASE_KINDS, t - windowMs);
+    const units = new Map(); // unit → latest event
+    let expired = 0;
+    for (const e of rows) {
+      if (e.kind === "lease.expired") expired += 1;
+      const unit = e.payload?.unit ?? e.payload?.work_unit ?? null;
+      if (!unit) continue;
+      const prev = units.get(unit);
+      if (!prev || Number(e.ts) >= Number(prev.ts)) units.set(unit, e);
+    }
+    const items = [...units.values()]
+      .map((e) => ({
+        unit: e.payload?.unit ?? e.payload?.work_unit ?? null,
+        state: e.kind.slice("lease.".length), // claimed | renewed | expired
+        holder: e.payload?.holder ?? null,
+        attempt: e.payload?.attempt ?? null,
+        at: Number(e.ts) || null,
+        age_ms: Math.max(0, t - Number(e.ts || t)),
+      }))
+      .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    return {
+      available: rows.length > 0, // false = no sender yet / nothing ever ran
+      events: rows.length,
+      expired_in_window: expired,
+      active: items.filter((i) => i.state !== "expired").length,
+      units: items.slice(0, 20),
+      window_ms: windowMs,
+    };
+  }
+
   const bookkeeper = registryUrl
     ? createBookkeeper({ registryUrl, token: registryToken, fetchImpl, now, emit: bookEmit, log: say, intervalMs: pollIntervalMs })
     : null;
@@ -659,6 +703,9 @@ export function createObserver({
       // Explicit liveness beside the 30-minute snapshot: the snapshot answers
       // "what did it last say", this answers "is it still there".
       runner_liveness: runnerLiveness(),
+      // Work leases: present even when empty, because "no sender yet" and
+      // "nothing stuck" must not render alike (`available` is the difference).
+      leases: leaseSnapshot(),
       cells,
       shortterm,
       turns: agg.turns,
@@ -729,6 +776,7 @@ export function createObserver({
     healthSnapshot,
     retentionSnapshot,
     runnerLiveness,
+    leaseSnapshot,
     // The maintenance beat, for tests: timer-owned in production, hand-driven
     // in tests (a pass reachable only from a 60s interval is untestable).
     maintenancePass,
