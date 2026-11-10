@@ -73,6 +73,13 @@ export const EVENT_KINDS = [
   // test at the bottom of scripts/test-fleet-observer.mjs now scans the sibling
   // paas checkout when present.
   "workspace_quota_exceeded", "billing_parked", "billing_unparked",
+  // Work-lease lifecycle (add-agent-led-multi-host-lease Phase 4) — declared here
+  // BEFORE any sender emits them, which is the release order this file documents
+  // at the top: the observer must know a kind before a producer can send it, or
+  // every batch carrying it is refused. Nothing emits these yet; `lease.expired`
+  // is the one the specs require to be a visible fact (a silent drop and a
+  // healthy quiet lease must not look alike).
+  "lease.claimed", "lease.renewed", "lease.expired",
   // Agent health transitions (surface-silent-agent-failures 2.2): emitted by
   // THIS observer at most once per transition — never per failing turn, so a
   // 19-day outage is two rows, not thousands. Ingest rejects unknown kinds

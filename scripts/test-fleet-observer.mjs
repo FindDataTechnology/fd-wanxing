@@ -651,3 +651,33 @@ test("runner liveness: beat count accumulates, and the board carries the section
     obs.close(); srv.close(); clockMs = 1_800_001_234_567;
   }
 });
+
+// ── Lease kinds are accepted ahead of their senders (Phase 4 sequencing) ─────
+//
+// Adding a kind is two-sided and the observer must land FIRST (see the release
+// order note in store.js). This pins that the kinds are already accepted, so a
+// Phase 4 sender can ship without a coordinated release — and that an unknown
+// kind still refuses its batch (the failure mode stays loud, not silent).
+test("contract: lease lifecycle kinds are accepted; unknown kinds still refuse the batch", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const t = now();
+    const res = await post(base, {
+      events: ["lease.claimed", "lease.renewed", "lease.expired"].map((kind, i) => ({
+        id: ulid(t + i), source: "probe", agent: "a", kind, ts: t + i,
+        payload: { unit: "u1", holder: "runner:cheap1", attempt: i },
+      })),
+    });
+    assert.equal(res.status, 200, "pre-declared lease kinds are accepted before any sender exists");
+    assert.equal((await res.json()).accepted, 3);
+
+    // The loud half: one unknown event still refuses the WHOLE batch.
+    const bad = await post(base, {
+      events: [{ id: ulid(t + 9), source: "probe", agent: "a", kind: "lease.unknown", ts: t + 9 }],
+    });
+    assert.equal(bad.status, 400);
+    assert.match(String((await bad.json()).error), /lease\.unknown/);
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});
