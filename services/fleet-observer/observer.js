@@ -35,6 +35,9 @@ export function createObserver({
   pollIntervalMs = 30_000,
   rollupIntervalMs = 60_000,
   retentionMs = 14 * 24 * 3600_000,
+  // A public endpoint starts life with no beats: `never` is the honest state,
+  // not "lost" and not "ok". Callers override to match the runner's real beat.
+  runnerSilenceMs = 5 * 60_000,
   log = null,
   // Stats plane (add-stats-plane-v1): sister DB, optional sub2api pull, and an
   // env-provisioned collector token (hash lands in stats.db at boot; rotating
@@ -207,6 +210,44 @@ export function createObserver({
       error: lastRetention.error,
       window_ms: retentionMs,
     };
+  }
+
+  // Runner liveness (add-agent-led-multi-host-lease 2.x) ──────────────────────
+  //
+  // The board used to derive "a runner is gone" from its key disappearing out of
+  // a 30-minute window (`kindSince(["runner_stats"], t-30m)`), which is not a
+  // fact but an absence — and absence is exactly what a quiet, healthy runner
+  // also produces. Consumers then rendered "no presence", the same value a
+  // never-registered runner gets. This pass answers the question directly:
+  // when did we last hear from it, how many beats did we get, and is that
+  // silence normal or a loss.
+  //
+  // Thresholds are injected, not guessed from the observer's own cadence: the
+  // beat belongs to the RUNNER (default 30s there), and the observer must not
+  // assume its own rollup interval describes someone else's heartbeat.
+  const runnerStaleMs = Math.max(1_000, Number(runnerSilenceMs) || 5 * 60_000) / 3;
+  const runnerLostMs = Math.max(runnerStaleMs, Number(runnerSilenceMs) || 5 * 60_000);
+
+  function runnerLiveness() {
+    const t = now();
+    // Look back over the whole retention window: a runner that died 40 minutes
+    // ago must still be named as "lost", not omitted because it fell outside a
+    // short window. Aggregated in SQL, so the cost is one GROUP BY.
+    const rows = store.runnerLastSeen({ sinceMs: t - retentionMs });
+    const out = {};
+    for (const r of rows) {
+      const ageMs = Math.max(0, t - Number(r.last_seen_at ?? t));
+      out[r.runner] = {
+        last_seen_at: Number(r.last_seen_at) || null,
+        age_ms: ageMs,
+        beats: Number(r.beats) || 0,
+        // Three states, never two: "ok" is a fresh beat, "stale" is late but
+        // inside tolerance, "lost" is silence we are willing to call a loss.
+        // None of them may collapse into "absent".
+        presence: ageMs <= runnerStaleMs ? "ok" : ageMs <= runnerLostMs ? "stale" : "lost",
+      };
+    }
+    return out;
   }
 
   const bookkeeper = registryUrl
@@ -615,6 +656,9 @@ export function createObserver({
       agents_total: agents.size,
       states: dist,
       runners: runnerStats,
+      // Explicit liveness beside the 30-minute snapshot: the snapshot answers
+      // "what did it last say", this answers "is it still there".
+      runner_liveness: runnerLiveness(),
       cells,
       shortterm,
       turns: agg.turns,
@@ -684,6 +728,7 @@ export function createObserver({
     evaluateHealth,
     healthSnapshot,
     retentionSnapshot,
+    runnerLiveness,
     // The maintenance beat, for tests: timer-owned in production, hand-driven
     // in tests (a pass reachable only from a 60s interval is untestable).
     maintenancePass,

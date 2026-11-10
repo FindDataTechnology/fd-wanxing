@@ -261,6 +261,24 @@ export function createEventStore({ file }) {
       return rows.map(rowToEvent);
     },
 
+    // Per-runner last-seen, aggregated in SQL (add-agent-led-multi-host-lease
+    // 2.x): the board must be able to say "this runner has been silent for N
+    // minutes" instead of letting the key vanish from a 30-minute window and
+    // calling that "offline". Grouping here (rather than scanning every
+    // runner_stats row in JS) keeps a day-long lookback cheap: at a 30s beat
+    // one runner writes 2,880 rows/day.
+    runnerLastSeen({ sinceMs = 0, kind = "runner_stats" } = {}) {
+      return db
+        .prepare(
+          `SELECT runner, MAX(ts) AS last_seen_at, COUNT(*) AS beats
+             FROM events
+            WHERE kind = ? AND runner IS NOT NULL AND runner != '' AND ts >= ?
+            GROUP BY runner
+            ORDER BY last_seen_at DESC`,
+        )
+        .all(kind, sinceMs);
+    },
+
     timeline(agent, { since = 0, limit = 100 } = {}) {
       const rows = db.prepare(`SELECT * FROM events WHERE agent = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(agent, since, limit);
       return rows.map(rowToEvent);

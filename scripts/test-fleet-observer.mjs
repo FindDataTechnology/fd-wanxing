@@ -594,3 +594,60 @@ test("maintenance: a stale pass is reported as stale, not ok", async () => {
     obs.close(); srv.close(); clockMs = 1_800_001_234_567;
   }
 });
+
+// ── Runner liveness is a fact, not a missing key (2.x) ───────────────────────
+//
+// The board used to answer "is that runner still there?" by its key vanishing
+// from a 30-minute window — which is also what a quiet, healthy runner looks
+// like. These pin the three states apart.
+test("runner liveness: fresh / stale / lost are distinguishable, and a lost runner is still named", async () => {
+  const { obs, srv } = await harness();
+  try {
+    const t0 = now();
+    const beat = (runner, ts) => obs.store.insertMany([{
+      id: ulid(ts), source: `runner:${runner}`, agent: "a", runner, kind: "runner_stats", ts, payload: {},
+    }], ts);
+
+    beat("fresh", t0);
+    beat("late", t0 - 3 * 60_000);
+    beat("gone", t0 - 40 * 60_000);
+
+    const lv = obs.runnerLiveness();
+    assert.equal(lv.fresh.presence, "ok");
+    assert.equal(lv.late.presence, "stale");
+    // The whole point: 40 quiet minutes is reported AS lost, not omitted.
+    assert.ok(lv.gone, "a silent runner must still be named");
+    assert.equal(lv.gone.presence, "lost");
+    assert.equal(lv.gone.age_ms, 40 * 60_000);
+    assert.equal(lv.gone.beats, 1, "beat count distinguishes one stale row from a steady stream");
+
+    // A runner that never beat is absent from the map (never reported ≠ lost):
+    // absent is for "we have never heard of it", lost is for "it went quiet".
+    assert.equal(lv.never, undefined);
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});
+
+test("runner liveness: beat count accumulates, and the board carries the section", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const t0 = now();
+    for (let i = 0; i < 3; i++) {
+      const ts = t0 - i * 30_000;
+      obs.store.insertMany([{ id: ulid(ts), source: "runner:r1", agent: "a", runner: "r1", kind: "runner_stats", ts, payload: {} }], ts);
+    }
+    assert.equal(obs.runnerLiveness().r1.beats, 3);
+    assert.equal(obs.runnerLiveness().r1.presence, "ok");
+
+    const res = await fetch(`${base}/api/fleet/v1/board`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    assert.equal(res.status, 200);
+    const board = await res.json();
+    assert.ok(board.runner_liveness?.r1, "the board carries the liveness section");
+    assert.equal(board.runner_liveness.r1.presence, "ok");
+    // The old snapshot face is untouched (additive change only).
+    assert.ok(board.runners, "runners snapshot still present");
+  } finally {
+    obs.close(); srv.close(); clockMs = 1_800_001_234_567;
+  }
+});
