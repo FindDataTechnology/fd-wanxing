@@ -69,11 +69,19 @@ export function createDeviceFace({
       res.json({
         devices: rows.map((d) => {
           const b = board?.runners?.[d.runner_id] ?? null;
+          // Liveness beside the snapshot (add-agent-led-multi-host-lease 2.x):
+          // `board` answers "what did it last say" and disappears once the
+          // runner leaves the 30-minute window — which is exactly when the seat
+          // looks the same as one that was never paired. `liveness` answers "when
+          // did we last hear from it" and survives that window, so the client can
+          // tell 迟报/失联 from 从未上线 instead of inferring both from a missing key.
+          const lv = board?.runner_liveness?.[d.runner_id] ?? null;
           return {
             runnerId: d.runner_id,
             name: d.name,
             createdAt: d.created_at,
             board: b ? { seen_at: b.seen_at, agents: b.agents ?? null, desktop: b.desktop ?? null } : null,
+            liveness: lv ? { presence: lv.presence, age_ms: lv.age_ms, last_seen_at: lv.last_seen_at, beats: lv.beats } : null,
           };
         }),
       });

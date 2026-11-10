@@ -34,6 +34,18 @@ observerApp.post("/ingest", (req, res) => {
   relayed.push(req.body?.events ?? []);
   res.status(202).json({ ok: true });
 });
+// Board stub, off by default (the "degrades open" case needs it absent).
+// `boardStub.on` lets a test turn liveness on without a second server.
+const boardStub = { on: false };
+observerApp.get("/api/fleet/v1/board", (req, res) => {
+  if (!boardStub.on) return res.status(404).json({ error: "no board here" });
+  res.json({
+    // Deliberately EMPTY snapshot: the runner has fallen out of the 30-minute
+    // window. That is exactly the case the seat used to render as "never paired".
+    runners: {},
+    runner_liveness: { "desktop-ab12cd34": { presence: "lost", age_ms: 2_400_000, last_seen_at: 1_700_000_000_000, beats: 180 } },
+  });
+});
 const observerServer = observerApp.listen(0, "127.0.0.1");
 await new Promise((r) => observerServer.once("listening", r));
 const OBS = `http://127.0.0.1:${observerServer.address().port}`;
@@ -127,6 +139,23 @@ test("list shows the identity's seat; the board join degrades open", async () =>
   assert.equal(devices[0].runnerId, "desktop-ab12cd34");
   assert.equal(devices[0].name, "书房 Mac");
   assert.equal(devices[0].board, null); // stub observer has no /board route
+});
+
+test("list exposes liveness so a silent seat is not mistaken for an unpaired one", async () => {
+  boardStub.on = true;
+  try {
+    const r = await fetch(`${BASE}/api/wanxing/v1/console/devices`, { headers: { "x-test-identity": "owner" } });
+    assert.equal(r.status, 200);
+    const { devices } = await r.json();
+    assert.equal(devices[0].board, null, "the 30-minute snapshot has nothing: the key is gone");
+    // ...and that is precisely why liveness must ride along: without it, a seat
+    // 40 minutes silent and a seat never paired render identically.
+    assert.equal(devices[0].liveness.presence, "lost");
+    assert.equal(devices[0].liveness.age_ms, 2_400_000);
+    assert.equal(devices[0].liveness.beats, 180);
+  } finally {
+    boardStub.on = false;
+  }
 });
 
 test("ingest forward: per-seat token relays to the observer with the service credential", async () => {
