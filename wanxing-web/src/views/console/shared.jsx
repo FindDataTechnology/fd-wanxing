@@ -48,6 +48,24 @@ export const HealthBadge = ({ health, slug }) => {
     );
   }
   if (state === "silent") {
+    // flag-stalled-rhythm-agents 3.1: zero turns means two different things.
+    // A declared rhythm makes silence a finding ("it should have fired M times
+    // and fired none"); no declaration keeps the plain "no traffic" wording,
+    // because that agent only runs on inbound work.
+    const expected = Number(health.expected_turns);
+    if (health.stalled === true && Number.isFinite(expected)) {
+      const every = Number(health.declared_every_ms);
+      const per = Number.isFinite(every) && every > 0 ? (every >= 86_400_000 ? `${Math.round(every / 86_400_000)} 天` : every >= 3_600_000 ? `${Math.round(every / 3_600_000)} 小时` : `${Math.round(every / 60_000)} 分钟`) : "";
+      return (
+        <span
+          data-testid={`fleet-health-${slug}`}
+          className="px-1.5 py-0.5 rounded text-[11px] bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300"
+          title={`窗口内零回合，但它声明了节奏：按声明${per ? `每 ${per}` : ""}应有 ${expected} 次`}
+        >
+          该跑没跑 · 按声明应有 {expected} 次
+        </span>
+      );
+    }
     return (
       <span data-testid={`fleet-health-${slug}`} className="px-1.5 py-0.5 rounded text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500" title="窗口内零回合：可能刚部署、也可能没人用——不是故障">
         无流量

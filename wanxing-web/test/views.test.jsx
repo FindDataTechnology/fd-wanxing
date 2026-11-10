@@ -171,3 +171,31 @@ test("3.2 a missing health entry renders nothing — never a healthy-looking mar
   assert.ok(silent.includes("无流量"));
   assert.ok(!silent.includes("失败"));
 });
+
+// ── flag-stalled-rhythm-agents 3.1/3.3: two kinds of silence ────────────────
+
+test("3.1 a stalled agent says it should have run; a plain silent one keeps its wording", async () => {
+  const { HealthBadge } = await import("../src/views/console/shared.jsx");
+
+  const stalled = renderToStaticMarkup(createElement(HealthBadge, {
+    health: { health: "silent", declared_every_ms: 3_600_000, expected_turns: 24, stalled: true },
+    slug: "s1",
+  }));
+  assert.ok(stalled.includes("该跑没跑"));
+  assert.ok(stalled.includes("24"));
+  assert.ok(!stalled.includes("无流量"));
+
+  const plain = renderToStaticMarkup(createElement(HealthBadge, { health: { health: "silent" }, slug: "s1" }));
+  assert.ok(plain.includes("无流量"), "a non-rhythmic agent keeps exactly today's wording");
+  assert.ok(!plain.includes("该跑没跑"));
+});
+
+test("3.3 an older observer's silent entry (no implied count) renders as before", async () => {
+  const { HealthBadge } = await import("../src/views/console/shared.jsx");
+  const html = renderToStaticMarkup(createElement(HealthBadge, {
+    health: { health: "silent", expected_turns: undefined, stalled: undefined },
+    slug: "s1",
+  }));
+  assert.ok(html.includes("无流量"));
+  assert.ok(!html.includes("undefined"));
+});

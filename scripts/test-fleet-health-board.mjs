@@ -161,3 +161,16 @@ test("2.2 a transition emits one agent_unhealthy, repeats emit nothing, recovery
     await h.close();
   }
 });
+
+// ── flag-stalled-rhythm-agents 2.1: one mapping rule ────────────────────────
+// Drift here is silent (the declaration never matches an agent, so nothing looks
+// wrong), so the rule is pinned against real registry path shapes.
+
+test("2.1 slugFromPath matches the rollup identity for real registry paths", async () => {
+  const { slugFromPath } = await import("../services/fleet-observer/observer.js");
+  // 期望值取自生产 rollup 里的真实 agent 名（下划线保留：它在允许字符集内）
+  assert.equal(slugFromPath("/packs/4FHjSKpibRr2d0_9BXaCqQ/wx-alpha"), "packs-4fhjskpibrr2d0_9bxacqq-wx-alpha");
+  assert.equal(slugFromPath("packs/XfyXvzONQFelnFIgM0dJVw/lex-console-copilot"), "packs-xfyxvzonqfelnfigm0djvw-lex-console-copilot");
+  assert.equal(slugFromPath("//a_b/c d"), "a_b-c-d");
+  assert.equal(slugFromPath(""), "");
+});

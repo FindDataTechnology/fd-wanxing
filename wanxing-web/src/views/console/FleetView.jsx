@@ -18,7 +18,9 @@ import { channelLabel, sourceBadge, HealthBadge } from "./shared.jsx";
 
 // A deployment nobody can use must not sit below ones that work. Only
 // failing/degraded reorder; everything else keeps its original position.
-const healthRank = (h) => (h?.health === "failing" ? 0 : h?.health === "degraded" ? 1 : 2);
+// flag-stalled-rhythm-agents 3.2: a stalled agent outranks a merely silent one
+// — "should have run and did not" is actionable, "nobody called it" is not.
+const healthRank = (h) => (h?.health === "failing" ? 0 : h?.health === "degraded" ? 1 : h?.stalled === true ? 2 : 3);
 
 export function FleetView({ focusSlug } = {}) {
   const toast = useToast();

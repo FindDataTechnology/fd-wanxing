@@ -509,16 +509,19 @@ export function OpsView() {
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3" data-testid="unhealthy-agents-panel">
           <h3 className="font-semibold">不健康 agent · 机群</h3>
           {(() => {
-            const bad = board.agent_health.filter((h) => h.health === "failing" || h.health === "degraded");
+            // flag-stalled-rhythm-agents 3.2: stalled agents belong on this list
+            // too — "declared a rhythm, ran zero turns" is exactly the silent
+            // failure this panel exists to surface.
+            const bad = board.agent_health.filter((h) => h.health === "failing" || h.health === "degraded" || h.stalled === true);
             if (bad.length === 0) {
-              return <div className="text-xs text-slate-500" data-testid="unhealthy-empty">当前没有持续失败或部分失败的 agent。</div>;
+              return <div className="text-xs text-slate-500" data-testid="unhealthy-empty">当前没有持续失败、部分失败或该跑没跑的 agent。</div>;
             }
             return (
               <div className="space-y-1.5" data-testid="unhealthy-list">
                 {bad.map((h) => (
                   <div key={h.agent} className="flex gap-3 items-center flex-wrap text-xs" data-agent={h.agent} data-health={h.health}>
-                    <span className={`px-1.5 py-0.5 rounded text-[11px] ${h.health === "failing" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>
-                      {h.health === "failing" ? "持续失败" : "部分失败"}
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] ${h.health === "failing" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : h.stalled === true ? "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>
+                      {h.health === "failing" ? "持续失败" : h.stalled === true ? "该跑没跑" : "部分失败"}
                     </span>
                     <span className="font-mono truncate max-w-[22rem]" title={h.agent}>{h.agent}</span>
                     <span className="text-slate-500">{h.since != null ? `已 ${fmtSpan(Date.now() - h.since)}` : "—"}</span>

@@ -46,6 +46,28 @@ const HOUR_MS = 3_600_000;
  *            consecutiveHours:number, lastErrorKind:string|null,
  *            turns:number, errors:number}}
  */
+// ── Declared rhythm (flag-stalled-rhythm-agents D2/D3) ──────────────────────
+// An agent that declares a rhythm is supposed to produce turns on its own; an
+// agent that declares none only runs on inbound work, so zero turns is normal
+// life rather than a signal. The declaration reaches us as the registry's
+// `metadata.effective_rhythm`, measured to look like `[{"every":"1h"}]`.
+//
+// Anything we cannot parse is treated as NO DECLARATION, never as an error and
+// never as a guess: this signal earns its keep only by being trustworthy, so it
+// under-reports rather than cries wolf.
+export function parseRhythmMs(effectiveRhythm) {
+  if (!Array.isArray(effectiveRhythm) || effectiveRhythm.length === 0) return null;
+  const every = effectiveRhythm[0]?.every;
+  if (typeof every !== "string") return null;
+  const m = /^(\d{1,4})\s*(m|h|d)$/i.exec(every.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = m[2].toLowerCase();
+  const mul = unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000;
+  return n * mul;
+}
+
 export function deriveHealth({
   rows = [],
   paused = null,
@@ -53,6 +75,14 @@ export function deriveHealth({
   failingMinConsecutive = 3,
   degradedErrorRate = 0.3,
   now = null,
+  // Declared rhythm, already parsed to ms (null = no declaration).
+  rhythmMs = null,
+  // Window the rows cover, used to derive the implied turn count. Defaults to
+  // the row count (rollup rows are hourly buckets).
+  windowMs = null,
+  // Independent constant: how many missed turns make "did not run" a finding.
+  // 3 means "we know it should have run at least three times and it ran zero".
+  stallMinExpected = 3,
 } = {}) {
   const clean = (Array.isArray(rows) ? rows : [])
     .map((r) => ({
@@ -81,8 +111,23 @@ export function deriveHealth({
   }
 
   // 2) No turns at all → no information. Not healthy, not failing.
+  //    But a declared rhythm turns that "no information" into a finding: an
+  //    agent that is supposed to fire on its own and fired never is stalled,
+  //    and that is a different thing from "nobody called it".
   if (turns === 0) {
-    return { ...base, health: HEALTH.SILENT, lastErrorKind };
+    // Hourly rollup rows: the window is as wide as the rows we were given,
+    // unless the caller knows better.
+    const spanMs = windowMs ?? clean.length * HOUR_MS;
+    const expectedTurns = rhythmMs != null && rhythmMs > 0 ? Math.floor(spanMs / rhythmMs) : null;
+    const stalled = expectedTurns != null && expectedTurns >= stallMinExpected;
+    return {
+      ...base,
+      health: HEALTH.SILENT,
+      lastErrorKind,
+      ...(rhythmMs != null ? { declared_every_ms: rhythmMs } : {}),
+      ...(expectedTurns != null ? { expected_turns: expectedTurns } : {}),
+      ...(stalled ? { stalled: true } : {}),
+    };
   }
 
   // Leading streak of fully-failed hours, newest-first, counted in TURNS
@@ -149,6 +194,11 @@ export function deriveFleetHealth(rows = [], {
   degradedErrorRate = 0.3,
   now = null,
   includeStale = false,
+  // flag-stalled-rhythm-agents: declared rhythm per agent (ms) + the miss
+  // threshold. Absent map = nobody declares a rhythm (everyone stays "silent").
+  rhythmMsByAgent = new Map(),
+  windowMs = null,
+  stallMinExpected = 3,
 } = {}) {
   const byAgent = new Map();
   for (const r of Array.isArray(rows) ? rows : []) {
@@ -167,6 +217,9 @@ export function deriveFleetHealth(rows = [], {
       failingMinConsecutive,
       degradedErrorRate,
       now,
+      rhythmMs: rhythmMsByAgent.get(agent) ?? null,
+      windowMs,
+      stallMinExpected,
     });
     // An unreadable pause flag means we could not judge this pass. The entry is
     // SKIPPED by default rather than published with a state — "we could not

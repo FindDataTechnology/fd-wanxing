@@ -11,7 +11,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { deriveHealth, deriveFleetHealth, hourKeyToMs, HEALTH } = await import("../services/fleet-observer/health.js");
+const core = await import("../services/fleet-observer/health.js");
+const { deriveHealth, deriveFleetHealth, hourKeyToMs, HEALTH, parseRhythmMs } = core;
 
 const hours = (n, start = 1) => Array.from({ length: n }, (_, i) => `2026-11-10T${String(start + i).padStart(2, "0")}:00`);
 const row = (hour, turns, errors, kills = 0) => ({ hour, agent: "a", turns, errors, budget_kills: kills });
@@ -143,4 +144,66 @@ test("1.5 an idle hour ends the streak — absence is not failure", () => {
   });
   assert.equal(h.consecutive, 5, "only the newest run counts");
   assert.notEqual(h.health, HEALTH.FAILING);
+});
+
+// ── flag-stalled-rhythm-agents 1.1: the rhythm parser ───────────────────────
+// Anything unparseable means "no declaration" — the signal under-reports rather
+// than crying wolf.
+
+test("1.1 parseRhythmMs: recognised forms, everything else is no declaration", () => {
+  assert.equal(parseRhythmMs([{ every: "1h" }]), 3_600_000);
+  assert.equal(parseRhythmMs([{ every: "30m" }]), 1_800_000);
+  assert.equal(parseRhythmMs([{ every: "2d" }]), 172_800_000);
+  assert.equal(parseRhythmMs([{ every: " 4H " }]), 14_400_000);
+  // every unparseable shape degrades to "no declaration"
+  assert.equal(parseRhythmMs([]), null);
+  assert.equal(parseRhythmMs(null), null);
+  assert.equal(parseRhythmMs(undefined), null);
+  assert.equal(parseRhythmMs("1h"), null);              // bare string, not the array form
+  assert.equal(parseRhythmMs([{ cron: "0 * * * *" }]), null);
+  assert.equal(parseRhythmMs([{ every: "0h" }]), null);  // zero interval is not a schedule
+  assert.equal(parseRhythmMs([{ every: "hourly" }]), null);
+});
+
+// ── 1.2–1.5: staleness on the silent branch ────────────────────────────────
+
+test("1.2 a rhythmic agent with zero turns is stalled, with the implied count", () => {
+  const h = deriveHealth({
+    rows: Array.from({ length: 24 }, (_, i) => row(`2026-11-10T${String(i).padStart(2, "0")}:00`, 0, 0)),
+    rhythmMs: 3_600_000,
+  });
+  assert.equal(h.health, HEALTH.SILENT);
+  assert.equal(h.declared_every_ms, 3_600_000);
+  assert.equal(h.expected_turns, 24);
+  assert.equal(h.stalled, true);
+});
+
+test("1.3 an interval implying fewer turns than the minimum is not evidence", () => {
+  const rows = Array.from({ length: 24 }, (_, i) => row(`2026-11-10T${String(i).padStart(2, "0")}:00`, 0, 0));
+  // 12h over a 24h window ⇒ 2 implied, below the minimum of 3 ⇒ not stalled
+  const h = deriveHealth({ rows, rhythmMs: 43_200_000 });
+  assert.equal(h.expected_turns, 2);
+  assert.equal(h.stalled, undefined);
+});
+
+test("1.4 no declaration ⇒ silent with no implied count and no verdict", () => {
+  const h = deriveHealth({ rows: [row(hours(2)[0], 0, 0)], rhythmMs: null });
+  assert.equal(h.health, HEALTH.SILENT);
+  assert.equal(h.expected_turns, undefined);
+  assert.equal(h.declared_every_ms, undefined);
+  assert.equal(h.stalled, undefined);
+});
+
+test("1.4 a paused agent is never stalled", () => {
+  const h = deriveHealth({ rows: [row(hours(2)[0], 0, 0)], paused: true, rhythmMs: 3_600_000 });
+  assert.equal(h.health, HEALTH.PAUSED);
+  assert.equal(h.stalled, undefined);
+});
+
+test("1.5 agents with turns carry no implied count", () => {
+  for (const rows of [[row(hours(1)[0], 3, 0)], [row(hours(1)[0], 3, 3)], [row(hours(2)[0], 2, 2), row(hours(2)[1], 2, 0)]]) {
+    const h = deriveHealth({ rows, rhythmMs: 3_600_000 });
+    assert.equal(h.expected_turns, undefined, `leaked on ${h.health}`);
+    assert.equal(h.stalled, undefined, `leaked on ${h.health}`);
+  }
 });

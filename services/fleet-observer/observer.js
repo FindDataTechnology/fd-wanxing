@@ -11,10 +11,19 @@ import express from "express";
 import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS } from "./store.js";
 import { createBookkeeper } from "./bookkeeper.js";
 import { createStatsStore, packOfAgent } from "./stats-store.js";
-import { deriveFleetHealth } from "./health.js";
+import { deriveFleetHealth, parseRhythmMs } from "./health.js";
 import { ulid } from "./ulid.js";
 
 const hourKeyOf = (tsMs) => new Date(tsMs).toISOString().slice(0, 13) + ":00";
+
+// Registry path → rollup identity (flag-stalled-rhythm-agents D4). This rule
+// lives in ONE place on purpose: bookkeeper keys are registry paths
+// ("/packs/4FHjSKpibRr2d0_9BXaCqQ/wx-alpha") while rollup rows carry the slug
+// ("packs-4fhjskpibrr2d0_9bxacqq-wx-alpha"). Two independent derivations drift,
+// and drift here is silent — the declaration simply never matches an agent, so
+// nothing looks wrong. Mirrors paas console's slugFor, character for character.
+export const slugFromPath = (agentPath) =>
+  String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
 
 export function createObserver({
   dataRoot,
@@ -66,6 +75,10 @@ export function createObserver({
     windowHours: Number(process.env.FLEET_HEALTH_WINDOW_HOURS ?? 24) || 24,
     failingMinConsecutive: Number(process.env.FLEET_HEALTH_FAILING_MIN ?? 3) || 3,
     degradedErrorRate: Number(process.env.FLEET_HEALTH_DEGRADED_RATE ?? 0.3),
+    // flag-stalled-rhythm-agents: how many missed turns make "did not run" a
+    // finding. Independent constant — 3 means "it should have fired at least
+    // three times and fired zero".
+    stallMinExpected: Number(process.env.FLEET_STALL_MIN_EXPECTED ?? 3),
   };
   // Transition memory (2.2): in-memory only — recomputed from the rollup after a
   // restart, and deduped on `since` so a restart cannot re-announce a known
@@ -97,11 +110,27 @@ export function createObserver({
     // explicit event family, not an inference from silence.
     for (const r of agentRows) if (!pausedByAgent.has(r.agent)) pausedByAgent.set(r.agent, false);
 
+    // Declared rhythms (flag-stalled-rhythm-agents 2.2): the bookkeeper already
+    // holds each registry entry, so this costs no extra request. An absent or
+    // not-yet-polled bookkeeper simply means "nobody declares a rhythm" — the
+    // distinction degrades to today's plain `silent`, never to a false alarm.
+    const rhythmMsByAgent = new Map();
+    let known = null;
+    try { known = bookkeeper?.knownSet?.() ?? null; } catch { known = null; }
+    if (known && typeof known.forEach === "function") {
+      known.forEach(({ entry }, agentPath) => {
+        const ms = parseRhythmMs(entry?.metadata?.effective_rhythm);
+        if (ms != null) rhythmMsByAgent.set(slugFromPath(agentPath), ms);
+      });
+    }
+
     const items = deriveFleetHealth(agentRows, {
       pausedByAgent,
       failingMinConsecutive: healthCfg.failingMinConsecutive,
       degradedErrorRate: healthCfg.degradedErrorRate,
       now: t,
+      rhythmMsByAgent,
+      stallMinExpected: healthCfg.stallMinExpected,
     }).map((h) => ({ ...h, window_hours: healthCfg.windowHours }));
 
     for (const h of items) {
