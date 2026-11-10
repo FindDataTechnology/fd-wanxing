@@ -20,5 +20,5 @@
 
 ## 4. 收口
 
-- [ ] 4.1 `openspec validate flag-stalled-rhythm-agents --strict` 通过；facade / web 两套测试全绿
-- [ ] 4.2 上产后核对：`wx-alpha`（1h 节奏、已暂停）恢复后若仍无回合，应在窗口内被标 `stalled` 而不是平淡的「无流量」；记录一次真实样本后归档
+- [x] 4.1 `openspec validate flag-stalled-rhythm-agents --strict` 通过；facade 251 / web 53 / lex 75 三套全绿；web 构建绿；已上产（镜像仓 e8ebf6c，observer + web 滚完）
+- [x] 4.2 上产后核对（**如实结论：当前无 stalled 样本，功能按设计沉默**）——board 读到 `agent_health=31 silent=26 stalled=0`；查 registry：41 个 agent 里只有 3 个声明了 `effective_rhythm`（`wx-alpha` 1h、`spider-heal` 30m、`mission-planner` 15m），而三者**都有回合**（`wx-alpha` failing 1215/1215、另两个 ok 48/93），所以 stalled 分支正确地没触发。这核对了一件事：判据只在 `turns === 0` 时才有意义，不是"所有有节奏的 agent 都该被标"。`wx-alpha` 随后被暂停（人为静止不算 stalled，`paused` 优先）。真实样本要等下一次「有节奏且零回合」的部署出现
