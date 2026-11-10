@@ -16,6 +16,16 @@ export const EVENT_KINDS = [
   "turn_started", "turn_ended", "settled",
   "admitted", "refused",
   "state_changed", "runner_stats",
+  // Embed lane (add-embed-copilot-lane E1+E2) emitted `minted` from
+  // wanxing-facade/chat.js:537 WITHOUT adding it here, and because ingest
+  // rejects the whole batch on one unknown kind, every flush carrying a mint
+  // returned 400 — the facade's spool then grew unbounded (measured
+  // 2026-11-10: 340 rows stuck, 12 of them `minted`, log only ever said
+  // "flush refused (400)" because the body was discarded). `ask_answered`
+  // (chat.js:862) and `cluster` (cluster.js:470/479) were in the same gap,
+  // just not yet present in that backlog window. scripts/test-fleet-observer.mjs
+  // now scans the facade sources and fails if an emitted kind is missing here.
+  "minted", "ask_answered", "cluster",
   // Mission lifecycle (add-mission-board): the facade's dispatch face emits
   // these on every state-machine transition — enumerated, not prefix-wild,
   // so the reject surface stays enumerable.

@@ -427,3 +427,58 @@ test("rollup progress: first run on a fresh store is retention-bounded and compl
   assert.equal(pass2.catchUp, 0, "second pass caught up");
   } finally { obs.close(); srv.close(); }
 });
+
+// ── ingest 白名单必须覆盖 facade 实际发出的每个 kind（跨进程契约）────────────
+//
+// 2026-11-10 生产事故：facade 的嵌入车道开始发 `kind:"minted"`，而这里没同步
+// 加进 EVENT_KINDS。ingest 遇到未知 kind 是**整批 400**，于是每次 flush 都带着
+// 一条 minted 被全批拒掉 —— facade 的 spool 从 138 涨到 340 行，日志只有
+// "flush refused (400)"（响应体被丢弃，看不到原因）。
+//
+// 这条测试静态扫 facade 的源码，把每个 `note("<kind>")` 字面量都对白名单核一遍：
+// 发端新增 kind 而收端没跟，CI 立刻红，不再等到 spool 涨满才被人发现。
+test("contract: every kind the facade emits is accepted by ingest", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const dir = new URL("../services/wanxing-facade/", import.meta.url);
+  const files = readdirSync(dir).filter((f) => f.endsWith(".js"));
+  const emitted = new Map(); // kind -> [file:line]
+  for (const f of files) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    src.split("\n").forEach((line, i) => {
+      // The facade's only event emitter is the `note(kind, agent, payload)` helper
+      // (chat.js / a2a.js / cluster.js all wrap the same reporter call).
+      for (const m of line.matchAll(/note\(\s*"([a-z_.]+)"/g)) {
+        if (!emitted.has(m[1])) emitted.set(m[1], []);
+        emitted.get(m[1]).push(`${f}:${i + 1}`);
+      }
+      for (const m of line.matchAll(/kind:\s*"(runner_stats|cell_stats|cell_fleets)"/g)) {
+        if (!emitted.has(m[1])) emitted.set(m[1], []);
+        emitted.get(m[1]).push(`${f}:${i + 1}`);
+      }
+    });
+  }
+  assert.ok(emitted.size >= 5, `facade emitters found (${emitted.size}) — the scan itself must not go blind`);
+
+  const { EVENT_KINDS } = await import("../services/fleet-observer/store.js");
+  const allowed = new Set(EVENT_KINDS);
+  const missing = [...emitted.keys()].filter((k) => !allowed.has(k) && !k.startsWith("mission."));
+  assert.deepEqual(
+    missing,
+    [],
+    `facade emits kind(s) the observer rejects with 400 (one such event blocks the whole batch):\n` +
+      missing.map((k) => `  ${k} ← ${emitted.get(k).join(", ")}`).join("\n"),
+  );
+});
+
+test("contract: an unknown kind still 400s, and the 400 body names the offender", async () => {
+  const { obs, srv, base } = await harness();
+  try {
+    const bad = { id: "x1", source: "facade", agent: "a", kind: "definitely_not_a_kind", ts: 1 };
+    const res = await post(base, { events: [{ ...ev() }, bad] });
+    assert.equal(res.status, 400, "unknown kind rejects the batch");
+    const body = await res.json();
+    assert.match(String(body.error), /definitely_not_a_kind/, "the response names the offending event");
+  } finally {
+    obs.close(); srv.close();
+  }
+});
