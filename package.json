@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node services/fleet-observer/index.js",
-    "test": "NODE_ENV=test node --test scripts/test-*.mjs"
+    "test": "NODE_ENV=test node --test --test-concurrency=1 scripts/test-*.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
