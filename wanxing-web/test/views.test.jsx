@@ -14,7 +14,7 @@ installBrowserGlobals();
 
 beforeEach(() => resetStorages());
 
-const { CatalogView, segmentsOf } = await import("../src/views/CatalogView.jsx");
+const { CatalogView, segmentsOf, STATUS_UI, statusBadgeFor, allStatusesUnknown } = await import("../src/views/CatalogView.jsx");
 const { ChatView } = await import("../src/views/ChatView.jsx");
 const { FleetView } = await import("../src/views/console/FleetView.jsx");
 const { channelLabel, sourceBadge, planRequestBadge, fmtMs, fmtAgo } = await import("../src/views/console/shared.jsx");
@@ -198,4 +198,29 @@ test("3.3 an older observer's silent entry (no implied count) renders as before"
   }));
   assert.ok(html.includes("无流量"));
   assert.ok(!html.includes("undefined"));
+});
+
+test("CatalogView status markers: four distinct labels, unknown never reads as online", () => {
+  const labels = Object.values(STATUS_UI).map((v) => v.label);
+  assert.equal(new Set(labels).size, 4, "the four statuses must be visually distinguishable by label");
+  assert.equal(statusBadgeFor("serving").label, "运行中");
+  assert.equal(statusBadgeFor("idle").label, "空闲");
+  assert.equal(statusBadgeFor("paused").label, "已暂停");
+  // unknown — and anything unexpected — falls back to the neutral unknown mark
+  assert.equal(statusBadgeFor("unknown").label, "状态未知");
+  assert.equal(statusBadgeFor(undefined).label, "状态未知");
+  assert.equal(statusBadgeFor("nonsense").label, "状态未知");
+  assert.ok(!statusBadgeFor("unknown").cls.includes("emerald"), "unknown must not use the healthy green");
+});
+
+test("CatalogView page-level staleness: all-unknown is detected, a mixed page is not", () => {
+  assert.equal(allStatusesUnknown([]), false, "an empty page is not a stale page");
+  assert.equal(allStatusesUnknown([{ status: "unknown" }, { status: "unknown" }]), true);
+  assert.equal(allStatusesUnknown([{ status: "unknown" }, { status: "idle" }]), false);
+  assert.equal(allStatusesUnknown([{ status: "serving" }]), false);
+});
+
+test("CatalogView renders the scope line and leaks nothing odd", () => {
+  const html = renderOk(<CatalogView />, "CatalogView scope");
+  assert.ok(html.includes("已部署"), "the page must state that it lists deployed instances");
 });

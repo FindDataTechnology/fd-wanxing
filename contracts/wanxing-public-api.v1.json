@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wanxing.finddatatech.cloud/contracts/wanxing-public-api.v1.json",
+  "title": "Wanxing public read surfaces — consumer contract",
+  "x-contract-rev": "1",
+  "description": "The response shapes that sibling lines rely on. Only consumed fields are constrained; anything else may be added freely (additive changes do not bump the revision). Bumping x-contract-rev is required for any rename, removal, or semantic change of a field named here. Consumers: paas/facet/supply-catalog.js (spine), paas/server/routes/fleets.js (owner cross-line), paas/services/ops-console (fleet board), fd-lex (copilot loader — not covered here, see copilot.js contract), fd-wire (A2A receipt — covered by /turn below), wanxing-ops-mcp (catalog + card), fd-industry-data (A2A work-order dispatch).",
+  "$defs": {
+    "agentsResponse": {
+      "type": "object",
+      "description": "GET /api/wanxing/v1/agents — the deployed-instance view. Consumers: paas/facet/supply-catalog.js (every field below), wanxing-ops-mcp (browse tool).",
+      "required": ["agents"],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/catalogEntry" }
+        },
+        "page": { "type": "number", "description": "Present only on a paged request." },
+        "page_size": { "type": "number", "description": "Present only on a paged request." },
+        "total": { "type": "number", "description": "Present only on a paged request; counts the filtered set." },
+        "facets": {
+          "type": "object",
+          "description": "Present only when facets=1. Computed over the UNFILTERED public list.",
+          "required": ["total", "featured", "categories"],
+          "properties": {
+            "total": { "type": "number" },
+            "featured": { "type": "number" },
+            "categories": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "count"],
+                "properties": { "name": { "type": "string" }, "count": { "type": "number" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "catalogEntry": {
+      "type": "object",
+      "required": ["slug", "name", "description"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1, "description": "Public route identity. The spine joins its deployment bookkeeping by this value." },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "version": { "type": ["string", "number", "null"], "description": "Pack version as published." },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array" },
+        "capabilities": { "type": "object" },
+        "examples": { "type": "array", "description": "Declared example prompts; absent when undeclared." },
+        "chatable": { "type": "boolean", "description": "Chatability marker. Absent when not chatable. The spine copies this verbatim into the supply catalog." },
+        "category": { "type": "string", "description": "Curation LABEL from the packs table. Absent when uncurated — that never hides the entry." },
+        "featured": { "type": "boolean", "description": "Curation label; only ever present as true." },
+        "turns7d": { "type": "number", "description": "External turns (api+chat) in the last 7 days. Honest zero." },
+        "cluster": { "type": "object", "description": "Present only for members of a cluster-declaring pack." },
+        "facade": { "type": "boolean", "description": "Present only for facade-declaring agents." },
+        "facade_stance": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["serving", "idle", "paused", "unknown"],
+          "description": "Live instance status, derived from the deployment pause flag plus turns7d. The spine passes this through unchanged into its facade species."
+        },
+        "status_as_of": {
+          "type": "string",
+          "description": "The snapshot instant the status was derived from — lets a consumer tell a fresh 'idle' from a frozen 'unknown'."
+        }
+      }
+    },
+    "opsUsageResponse": {
+      "type": "object",
+      "description": "GET /api/wanxing/v1/ops/usage — service-credential only. Consumer: paas/server/routes/fleets.js filters byCaller by email.",
+      "required": ["byCaller", "byAgent"],
+      "properties": {
+        "byCaller": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["email", "turns", "minutes", "usd", "pending"],
+            "properties": {
+              "callerId": { "type": "number" },
+              "email": { "type": ["string", "null"], "description": "The owner cross-line view matches on this." },
+              "turns": { "type": ["number", "null"] },
+              "minutes": { "type": ["number", "null"] },
+              "usd": { "type": ["number", "null"] },
+              "pending": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "byAgent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["agent", "turns", "minutes", "usd", "pending"],
+            "properties": {
+              "agent": { "type": "string" },
+              "turns": { "type": ["number", "null"] },
+              "minutes": { "type": ["number", "null"] },
+              "usd": { "type": ["number", "null"] },
+              "pending": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "fleetBoardResponse": {
+      "type": "object",
+      "description": "GET /api/fleet/v1/board — observer board behind the facade's console gate. Consumer: paas/services/ops-console (renders every field below).",
+      "required": ["states", "runners", "ingest_lag", "settled_pending", "wake_ms"],
+      "properties": {
+        "window": { "type": "string" },
+        "agents_total": { "type": "number" },
+        "states": {
+          "type": "object",
+          "description": "state name → count (latest per agent within the states window).",
+          "additionalProperties": { "type": ["number", "null"] }
+        },
+        "runners": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "children": { "type": "number" },
+              "queued": { "type": "number" },
+              "budget_mb": { "type": "number" },
+              "budget_mb_limit": { "type": ["number", "null"] },
+              "agents": { "type": "number" }
+            }
+          }
+        },
+        "ingest_lag": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source"],
+            "properties": {
+              "source": { "type": "string" },
+              "event_age_ms": { "type": ["number", "null"] },
+              "arrival_age_ms": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "settled_pending": {
+          "type": ["object", "null"],
+          "properties": { "count": { "type": "number" }, "usd": { "type": "number" } }
+        },
+        "wake_ms": {
+          "type": "object",
+          "required": ["p50", "p95"],
+          "properties": { "p50": { "type": ["number", "null"] }, "p95": { "type": ["number", "null"] } }
+        },
+        "turns": { "type": "number" },
+        "errors": { "type": "number" },
+        "minutes_billed": { "type": "number" },
+        "usd": { "type": "number" },
+        "budget_kills": { "type": "number" },
+        "reaped": { "type": "number" }
+      }
+    },
+    "turnReceipt": {
+      "type": "object",
+      "description": "POST /api/wanxing/v1/a2a/{slug} (JSON-RPC message/send) — the synchronous receipt shape fd-wire pins (wire-wanxing-direct-dispatch D1) and wanxing-ops-mcp relays.",
+      "required": ["jsonrpc"],
+      "properties": {
+        "jsonrpc": { "type": "string" },
+        "id": {},
+        "result": { "type": "object" },
+        "error": {
+          "type": "object",
+          "properties": { "code": { "type": "number" }, "message": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

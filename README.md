@@ -21,13 +21,59 @@
 
 ## 借用契约（不归本仓，经显式契约访问）
 
+本仓**借出**的能力（萬星依赖别人）：
+
 - **謙面 registry**（运行时真相+路由；paas ADR-0015）与 **packs 部署台账**（packs internal API，env 可重指）
 - **sub2api 计费面**（调用键/部署键/结算）
 - **agent-runner**（多租户运行时；2026-11-06 起正式列为借用边界）
+- **谦面 packs 面（部署者自助）**：`FACET_BASE_URL` / `FACET_INTERNAL_TOKEN`，以转发身份调用
 - **副驾技能**：正式源是两个外部仓——源文在 `finddata-skills`（gitee），registry 条目只是它的投影；见 [ADR-0006](docs/adr/0006-copilot-skills-source-of-truth.md)
 
+本仓**被借**的公开读面（别人依赖萬星——改形状要升契约修订号）：
+
+- `GET /api/wanxing/v1/agents` — 谦面供给脊柱、萬星运维 MCP
+- `GET /api/wanxing/v1/ops/usage` — 壹座主人跨线视图
+- `GET /api/fleet/v1/board` — 壹座 ops-console、萬星 web 控制台
+- `POST /api/wanxing/v1/a2a/<slug>` — 柏讯工单直连、萬星运维 MCP、数据工厂工单链
+- `public/copilot.js` + `wx-copilot-*` 宿主协议 — 识律控制台副驾
+
 对兄弟线只经 HTTP 契约访问、env 可重指——这条纪律守住，L3（对外私有交付）才有得谈。
-四条边界的变量编址清单见 spec `wanxing-borrowed-contracts`。
+
+### 变量编址表（以 `services/wanxing-facade/env.js` 为准）
+
+同一上游被不同组件用不同变量族称呼过，门面内部还曾出现"同一上游、两条代码路径、两套别名"。
+现在所有出向读取都过 `resolve()`/`resolveBase()`，本表是那张表的**镜像**：
+`scripts/test-env-table.mjs` 双向核对（表里的名字必须都在 `env.js` 里，`env.js` 的名字必须都在表里），
+所以它不会偷偷过期。规范名优先，别名只在前者为空时生效。
+
+<!-- env-table:start -->
+| 组件 | 上游 | 地址（规范 → 别名） | 凭据（规范 → 别名） |
+|---|---|---|---|
+| facade | registry | `AGENT_SERVING_REGISTRY_URL` → `REGISTRY_URL` | `AGENT_SERVING_REGISTRY_TOKEN` → `MARKET_REGISTRY_TOKEN` |
+| facade | registry（后端读） | — | `AGENT_SERVING_BACKEND_TOKEN` |
+| facade | packs 台账 | `PACKS_INTERNAL_BASE_URL`（缺省指本进程市场） | — |
+| facade | sub2api | `SUB2API_BASE_URL` | `SUB2API_ADMIN_KEY` |
+| facade | memory | `CELL_MEMORY_URL` → `FD_MEMORY_URL` | `CELL_MEMORY_PLATFORM_TOKEN` → `FD_MEMORY_PLATFORM_TOKEN` |
+| facade | facet packs 面 | `FACET_BASE_URL` | `FACET_INTERNAL_TOKEN` |
+| facade | fleet 观测面 | `FLEET_OBSERVER_URL` | `FLEET_OBSERVER_TOKEN` |
+| observer | registry | `FLEET_REGISTRY_URL` | `FLEET_REGISTRY_TOKEN` |
+| observer | sub2api | `FLEET_STATS_SUB2API_BASE_URL` → `FLEET_STATS_SUB2API_BASE` | `FLEET_STATS_SUB2API_TOKEN` |
+| observer | 事件接收 | — | `FLEET_INGEST_TOKEN` |
+| observer | stats 采集 | — | `FLEET_STATS_COLLECTOR_TOKEN` |
+| collector | fleet 观测面 | `OBSERVER_URL` | `FSC_TOKEN` |
+<!-- env-table:end -->
+
+agent-runner 没有自己的地址：它经 registry 代理调用（表里标 `proxied`），所以不出现在上表。
+
+### 公开面的机器可读契约
+
+被消费的形状写在 [`contracts/wanxing-public-api.v1.json`](contracts/wanxing-public-api.v1.json)：
+顶层 `x-contract-rev` 是修订号，`$defs` 里每条字段的 `description` 点名**谁在消费它**。
+
+- 改名、删除、或改变被消费字段的**语义**（哪怕键名不变）→ 必须升 `x-contract-rev`，并同步两侧的形状校验。
+- 纯附加字段不升号（消费方本就忽略未知键）。
+- 兄弟线持**逐字节相同**的副本（`paas/facet/contract/`），跨仓一致性由工作区根的
+  `scripts/check_wanxing_contract_drift.py` 对账（非零退出即漂移）。
 
 ## 相关
 

@@ -20,11 +20,35 @@ export function maskKey(key) {
   return s ? `…${s.slice(-4)}` : "";
 }
 
-// The external agent slug — the deployment's registry path, normalized the
-// same way the runner derives its agent key, lowercased and stable across
-// in-place upgrades (path carries pack+agent identity).
-export function slugFor(agentPath) {
-  return String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
+// The public agent identity lives in ./identity.js (unify-wanxing-shared-semantics
+// D1: one implementation inside this repo). Re-exported here because three
+// existing importers reach it through this module.
+export { slugFor } from "./identity.js";
+
+// ── Live instance status (close-wanxing-domain-linkage D2) ──────────────────
+//
+// The supply spine has always been REQUIRED to carry a serving plane's live
+// status (paas spec supply-catalog: "Live instance status reported by the
+// serving plane SHALL be included when present") and has always fallen back to
+// an explicit "unknown", because this facade never reported one. This is the
+// derivation it reports now.
+//
+// Two rules keep it honest rather than decorative:
+//   · silence is NOT health — zero recent turns is `idle`, never `serving`;
+//   · a stale snapshot is NOT the last known state — it is `unknown`, because
+//     we genuinely do not know right now.
+// The only inputs are facts this process already holds: the deployment's pause
+// flag and its own usage ledger. No second health source is consulted — that
+// would introduce a third vocabulary into a surface that must stay a
+// projection of the first.
+export const INSTANCE_STATUSES = ["serving", "idle", "paused", "unknown"];
+
+export function statusFor({ paused = false, turns7d = 0, hardStale = false } = {}) {
+  // Pause wins over staleness: an administratively paused deployment is a KNOWN
+  // state even when the snapshot behind it is old.
+  if (paused === true) return "paused";
+  if (hardStale === true) return "unknown";
+  return Number(turns7d) > 0 ? "serving" : "idle";
 }
 
 export function createWanxingCore({ store, sub2api, resolveDeployment = null, config = {} }) {

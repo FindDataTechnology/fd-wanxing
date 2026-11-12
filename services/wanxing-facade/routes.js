@@ -15,6 +15,7 @@ import path from "node:path";
 import { readdirSync, rmSync } from "node:fs";
 import { createWanxingStore } from "./store.js";
 import { createWanxingCore, slugFor } from "./core.js";
+import { resolve, resolveBase } from "./env.js";
 import { createA2aFace } from "./a2a.js";
 import { createClusterFace } from "./cluster.js";
 import { createChatFace } from "./chat.js";
@@ -42,16 +43,19 @@ export function registerWanxingRoutes(app, {
 }) {
   const store = storeOpt ?? createWanxingStore({ file: path.join(dataRoot, "wanxing.db") });
 
-  const registryUrl = () => (env.AGENT_SERVING_REGISTRY_URL || env.REGISTRY_URL || "").replace(/\/+$/, "");
-  const registryToken = () => env.AGENT_SERVING_REGISTRY_TOKEN || env.MARKET_REGISTRY_TOKEN || "";
-  const backendToken = () => env.AGENT_SERVING_BACKEND_TOKEN || "";
+  // Every outbound address resolves through the declared table (env.js), so the
+  // 借用契约's variable list and the code cannot disagree. The empty-string
+  // shape is preserved: callers test truthiness, and absent must stay absent.
+  const registryUrl = () => resolveBase("facade", "registry", env).value ?? "";
+  const registryToken = () => resolve("facade", "registry", env).token ?? "";
+  const backendToken = () => resolve("facade", "registryBackend", env).token ?? "";
 
   const sub2api =
     sub2apiOpt ??
-    (env.SUB2API_ADMIN_KEY
+    (resolve("facade", "sub2api", env).token
       ? createSub2apiClient({
-          baseUrl: env.SUB2API_BASE_URL || "http://127.0.0.1:32080",
-          adminKey: env.SUB2API_ADMIN_KEY,
+          baseUrl: resolve("facade", "sub2api", env).value || "http://127.0.0.1:32080",
+          adminKey: resolve("facade", "sub2api", env).token,
           ...(fetchImpl ? { fetchImpl } : {}),
         })
       : null);
@@ -92,7 +96,9 @@ export function registerWanxingRoutes(app, {
   // tests) repoint it without touching this module; the loopback default is
   // the marketplace mounted in this same process.
   const packsInternalBase = () =>
-    (env.PACKS_INTERNAL_BASE_URL || `http://127.0.0.1:${env.GATEWAY_PORT || 3080}`).replace(/\/+$/, "");
+    // The loopback default is the marketplace mounted in this same process (a
+    // mounting convenience, not a product default) — recorded as such in env.js.
+    (resolveBase("facade", "packs", env).value || `http://127.0.0.1:${env.GATEWAY_PORT || 3080}`).replace(/\/+$/, "");
   const packsInternalCall = (p, init = {}) =>
     fetchWithTimeout(`${packsInternalBase()}${p}`, {
       ...init,
@@ -138,8 +144,8 @@ export function registerWanxingRoutes(app, {
   // reports admission/settlement toward the Wanxing observer while it still
   // lives here — slice ② replaces this with the in-process store write.
   const fleetReporter = createFleetReporter({
-    url: env.FLEET_OBSERVER_URL || "",
-    token: env.FLEET_OBSERVER_TOKEN || "",
+    url: resolve("facade", "observer", env).value ?? "",
+    token: resolve("facade", "observer", env).token ?? "",
     source: "facade",
     fetchImpl: fetchImpl ?? undefined,
     // Disk spool (wanxing-contract-hardening 3.1): unconfirmed events survive
@@ -152,7 +158,9 @@ export function registerWanxingRoutes(app, {
   // Console management surface (⑤ increment 1): token-gated for now — the
   // console credential is the ingest token the web face already holds; the
   // Logto identity increment replaces the gate, not the routes.
-  const consoleToken = () => env.FLEET_OBSERVER_TOKEN || env.WANXING_CONSOLE_TOKEN || "";
+  // The console credential is the observer service token, with a self-config
+  // override that belongs to THIS deployment (not a borrowed upstream).
+  const consoleToken = () => resolve("facade", "observer", env).token || env.WANXING_CONSOLE_TOKEN || "";
   const logtoAuth = createLogtoAuth({
     endpoint: env.WANXING_LOGTO_ENDPOINT || "",
     appId: env.WANXING_LOGTO_APP_ID || "",
@@ -184,8 +192,8 @@ export function registerWanxingRoutes(app, {
     // Fleet-read forwarding (add-console-session-continuity): the browser face
     // brings an identity, the facade swaps in the observer service credential.
     observerFetch: (() => {
-      const observerUrl = () => (env.FLEET_OBSERVER_URL || "").replace(/\/+$/, "");
-      const observerToken = () => env.FLEET_OBSERVER_TOKEN || "";
+      const observerUrl = () => resolveBase("facade", "observer", env).value ?? "";
+      const observerToken = () => resolve("facade", "observer", env).token ?? "";
       return async (p) => {
         const base = observerUrl();
         const tok = observerToken();
@@ -200,8 +208,14 @@ export function registerWanxingRoutes(app, {
     // credential. Null when unconfigured — the console memory faces then
     // respond 503 MEMORY_LANE_UNCONFIGURED and the web hides the affordance.
     memoryFetch: (() => {
-      const memUrl = () => (env.FD_MEMORY_URL || "").replace(/\/+$/, "");
-      const memToken = () => env.FD_MEMORY_PLATFORM_TOKEN || "";
+      // Both spellings resolve here and in memory.js through ONE table
+      // (services/wanxing-facade/env.js). Before this, the chat lane accepted
+      // CELL_MEMORY_URL while this face accepted only FD_MEMORY_URL — a
+      // deployment configured the other way had a working chat lane and a 503
+      // memory page, which reads as "not configured" when it was configured.
+      const mem = () => resolveBase("facade", "memory", env);
+      const memUrl = () => mem().value ?? "";
+      const memToken = () => mem().token ?? "";
       if (!memUrl() || !memToken()) return null;
       return async (p, init = {}) =>
         (fetchImpl ?? fetch)(`${memUrl()}${p}`, {
@@ -232,8 +246,8 @@ export function registerWanxingRoutes(app, {
     return false;
   };
   const observerPost = (() => {
-    const observerUrl = () => (env.FLEET_OBSERVER_URL || "").replace(/\/+$/, "");
-    const observerToken = () => env.FLEET_OBSERVER_TOKEN || "";
+    const observerUrl = () => resolveBase("facade", "observer", env).value ?? "";
+    const observerToken = () => resolve("facade", "observer", env).token ?? "";
     return async (p, init = {}) => {
       const base = observerUrl();
       const tok = observerToken();
@@ -300,6 +314,16 @@ export function registerWanxingRoutes(app, {
     listDeployments,
     hardStale: () => bookkeeping.hardStale(),
     ensureFresh: () => bookkeeping.poke(),
+    // The instant the deployment snapshot behind a status was taken
+    // (close-wanxing-domain-linkage D2). status_as_of reports THIS rather than
+    // Date.now(), so a consumer can tell a fresh "idle" from a frozen
+    // "unknown". Derived from stalenessMs() instead of adding an accessor to
+    // bookkeeping.js: that module has a "minimal copy" twin in the observer,
+    // and every method added there is one more thing both copies must agree on.
+    snapshotAt: () => {
+      const age = bookkeeping.stalenessMs();
+      return Number.isFinite(age) ? Date.now() - age : null;
+    },
     report: (ev) => fleetReporter.report(ev),
     forwardHeaders,
     registryFetch: doFetch,

@@ -8,6 +8,8 @@
 // extraction stripped (add resolves email → sub2api user at add time).
 
 import express from "express";
+import { slugFor } from "./identity.js";
+import { pausedEntryFor } from "./lifecycle.js";
 
 
 const ok = (res, body) => res.status(200).json(body);
@@ -31,26 +33,28 @@ export function registerConsoleRoutes(app, {
   const say = log ?? (() => {});
 
   // Pause/resume: registry metadata is the truth (runner polls ≤pollSecs).
-  // Mirror of paas lib/agent-serving.js setAgentPaused (minimal copy, keep in
-  // lockstep until ②-收敛).
+  // The PAYLOAD rule lives in ./lifecycle.js and is pinned by
+  // contracts/lifecycle-write.fixture.json, because 壹座's packs surface writes
+  // the same field from another door — two copies of this rule drifting apart is
+  // invisible until the two doors disagree. What stays here is only the HTTP
+  // write and its update→register fallback.
   const setPaused = async (agentPath, paused) => {
     const r = await registryFetch(`/api/agents${agentPath}`);
     if (!r.ok) throw Object.assign(new Error(`registry GET ${agentPath} failed (${r.status})`), { status: 502 });
     const entry = await r.json();
     if (!entry || typeof entry !== "object") throw Object.assign(new Error(`registry entry unreadable`), { status: 502 });
-    entry.metadata = { ...(entry.metadata ?? {}), paused: paused === true };
-    if (!paused) delete entry.metadata.paused;
+    const payload = pausedEntryFor(entry, paused === true);
     const up = await registryFetch(`/api/agents${agentPath}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(entry),
+      body: JSON.stringify(payload),
     });
     if (!up.ok) {
       // The register route is the create-side twin of the upsert.
       const reg = await registryFetch("/api/agents/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry),
+        body: JSON.stringify(payload),
       });
       if (!reg.ok) throw Object.assign(new Error(`registry write failed (${up.status}/${reg.status})`), { status: 502 });
     }
@@ -224,7 +228,7 @@ export function registerConsoleRoutes(app, {
         }
       } catch { /* best-effort enrichment */ }
       out.push({
-        slug: String(d.agentPath).replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase(),
+        slug: slugFor(d.agentPath),
         agentPath: d.agentPath,
         packId: d.packId,
         agentId: d.agentId,

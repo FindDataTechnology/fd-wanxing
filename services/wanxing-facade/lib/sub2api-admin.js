@@ -21,25 +21,30 @@
 // client reports degraded() and callers fall back to the pre-③ behavior.
 
 import { fetchWithTimeout, timeoutFromEnv, OUTBOUND_TIMEOUT_DEFAULTS } from "./fetchWithTimeout.js";
+import { resolve, resolveBase } from "../env.js";
 
-const DEFAULT_BASE = process.env.SUB2API_BASE_URL || "http://127.0.0.1:32080";
+// Resolved per call, not at module load: a module-level snapshot is how an
+// env fix "doesn't take" (the value was copied before the fix landed).
+const LOOPBACK_BASE = "http://127.0.0.1:32080";
 
-export function createSub2apiClient({ baseUrl = DEFAULT_BASE, adminKey = process.env.SUB2API_ADMIN_KEY || "", fetchImpl = null, timeoutMs = null } = {}) {
-  const base = String(baseUrl || "").replace(/\/+$/, "");
+export function createSub2apiClient({ baseUrl = null, adminKey = null, fetchImpl = null, timeoutMs = null } = {}) {
+  const resolved = resolve("facade", "sub2api", process.env);
+  const base = String(baseUrl ?? resolved.value ?? LOOPBACK_BASE).replace(/\/+$/, "");
   // Admin calls are admission-path synchronous (findUserByKey) — a hung
   // sub2api used to stall every admission (wanxing-contract-hardening 1.2).
   // The 402/4xx mapping below already surfaces failures structurally; the
   // timeout only bounds the wait.
   const effectiveTimeout = timeoutMs ?? timeoutFromEnv(process.env, "WANXING_SUB2API_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.sub2api);
+  const key = adminKey ?? resolved.token ?? "";
   const doFetch = fetchImpl ?? ((path, init = {}) => fetchWithTimeout(base + path, { ...init, timeoutMs: effectiveTimeout }));
-  const degraded = () => !adminKey;
+  const degraded = () => !key;
 
   async function call(path, { method = "GET", body, headers = {} } = {}) {
     const res = await doFetch(path, {
       method,
       headers: {
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...(adminKey ? { "x-api-key": adminKey } : {}),
+        ...(key ? { "x-api-key": key } : {}),
         ...headers,
       },
       body: body === undefined ? undefined : JSON.stringify(body),

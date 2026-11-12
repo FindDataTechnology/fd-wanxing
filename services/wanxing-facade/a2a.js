@@ -10,6 +10,7 @@
 
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { statusFor } from "./core.js";
 
 const sha256 = (v) => createHash("sha256").update(String(v)).digest("hex");
 const EXTERNAL_CONTEXT_PREFIX = "wx:"; // the runner's reap pass keys on this (design D10)
@@ -86,6 +87,7 @@ export function createA2aFace({
   listDeployments,   // async () → [{ slug, agentPath }]
   hardStale = () => false, // enumeration faces 503 when the bookkeeping snapshot is past its hard window
   ensureFresh = async () => {}, // awaited before that guard: a blocking best-effort refresh (fd-prod finding #2 — an idle facade past the hard window must still be able to refresh through the enumeration path)
+  snapshotAt = null,  // () → epoch ms of the deployment snapshot, or null (close-wanxing-domain-linkage D2: status_as_of)
   report = null,     // optional ({kind, agent, payload, id?}) → fleet-observer (add-fleet-event-backbone 6.3)
   forwardHeaders,    // () → the platform's internal dual-credential headers
   registryFetch,     // (path, init?) → fetch Response against the registry
@@ -508,10 +510,23 @@ export function createA2aFace({
         clusterUnits ? clusterUnits().catch(() => []) : [],
       ]);
       const listedUnits = new Map((listed ?? []).map((u) => [u.id, u]));
+      // One derivation of the snapshot instant for the whole response, and one
+      // read of the hard-stale flag (close-wanxing-domain-linkage D2). Both are
+      // per-response facts, not per-entry ones.
+      const staleNow = hardStale();
+      const snapAt = snapshotAt ? snapshotAt() : null;
+      const statusAsOf = Number.isFinite(snapAt) ? new Date(snapAt).toISOString() : null;
       for (const dep of deps) {
         const entry = await entryFor(dep.slug, dep);
         if (!entry || entry.visibility === "private") continue;
         const cur = dep.packId != null ? curation.get(dep.packId) : null;
+        // The entry's REAL pause state. This used to be passed as a literal
+        // `paused: false` into the chatability gate, so a paused agent was
+        // advertised as chatable while /chat/:slug/status (which reads the
+        // same flag through agentState) answered "agent_paused" — one fact,
+        // two faces, opposite answers.
+        const paused = entry?.metadata?.paused === true;
+        const turns7d = turns.get(dep.slug) ?? 0;
         const marker = clusterMarkerFor(dep, clusters);
         const unit = marker ? listedUnits.get(marker.id) ?? null : null;
         const cluster = marker
@@ -531,14 +546,23 @@ export function createA2aFace({
           // Facade identification (paas add-principal-facade), same rule as
           // the card: ride the registry metadata, absent = ordinary agent.
           ...(entry?.metadata?.facade ? { facade: true, facade_stance: entry.metadata.facade.stance ?? "hosted" } : {}),
-          ...(chatability?.({ exists: true, slug: dep.slug, visibility: "public", paused: false, entry })
+          ...(chatability?.({ exists: true, slug: dep.slug, visibility: "public", paused, entry })
             ? { chatable: true }
             : {}),
           // Curation + activity (additive fields; unknown keys are ignored
           // by existing JSON consumers). No category = renders ungrouped.
+          // Curation here is a LABEL, never an admission rule: an operator
+          // whitelist or a curated-only gate on the marketplace faces must not
+          // hide a deployed public agent from this catalog.
           ...(cur?.category ? { category: cur.category } : {}),
           ...(cur?.featured ? { featured: true } : {}),
-          turns7d: turns.get(dep.slug) ?? 0,
+          turns7d,
+          // Live instance status (close-wanxing-domain-linkage 2.2): derived
+          // only from facts this process already holds. status_as_of names the
+          // snapshot the derivation used, so a consumer can distinguish a fresh
+          // "idle" from a frozen "unknown".
+          status: statusFor({ paused, turns7d, hardStale: staleNow }),
+          ...(statusAsOf ? { status_as_of: statusAsOf } : {}),
           // Cluster marker (additive): only declared members of a
           // cluster-declaring pack carry it.
           ...(cluster ? { cluster } : {}),

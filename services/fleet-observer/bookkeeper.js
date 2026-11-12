@@ -1,3 +1,4 @@
+import { slugFor } from "../wanxing-facade/identity.js";
 // ── Bookkeeper: registry-list diff → synthesized lifecycle events (4.1) ──────
 //
 // The deployment-truth synthesizer: polls the registry's agent list (ONE call
@@ -42,7 +43,7 @@ const identityOf = (e) => JSON.stringify({
 });
 
 // paas slugFor copy (gateway/wanxing/core.js) — the public agent identity.
-const slugFor = (p) => String(p || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
+
 
 export function createBookkeeper({ registryUrl, token, fetchImpl = null, now = Date.now, emit, log = null, intervalMs = 30_000 }) {
   let last = null; // Map<path, {entry, paused, identity}>

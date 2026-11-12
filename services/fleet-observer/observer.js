@@ -1,3 +1,4 @@
+import { slugFor } from "../wanxing-facade/identity.js";
 // ── fleet-observer app (add-fleet-event-backbone) ────────────────────────────
 //
 // The Wanxing plane's observability service: the /ingest batch endpoint
@@ -16,14 +17,15 @@ import { ulid } from "./ulid.js";
 
 const hourKeyOf = (tsMs) => new Date(tsMs).toISOString().slice(0, 13) + ":00";
 
-// Registry path → rollup identity (flag-stalled-rhythm-agents D4). This rule
-// lives in ONE place on purpose: bookkeeper keys are registry paths
-// ("/packs/4FHjSKpibRr2d0_9BXaCqQ/wx-alpha") while rollup rows carry the slug
-// ("packs-4fhjskpibrr2d0_9bxacqq-wx-alpha"). Two independent derivations drift,
-// and drift here is silent — the declaration simply never matches an agent, so
-// nothing looks wrong. Mirrors paas console's slugFor, character for character.
-export const slugFromPath = (agentPath) =>
-  String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
+// Registry path → rollup identity (flag-stalled-rhythm-agents D4). Bookkeeper
+// keys are registry paths ("/packs/4FHjSKpibRr2d0_9BXaCqQ/wx-alpha") while
+// rollup rows carry the slug ("packs-4fhjskpibrr2d0_9bxacqq-wx-alpha"); drift
+// between two derivations is silent (a declaration simply never matches an
+// agent, so nothing looks wrong). The rule now lives in
+// services/wanxing-facade/identity.js and is pinned by
+// contracts/agent-identity.fixture.json — this export stays for existing
+// callers. (unify-wanxing-shared-semantics 2.3)
+export const slugFromPath = slugFor;
 
 export function createObserver({
   dataRoot,

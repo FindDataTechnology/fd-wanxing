@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import * as claudeCode from "./parsers/claude-code.js";
+import { resolve, resolveBase } from "../wanxing-facade/env.js";
 
 const PARSERS = [claudeCode];
 
@@ -75,8 +76,8 @@ async function runOnce({ observerUrl, token, now = Date.now, fetchImpl = fetch, 
 }
 
 async function main() {
-  const observerUrl = process.env.OBSERVER_URL || "";
-  const token = process.env.FSC_TOKEN || "";
+  const observerUrl = resolveBase("collector", "observer", process.env).value ?? "";
+  const token = resolve("collector", "observer", process.env).token ?? "";
   if (!observerUrl || !token || !token.startsWith("fsc_")) {
     console.error("needs OBSERVER_URL and FSC_TOKEN (fsc_…)");
     process.exit(2);

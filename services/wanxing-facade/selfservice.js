@@ -10,6 +10,8 @@
 
 import { createHmac } from "node:crypto";
 import express from "express";
+import { slugFor } from "./identity.js";
+import { resolve, resolveBase } from "./env.js";
 
 export function createSelfServiceFace({
   store,
@@ -28,8 +30,8 @@ export function createSelfServiceFace({
   webBase = "",
   log = () => {},
 }) {
-  const facetBase = () => String(env.FACET_BASE_URL || "").replace(/\/+$/, "");
-  const facetToken = () => String(env.FACET_INTERNAL_TOKEN || "");
+  const facetBase = () => resolveBase("facade", "facet", env).value ?? "";
+  const facetToken = () => resolve("facade", "facet", env).token ?? "";
   const channelReady = () => Boolean(facetBase() && facetToken());
   const shareBase = () => webBase || String(env.WANXING_WEB_BASE_URL || "https://wanxing.finddatatech.cloud").replace(/\/+$/, "");
 
@@ -57,7 +59,6 @@ export function createSelfServiceFace({
     return null;
   };
 
-  const slugFor = (agentPath) => String(agentPath || "").replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
 
   // Serving-agent summary shared by my/packs and the directory source
   // (add-catalog-facets): one definition of deployability + the wizard's

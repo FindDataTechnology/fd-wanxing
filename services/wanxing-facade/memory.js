@@ -1,3 +1,4 @@
+import { resolveBase } from "./env.js";
 // ── Facade chat memory seam (paas add-unified-memory-and-outputs D7) ─────────
 //
 // "facade/智语走 chat-memory 同一条缝，不分不帕": the room lane (in the paas
@@ -23,12 +24,13 @@ const READ_TIMEOUT_MS = 5000;
 // Per-process caches: one person token per email (mint is expensive and the
 // token is restart-stable on the paas side too), one resolved config per env.
 export function createMemorySeam({ env = process.env, fetchImpl = fetch, log = console } = {}) {
-  // Two env spellings for one thing: the paas side calls it CELL_MEMORY_*,
-  // this deployment already carries FD_MEMORY_* (the visibility console's
-  // credentials, same secret). Accept either so the facade needs no new secret
-  // and no second copy of the token.
-  const url = String(env.CELL_MEMORY_URL || env.FD_MEMORY_URL || "").replace(/\/+$/, "");
-  const platformToken = String(env.CELL_MEMORY_PLATFORM_TOKEN || env.FD_MEMORY_PLATFORM_TOKEN || "");
+  // One upstream, two spellings (paas says CELL_*, this deployment says FD_*).
+  // Resolved through the shared table so this seam and the console's memory face
+  // accept EXACTLY the same aliases in the same order — they used to differ, and
+  // the difference was a half-working deployment.
+  const mem = resolveBase("facade", "memory", env);
+  const url = mem.value ?? "";
+  const platformToken = mem.token ?? "";
   const off = String(env.WANXING_FACADE_MEMORY_DIGEST ?? "") === "0";
   const enabled = Boolean(url && platformToken) && !off;
   const k = Number(env.CELL_MEMORY_DIGEST_K ?? DEFAULT_K) || DEFAULT_K;

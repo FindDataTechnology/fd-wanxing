@@ -40,6 +40,27 @@ export function segmentsOf(list) {
   return segs;
 }
 
+// Instance status (close-wanxing-domain-linkage 5.1): the deployed-instance
+// view's own marker. Four states, visually distinct, and `unknown` is neutral —
+// never dressed up as online: a deployment whose status was not reported must
+// not look healthy. Exported so the mapping itself is testable.
+export const STATUS_UI = {
+  serving: { label: "运行中", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  idle: { label: "空闲", cls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
+  paused: { label: "已暂停", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  unknown: { label: "状态未知", cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
+};
+
+/** The badge for one entry; an absent/unknown status never reads as online. */
+export function statusBadgeFor(status) {
+  return STATUS_UI[status] ?? STATUS_UI.unknown;
+}
+
+/** True when every entry on the page reports an unknown status (page-level staleness). */
+export function allStatusesUnknown(agents = []) {
+  return agents.length > 0 && agents.every((a) => a.status === "unknown");
+}
+
 export function CatalogView() {
   const [page, setPage] = useState(1);
   const [doc, setDoc] = useState(null);
@@ -89,6 +110,12 @@ export function CatalogView() {
   }, [page, q, category, featured, cluster]);
 
   const total = doc?.total ?? doc?.agents?.length ?? 0;
+  // Page-level staleness (5.2): when EVERY entry reports an unknown status the
+  // page says so once, carrying the snapshot instant, instead of presenting a
+  // uniformly healthy-looking board.
+  const agentsOnPage = doc?.agents ?? [];
+  const allUnknown = allStatusesUnknown(agentsOnPage);
+  const staleAsOf = agentsOnPage.find((a) => a.status_as_of)?.status_as_of ?? null;
   const pages = doc?.page_size ? Math.max(1, Math.ceil(total / doc.page_size)) : 1;
   const facets = doc?.facets ?? null;
   const pickCategory = (c) => {
@@ -125,6 +152,15 @@ export function CatalogView() {
           {a.name ?? a.slug}
         </a>
         <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
+        {a.status && (
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeFor(a.status).cls}`}
+            data-testid={`status-badge-${a.slug}`}
+            title={a.status_as_of ? `状态取自 ${a.status_as_of}` : undefined}
+          >
+            {statusBadgeFor(a.status).label}
+          </span>
+        )}
         {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
         {a.cluster && (
           <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" data-testid={`cluster-role-${a.slug}`}>
@@ -288,6 +324,17 @@ export function CatalogView() {
           <span className="text-xs text-slate-400" data-testid="facets-clusters">含 {facets.clusters} 个集群</span>
         )}
       </div>
+
+      <p className="text-xs text-slate-400 px-1 mb-2" data-testid="catalog-scope">
+        这里列出<strong>当前已部署、对外服务</strong>的 agent（已部署实例视图）——不是功能集市场，
+        未部署的包不会出现在这里。
+      </p>
+
+      {allUnknown && (
+        <div className="rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-4 py-2 mb-3 text-xs text-slate-600 dark:text-slate-300" data-testid="catalog-stale-notice">
+          实例状态暂不可得（快照时间 {staleAsOf ?? "未知"}）——下列条目仍可查看，但状态一律显示为「状态未知」。
+        </div>
+      )}
 
       {err ? (
         <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
