@@ -50,6 +50,41 @@
 - [x] 7.1 `openspec validate close-wanxing-domain-linkage --strict` 通过
 - [x] 7.2 `docs/wanxing-serving-api.md` 补「实例状态口径」一节：四态语义、7 日活跃口径、`unknown` 是合法终态、**不是 SLA 承诺**
 - [ ] 7.3 生产核对（出片后）：`curl -s https://wanxing.finddatatech.cloud/api/wanxing/v1/agents | grep -o '"status":"[a-z]*"' | sort | uniq -c` 出现非 unknown 的分布；谦面 `/api/facades-catalog` 同一 slug 的 `status` 与萬星一致
+  - **必须同批出片的还有一条 auth 修复**（见下「顺带修掉的生产 bug」）：不带上它，7.3 核对的是旧镜像，登录面那个 1/256 的 403 也还在。
+
+---
+
+## 顺带修掉的生产 bug：签名"首字节嗅探"让约 1/256 的合法登录被 403（2026-11-13）
+
+不是本 change 的任务，是**验证过程中撞出来的**：全量 `npm test` 三跑一红，红在
+`exchange gate: chat logins admit off-allowlist identities`（chat 车道应放行陌生人，
+却拿到 403）。第一反应是测试抖动（同一文件连跑 40 次才红 1 次），但把「console 试
+一次 → chat 试一次」这段单独抄出来循环 300 次，**稳定 2/300 红**——不是抖动。
+
+根因在 `services/wanxing-facade/logto-auth.js`：
+
+```js
+const der = (() => { if (raw[0] === 0x30) return raw; // already DER
+                     ... 否则把 raw R||S 转成 DER ... })();
+```
+
+raw JWS 签名是 `R||S`，而 **R 的首字节有 1/256 的概率正好是 `0x30`**（DER SEQUENCE
+的 tag）。撞上时整个 96 字节被当成"已是 DER"直接送进 `crypto.verify` → 验签失败 →
+`identity refused` → 403。真实 OP（Logto）发的就是 raw 形状，所以线上症状是
+"偶尔有人登不进去，重新点一次又好了"——这种故障不会有人报成 bug，只会被当成网络。
+
+修法：**用长度分辨**（P-384 raw 恒 96 字节，DER 恒 100-106），并且首选形状验不过时
+**再用另一种形状验一次**才拒绝——判断错一次不该成为把真实身份挡在门外的理由。
+
+回归测试是确定性的（循环 re-sign 直到 R 首字节为 `0x30`，断言仍能验出身份），
+不是靠撞概率；把实现换回旧嗅探 → 该测试必红（9 pass / 1 fail），还原后无 diff。
+修后全量 307 passed（+1 条新测试），连跑 5 次皆绿；只跑 logto 文件连跑 40 次 0 失败
+（修前 40 次里预期红 3-4 次）。
+
+同批还修了入向消费者表的对账判据（`scripts/test-public-contract.mjs`）：表里写
+消息简写（`init.intents`）而契约里是 `wx-copilot-*` 全名，且判据只认 `properties`
+不认 `enum` 值——两边各错一半，改成"表用真名 + 枚举值也算声明过的词汇"，并保留
+能红（塞 `madeUpField` 进表 → 判据点名）。
 
 ---
 
