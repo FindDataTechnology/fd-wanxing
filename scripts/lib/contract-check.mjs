@@ -87,6 +87,55 @@ export function validate(value, schema, root = schema, at = "$") {
   return errors;
 }
 
+// ── Coverage: what the face EMITS but the contract never declared ─────────────
+//
+// `validate()` only walks declared keys — JSON Schema allows unknown properties,
+// so a field the producer adds later is invisible to it. That is precisely how
+// three real gaps survived review:
+//   · `facets.clusters`      — the catalog sent it, the contract listed three keys;
+//   · five agent-card fields  — `provider`/`url`/`default_input_modes`/… had no def;
+//   · `result.parts`          — fd-wire read it, `turnReceipt.result` was `{"type":"object"}`.
+// All three were found by hand, by accident. This lens finds them by construction:
+// walk the payload, and report every key that is absent from the sibling
+// `properties` (or from an `additionalProperties` schema).
+//
+// Opaque objects are respected: a declared `{type:"object"}` with neither
+// `properties` nor `additionalProperties` (or `{type:"array"}` with no `items`)
+// means "free-form on purpose" — we do not recurse into it, because the contract
+// deliberately does not describe it.
+function collectUndeclared(value, schema, root, at, out) {
+  const s = deref(schema, root);
+  if (!s || typeof s !== "object" || value === undefined) return;
+
+  if (typeOf(value) === "object") {
+    const props = s.properties ?? {};
+    const ap = s.additionalProperties;
+    const opaque = Object.keys(props).length === 0 && !(ap && typeof ap === "object");
+    if (opaque) return;
+    for (const [key, v] of Object.entries(value)) {
+      if (props[key]) { collectUndeclared(v, props[key], root, `${at}.${key}`, out); continue; }
+      if (ap && typeof ap === "object") { collectUndeclared(v, ap, root, `${at}.${key}`, out); continue; }
+      out.push(`${at}.${key}: emitted but not declared`);
+    }
+    return;
+  }
+
+  if (Array.isArray(value) && s.items && typeof s.items === "object") {
+    // An array of scalars (`{type:"array"}` with no items) is opaque too.
+    value.forEach((v, i) => collectUndeclared(v, s.items, root, `${at}[${i}]`, out));
+  }
+}
+
+/**
+ * Report keys the payload emits that the surface never declared.
+ * @returns {string[]} human-readable paths; empty means fully declared
+ */
+export function coverage(value, schema, root = schema, at = "$") {
+  const out = [];
+  collectUndeclared(value, schema, root, at, out);
+  return out;
+}
+
 /** Load a contract file and return its revision plus a per-surface validator. */
 export function loadContract(fileUrl) {
   const doc = JSON.parse(readFileSync(fileUrl, "utf8"));
@@ -98,6 +147,12 @@ export function loadContract(fileUrl) {
       const schema = doc.$defs?.[surface];
       if (!schema) throw new Error(`no such contract surface: ${surface}`);
       return validate(payload, schema, doc);
+    },
+    /** Fields the payload emits that this surface never declared ([] = covered). */
+    coverage(surface, payload) {
+      const schema = doc.$defs?.[surface];
+      if (!schema) throw new Error(`no such contract surface: ${surface}`);
+      return coverage(payload, schema, doc);
     },
   };
 }

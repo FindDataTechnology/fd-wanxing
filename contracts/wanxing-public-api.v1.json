@@ -389,6 +389,207 @@
         },
         "reaped": {
           "type": "number"
+        },
+        "states_window": {
+          "type": "string",
+          "description": "The window the `states` distribution is counted over — not the top-level `window`. Consumers must label the pills with this, or a 2h distribution reads as a 24h one."
+        },
+        "runner_liveness": {
+          "type": "object",
+          "description": "Explicit liveness beside the 30-minute snapshot: `runners` answers \"what did it last say\", this answers \"is it still there\". ABSENT semantics are the point — a runner missing here is not reported alive. Consumer: wanxing-web OpsView.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "serving | resident | starting | draining | paused | warm — the five live states the OpsView legend names."
+              },
+              "seen_at": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "leases": {
+          "type": "object",
+          "description": "Work leases over the lease window. Present even when empty, because \"no sender yet\" and \"nothing stuck\" must not render alike — `available` is the difference, and OpsView renders three distinct states from it.",
+          "properties": {
+            "available": {
+              "type": "boolean",
+              "description": "false = no lease event has ever been seen (the sender never came up)."
+            },
+            "events": {
+              "type": "number"
+            },
+            "expired_in_window": {
+              "type": "number"
+            },
+            "active": {
+              "type": "number"
+            },
+            "window_ms": {
+              "type": "number"
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "unit": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "claimed | renewed | expired — the kind suffix."
+                  },
+                  "holder": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "attempt": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "at": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "age_ms": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cells": {
+          "type": "object",
+          "description": "Freshest cell_stats per cell identity within the 30-minute window (id → row, latest wins — these are snapshots, not an event stream). Deliberately NOT folded into agents/states: cell identities would blur the resident picture. Consumer: wanxing-web OpsView/FleetView.",
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
+        "shortterm": {
+          "type": "object",
+          "description": "Counters summed over the same cell_stats rows: how many cells reported, what their executions and workers are doing right now. Consumer: wanxing-web OpsView.",
+          "properties": {
+            "cells": {
+              "type": "number"
+            },
+            "running": {
+              "type": "number"
+            },
+            "queued": {
+              "type": "number"
+            },
+            "workers_busy": {
+              "type": "number"
+            },
+            "workers_idle": {
+              "type": "number"
+            },
+            "workers_cap": {
+              "type": "number"
+            }
+          }
+        },
+        "agent_health": {
+          "type": "array",
+          "description": "Per-agent health from the observer's own pass (surface-silent-agent-failures): a stale pass refreshes on demand so a panel never reads an empty section. Consumers index it BY `agent`, so that key is the join. wanxing-web FleetView + OpsView.",
+          "items": {
+            "type": "object",
+            "required": [
+              "agent"
+            ],
+            "properties": {
+              "agent": {
+                "type": "string",
+                "description": "The join key consumers index by."
+              },
+              "health": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "degraded | failing | ok — OpsView filters on the first two."
+              },
+              "stalled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "silent_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "missions": {
+          "type": "array",
+          "description": "Mission roll-up from the event stream (id → status/trail/spent folded from mission events). Consumer: wanxing-web MissionsView.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "trail": {
+                "type": "array"
+              },
+              "spent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "at": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
         }
       }
     },

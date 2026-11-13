@@ -187,6 +187,11 @@ test("A card conforms to the published agentCard definition (owner-side, not jus
       assert.equal(card.status, 200, `${route} must serve a card`);
       assert.deepEqual(contract.check("agentCard", card.body), [],
         `${route} violates the published agentCard definition`);
+      // Coverage too: a field the card grows without a declaration is invisible
+      // to `check()` (JSON Schema allows unknowns) — that is exactly how the five
+      // card fields stayed undocumented until a consumer noticed by hand.
+      assert.deepEqual(contract.coverage("agentCard", card.body), [],
+        `${route} emits fields the agentCard definition never declared`);
       // The redaction discipline, pinned where it is produced: the card's url is
       // ALWAYS the facade endpoint, never an internal runtime address.
       assert.match(card.body.url, /^http:\/\/[^/]+\/api\/wanxing\/v1\/a2a\//,

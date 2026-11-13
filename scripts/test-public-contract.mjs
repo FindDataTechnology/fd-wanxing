@@ -101,6 +101,19 @@ test("contract: GET /agents conforms — full list and paged+facets form", async
 
     const paged = await (await fetch(`${base}/api/wanxing/v1/agents?page=1&page_size=1&facets=1`)).json();
     assert.deepEqual(contract.check("agentsResponse", paged), [], "paged catalog violates the contract");
+
+    // Coverage (not just conformance): every key the face EMITS must be declared.
+    // `validate()` cannot see undeclared keys, which is how `facets.clusters`
+    // shipped undocumented. Both request shapes, because facets only appear when
+    // asked for and the bare shape is the one most consumers use.
+    for (const [label, payload] of [["bare", full], ["paged+facets", paged]]) {
+      assert.deepEqual(contract.coverage("agentsResponse", payload), [],
+        `the ${label} catalog emits undeclared fields`);
+      for (const e of payload.agents) {
+        assert.deepEqual(contract.coverage("catalogEntry", e), [],
+          `entry ${e.slug} emits undeclared fields`);
+      }
+    }
   } finally {
     srv.close();
   }
@@ -114,6 +127,7 @@ test("contract: the ops/usage payload conforms (the exact object the route serve
   const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "u-")), "wanxing.db") });
   const board = store.usageBoard();
   assert.deepEqual(contract.check("opsUsageResponse", board), [], "usageBoard() violates the contract");
+    assert.deepEqual(contract.coverage("opsUsageResponse", board), [], "usageBoard() emits undeclared fields");
 
   // with a row present, the same guarantee holds
   const t = Date.now();
@@ -125,6 +139,7 @@ test("contract: the ops/usage payload conforms (the exact object the route serve
     channel: "api", settler: "caller",
   });
   assert.deepEqual(contract.check("opsUsageResponse", store.usageBoard()), [], "populated usageBoard() violates the contract");
+  assert.deepEqual(contract.coverage("opsUsageResponse", store.usageBoard()), [], "populated usageBoard() emits undeclared fields");
 });
 
 test("contract: a renamed consumed field is caught (the checker can actually fail)", () => {
@@ -164,6 +179,8 @@ test("contract: GET /api/fleet/v1/board conforms (the field set ops-console rend
     assert.equal(r.status, 200);
     const board = await r.json();
     assert.deepEqual(contract.check("fleetBoardResponse", board), [], "board violates the contract");
+    assert.deepEqual(contract.coverage("fleetBoardResponse", board), [],
+      "the board emits undeclared fields (ops-console may be the only reader of one)");
     // the exact fields ops-console reads must all be present
     for (const k of ["states", "runners", "ingest_lag", "settled_pending", "wake_ms"]) {
       assert.ok(k in board, `ops-console field missing from the board: ${k}`);
