@@ -35,7 +35,7 @@
 - `GET /api/wanxing/v1/ops/usage` — 壹座主人跨线视图
 - `GET /api/fleet/v1/board` — 壹座 ops-console、萬星 web 控制台
 - `POST /api/wanxing/v1/a2a/<slug>` — 柏讯工单直连、萬星运维 MCP、数据工厂工单链
-- `public/copilot.js` + `wx-copilot-*` 宿主协议 — 识律控制台副驾
+- `GET /copilot.js`（源文件 `wanxing-web/public/copilot.js`）+ `wx-copilot-*` 宿主协议 — 识律控制台副驾。宿主引 URL 用 `/copilot.js`；写成 `/public/copilot.js` 会 404（2026-11-13 前它是 200 的 index.html，`<script>` 收到 HTML 就静默死）
 
 对兄弟线只经 HTTP 契约访问、env 可重指——这条纪律守住，L3（对外私有交付）才有得谈。
 

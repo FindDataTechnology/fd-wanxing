@@ -16,7 +16,9 @@
 （loader 注入 iframe）      （读绑定表，四态）                        （来源门 → 准入 → 结算）
 ```
 
-- **接入**：`wanxing-web/public/copilot.js`。loader 自己完成绑定解析、iframe 注入、`wx-copilot-*` 全协议；
+- **接入**：宿主引 `https://<萬星域>/copilot.js`（源文件 `wanxing-web/public/copilot.js`——**URL 里没有 `/public/`**：
+  Vite 把 `public/*` 拷到 dist 根，`/public/copilot.js` 会被 SPA 回退吞成 200 的 HTML，`<script>` 收到它即静默死；
+  2026-11-13 起该路径改为 404）。loader 自己完成绑定解析、iframe 注入、`wx-copilot-*` 全协议；
   宿主只声明三个可选钩子（`identify` / `context` / `intents`），一个都不给也能跑。
 - **解析**：绑定存在 facade 自己的库（`wanxing_line_copilots`），**不写兄弟线的部署台账**。
   四种态：`ready` / `unbound` / `unknown` / `closed(reason)`；只有 `ready` 才注入，其余零注入 + 一条 console warn。
