@@ -26,6 +26,7 @@ const { loadContract } = await import("./lib/contract-check.mjs");
 const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
 const { createWanxingCore } = await import("../services/wanxing-facade/core.js");
 const { createA2aFace } = await import("../services/wanxing-facade/a2a.js");
+const { registerPrefsRoutes } = await import("../services/wanxing-facade/prefs.js");
 const { createObserver } = await import("../services/fleet-observer/observer.js");
 const http = await import("node:http");
 
@@ -307,6 +308,56 @@ test("contract: every key the agent card declares is emitted, or a named conditi
   }
 });
 
+// ── 调用者偏好面：契约声明了就必须对得上（declare-caller-prefs-face）────────────
+//
+// 这个面被谦面 `facet prefs` 子命令消费（paas `facet/cli/facet.js` 读
+// `prefs.callbackUrl` / `callbackSecretSet` / `reapMinutes`），但契约里一直没有它——
+// 消费方按一份口口相传的形状写死，键一改名它只在运行时拿到 undefined。2026-11-13 扫
+// 「还有哪个公开面被兄弟线读却没登记」时撞出来的，正是契约表该收的那一类。
+test("contract: the caller-preferences face conforms, and never echoes the secret", async () => {
+  const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "p-")), "wanxing.db") });
+  const sub2api = {
+    userId: 7, email: "platform@finddata.tech", degraded: () => false,
+    async probeKeyLiveness() { return { ok: true }; },
+    async findUserByKey(k) { return k === "sk-good" ? { userId: 7, email: "platform@finddata.tech" } : null; },
+    async findUserByEmail() { return { userId: 7, email: "platform@finddata.tech" }; },
+    async adjustBalance() { return { ok: true }; },
+  };
+  const core = createWanxingCore({ store, sub2api, config: { ratePerMin: 0.1, rpmMax: 1000 } });
+  const app = express();
+  registerPrefsRoutes(app, { core, store }); // 与生产同一装配（routes.js:300）
+  const srv = await new Promise((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const call = (method, p, body) => fetch(base + p, {
+    method,
+    headers: { Authorization: "Bearer sk-good", ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+  try {
+    const empty = await call("GET", "/api/wanxing/v1/prefs/packs-p1-heal");
+    assert.equal(empty.status, 200);
+    assert.deepEqual(contract.check("prefsResponse", empty.body), [], "GET prefs violates the declaration");
+    assert.deepEqual(contract.coverage("prefsResponse", empty.body), [], "GET prefs emits undeclared fields");
+    assert.deepEqual(empty.body.prefs, { callbackUrl: null, callbackSecretSet: false, reapMinutes: null });
+
+    const set = await call("PUT", "/api/wanxing/v1/prefs/packs-p1-heal",
+      { callbackUrl: "https://cb.example/x", callbackSecret: "s3cret-xyz", reapMinutes: 60 });
+    assert.equal(set.status, 200);
+    assert.deepEqual(contract.check("prefsResponse", set.body), [], "PUT prefs violates the declaration");
+    assert.deepEqual(contract.coverage("prefsResponse", set.body), [], "PUT prefs emits undeclared fields");
+    assert.deepEqual(set.body.prefs,
+      { callbackUrl: "https://cb.example/x", callbackSecretSet: true, reapMinutes: 60 });
+    // 密钥只报存在，永不回显值——这条比形状更硬，串在里面兜底。
+    assert.ok(!JSON.stringify(set.body).includes("s3cret-xyz"),
+      "the response must never echo callbackSecret");
+  } finally {
+    srv.close();
+    store.close();
+  }
+});
+
 // ── 入向消费者表不能烂 ──────────────────────────────────────────────────────
 //
 // spec 的入向消费者表点名了每一面对应的 `$defs` 与消费者。表一旦和契约分家就退回
@@ -352,7 +403,10 @@ test("contract: the spec's inbound-consumer table names real defs and real field
     return out;
   };
   for (const row of rows) {
-    const cells = row.split("|").map((c) => c.trim());
+    // Markdown tables allow `\|` inside a cell; splitting on every pipe would
+    // shift the columns and read the def cell as a field cell (2026-11-13: the
+    // prefs row's `GET\|PUT …` was refused as "row names no def").
+    const cells = row.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
     const defsCell = cells[2] ?? "";
     // The last row is the deliberate gap (no machine-readable def) — it must SAY so.
     if (defsCell.includes("无机器可读定义")) continue;
@@ -361,13 +415,42 @@ test("contract: the spec's inbound-consumer table names real defs and real field
     for (const d of defs) {
       assert.ok(contract.doc.$defs[d], `the table names a def that does not exist: ${d}`);
     }
-    // Every backticked field in the pinned-fields cell must be declared by one of them
-    // (dotted paths are checked by their first segment).
+    // Every backticked field in the pinned-fields cell must be declared by one of
+    // them. Dotted paths are resolved SEGMENT BY SEGMENT — checking only the first
+    // segment let `prefs.<anything>` pass, which is how a made-up leaf slipped
+    // through on 2026-11-13 while this test stayed green. Longer names keep their
+    // dashes (`wx-copilot-init` is an enum value, not the token `wx`).
     const fieldsCell = cells[4] ?? "";
-    const fields = [...fieldsCell.matchAll(/`([A-Za-z_][A-Za-z0-9_.\[\]]*)`/g)]
-      .map((m) => m[1].split(/[.[]/)[0]);
+    const fields = [...fieldsCell.matchAll(/`([A-Za-z_][A-Za-z0-9_.\[\]-]*)`/g)].map((m) => m[1]);
     const allowed = new Set(defs.flatMap(declared));
-    const undeclared = [...new Set(fields)].filter((f) => !allowed.has(f));
+
+    // `a.b[].c` → ["a", "b", "[]", "c"], resolved through properties/items.
+    const tokens = (dotted) => {
+      const out = [];
+      for (const part of dotted.split(".")) {
+        const m = part.match(/^([A-Za-z_][A-Za-z0-9_-]*)((?:\[\])*)$/);
+        if (!m) return null;
+        out.push(m[1]);
+        for (let i = 0; i < m[2].length / 2; i += 1) out.push("[]");
+      }
+      return out;
+    };
+    const resolves = (dotted) => {
+      const toks = tokens(dotted);
+      if (!toks) return false;
+      for (const d of defs) {
+        let node = contract.doc.$defs[d];
+        for (const t of toks) {
+          if (!node) { node = null; break; }
+          node = t === "[]" ? node.items : (node.properties ?? {})[t];
+        }
+        if (node) return true;
+      }
+      return false;
+    };
+
+    const undeclared = [...new Set(fields)].filter((f) =>
+      (f.includes(".") || f.includes("[")) ? !resolves(f) : !allowed.has(f));
     assert.deepEqual(undeclared, [],
       `the table pins fields no named def declares: ${undeclared.join(", ")}\n  row: ${row}`);
   }
