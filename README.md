@@ -74,6 +74,9 @@ agent-runner 没有自己的地址：它经 registry 代理调用（表里标 `p
 - 纯附加字段不升号（消费方本就忽略未知键）。
 - 兄弟线持**逐字节相同**的副本（`paas/facet/contract/`），跨仓一致性由工作区根的
   `scripts/check_wanxing_contract_drift.py` 对账（非零退出即漂移）。
+- 漂移检查按**工作树**比对，所以它天然会看见"分支还没合"：paas 侧在别的分支上时，
+  默认路径会报 `missing consumer twin` / `bytes differ`。这不是漂移，是分支差——
+  `--consumer-dir` 指到持有新副本的工作树即可（本仓改动落进 paas 主线后自动一致）。
 
 ## 相关
 
