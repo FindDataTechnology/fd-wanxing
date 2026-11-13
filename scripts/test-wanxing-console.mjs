@@ -500,3 +500,72 @@ test("deployment memory: unconfigured seam responds 503 MEMORY_LANE_UNCONFIGURED
   await new Promise((r) => srv.close(r));
   packsSrv.close();
 });
+
+// ── 3.4 两扇门读同一件事（unify-wanxing-shared-semantics）────────────────────
+//
+// 暂停只写一个字段 `metadata.paused`，但有两扇门写它：萬星控制台（这里）与壹座
+// packs 面的 setAgentPaused。写的那半已经被契约夹具钉住了；这条钉的是**读的那半**：
+// 壹座写进 registry 的事实，萬星控制台读面必须认出来，反之亦然——否则就是"一个事实、
+// 两张脸、相反答案"，和当初 chatability 那个 bug 同一类。
+
+test("3.4 two doors observe one fact: whatever the registry says, the console read face agrees", async () => {
+  const packsApp = express();
+  packsApp.get("/api/packs/internal/deployments", (_req, res) => res.json({ deployments: rows }));
+  const packsSrv = http.createServer(packsApp).listen(0);
+  await new Promise((r) => packsSrv.once("listening", r));
+
+  // A registry that REMEMBERS what it was told (the other harness returns a fixed
+  // entry, which cannot show that a read face reflects a foreign write).
+  let stored = { name: "S", visibility: "public", metadata: { paused: true } }; // ← 壹座已经暂停过
+  const writes = [];
+  const fetchImpl = async (url, init = {}) => {
+    if (url.startsWith("http://127.0.0.1:")) return fetch(url, init);
+    if (url.includes("/api/agents")) {
+      if (init.method === "PUT" || init.method === "POST") {
+        writes.push(JSON.parse(init.body));
+        stored = JSON.parse(init.body);
+      }
+      return new Response(JSON.stringify(stored), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("{}", { status: 404 });
+  };
+
+  const app = express();
+  const wired = registerWanxingRoutes(app, {
+    dataRoot: path.join(tmp, `d-two-door-${Math.random().toString(36).slice(2)}`),
+    env: {
+      PACKS_INTERNAL_BASE_URL: `http://127.0.0.1:${packsSrv.address().port}`,
+      AGENT_SERVING_REGISTRY_URL: "https://reg.internal",
+      AGENT_SERVING_REGISTRY_TOKEN: "svc",
+      FLEET_OBSERVER_TOKEN: TOKEN,
+    },
+    fetchImpl,
+    sub2api: { degraded: () => false, async findUserByEmail() { return null; } },
+  });
+  const srv = http.createServer(app).listen(0);
+  await new Promise((r) => srv.once("listening", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const listPaused = async () =>
+    (await (await fetch(`${base}/api/wanxing/v1/console/deployments`, { headers: H })).json())
+      .deployments[0].paused;
+
+  try {
+    // 壹座 wrote paused:true → 萬星 reads true, without writing anything itself.
+    assert.equal(await listPaused(), true, "a pause written by the other door must be visible here");
+    assert.equal(writes.length, 0, "reading must not write");
+
+    // 萬星 resumes → the entry loses the key (not `false`), and both faces agree.
+    await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/resume`, { method: "POST", headers: H });
+    assert.equal("paused" in stored.metadata, false, "resume must DELETE the key for the other door too");
+    assert.equal(await listPaused(), false);
+
+    // 萬星 pauses → the other door now reads the same fact.
+    await fetch(`${base}/api/wanxing/v1/console/deployments/${slug}/pause`, { method: "POST", headers: H });
+    assert.equal(stored.metadata.paused, true, "the written entry is what 壹座 will read");
+    assert.equal(await listPaused(), true);
+  } finally {
+    srv.close();
+    packsSrv.close();
+    wired.close?.();
+  }
+});
