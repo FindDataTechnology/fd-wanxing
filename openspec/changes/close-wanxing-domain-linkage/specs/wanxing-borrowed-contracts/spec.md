@@ -19,6 +19,29 @@
 - **WHEN** 提交保持字段名不变但改变了其口径（如活跃度的统计窗口）
 - **THEN** 该改动同样按契约变更处理，必须升号并同步两侧校验
 
+### Requirement: 公开面发出的每个字段都必须在契约里具名
+
+公开读面的响应形状 SHALL 被完整声明，而非仅声明"被消费的那几个字段"。生产者发出的每一个键——包括顶层统计、分组映射、以及回执内部（`result` 之下）的形状——SHALL 在契约文件中有一个声明；未声明即视为契约缺口，由生产者一侧的覆盖判据（`contract.coverage()`）在 CI 中判红，MUST NOT 依赖消费者逐个发现。
+
+理由是可数的：本 change 之前，同一类缺口在人工比对中被撞出三次（`facets.clusters`、agent-card 的五个字段、回执的 `result.parts` 等），每一次都是"消费方读到空值"才暴露。校验器只走已声明的键（JSON Schema 允许未知属性），所以**多发字段对它是隐形的**——这份判据补的正是那个盲区。
+
+契约 MAY 把某个对象声明为自由形态（`{"type":"object"}` 且无 `properties` 与 `additionalProperties`），此时其内部不再要求逐键具名；该写法 SHALL 表示"故意不描述"，而非"还没来得及写"。
+
+#### Scenario: 面新增了一个字段但契约没跟
+
+- **WHEN** 公开面开始发出一个契约未声明的键
+- **THEN** 生产者一侧的覆盖判据判红并点名该键的路径，改动不得合入
+
+#### Scenario: 回执的内部形状被当作自由形态
+
+- **WHEN** 某个回执面只声明了外壳（如 `result: {"type":"object"}`）而未描述内部
+- **THEN** 该面按缺口处理，补齐内部声明后才视为满足本条
+
+#### Scenario: 故意保留的自由形态对象
+
+- **WHEN** 契约把一个对象显式声明为无 `properties`、无 `additionalProperties` 的 `object`
+- **THEN** 覆盖判据不深入其内部，该声明即为其完整性依据
+
 ### Requirement: 谦面 packs 面为第五条借用边界
 
 部署者自助通道——`FACET_BASE_URL` 与 `FACET_INTERNAL_TOKEN`，以转发身份调用谦面 packs 面——SHALL 与 registry、packs 部署台账、sub2api 计费面、agent-runner 同列为借用边界：只经 HTTP + 环境变量编址，凭据缺失时显式降级，MUST NOT 回落到谦面数据库直连或进程内 import。
