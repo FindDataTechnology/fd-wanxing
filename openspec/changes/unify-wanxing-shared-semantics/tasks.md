@@ -81,3 +81,25 @@ packs/PackDetailDialog.tsx` 的 `wanxingSlugFor` 跑在浏览器里必然是抄�
 ——状态面在答，18 个 agent 但 0 个带 `status`（新字段还没上），turns7d 有真实外部使用。
 **剩下那半（看 facade pod 里配的是 CELL_* 还是 FD_* 一族、以及记忆页与聊天道两面都不 503）
 必须等这一版出片后才成立**，故 7.3 保持未勾。
+
+## 出片前的配置兼容性核对（2026-11-13，只读 GitOps 清单）
+
+`fd-infra-deploy/all-services/prod/wanxing-facade.yaml` 逐个对过：本 change 声明的**每一个**
+上游变量，线上都已配置，且用的是表里的**规范名**——
+
+| 上游 | 线上变量 | 表里 |
+|---|---|---|
+| registry | `AGENT_SERVING_REGISTRY_URL` / `…_TOKEN` | 规范名 ✓ |
+| packs | `PACKS_INTERNAL_BASE_URL` | 规范名 ✓ |
+| sub2api | `SUB2API_BASE_URL` / `SUB2API_ADMIN_KEY` | 规范名 ✓ |
+| facet | `FACET_BASE_URL` / `FACET_INTERNAL_TOKEN` | 规范名 ✓ |
+| observer | `FLEET_OBSERVER_URL` / `FLEET_OBSERVER_TOKEN` | 规范名 ✓ |
+| memory | `FD_MEMORY_URL` / `FD_MEMORY_PLATFORM_TOKEN` | **别名**（规范名是 `CELL_MEMORY_*`） |
+
+**一处必须纠正的说法**：记忆别名的 bug 是**真的、但现网不是活的**。`CELL_MEMORY_*` 配在
+**壹座**（`platform.yaml`），`FD_MEMORY_*` 配在**门面**——门面自己是 FD 一族，而聊天道
+（`memory.js`，原 `CELL_ || FD_`）与 console 记忆页（原 FD 单个）**都接受 FD**，所以两边都通。
+会中招的是「只配 `CELL_*`」的部署：那时聊天道通、记忆页 503。修它仍然对（把"同一上游两套
+别名"收敛成一张表），但不要把它讲成"线上正在坏的东西"。
+
+结论：本版出片不需要改任何清单；风险面只在代码形状，不在配置。
