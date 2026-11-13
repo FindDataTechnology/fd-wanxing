@@ -229,3 +229,59 @@ test("contract: turnReceipt covers BOTH producer shapes (runner Message and the 
       `${label} emits fields turnReceipt never declared`);
   }
 });
+
+// ── 入向消费者表不能烂 ──────────────────────────────────────────────────────
+//
+// spec 的入向消费者表点名了每一面对应的 `$defs` 与消费者。表一旦和契约分家就退回
+// 成散文——所以这里对账：表里点名的每个 def 必须真的存在，且表里列出的字段必须是
+// 该 def 声明过的。这张表此前是一句悬空引用（"登记在本 spec 的入向消费者表内"，而
+// 表根本不存在），正是本 change 要消灭的那类缺陷。
+
+test("contract: the spec's inbound-consumer table names real defs and real fields", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const spec = readFileSync(path.join(here, "..", "openspec", "changes",
+    "close-wanxing-domain-linkage", "specs", "wanxing-borrowed-contracts", "spec.md"), "utf8");
+
+  const rows = spec.split("\n").filter((l) => l.startsWith("| `"));
+  assert.ok(rows.length >= 5, `expected the consumer table's rows, saw ${rows.length}`);
+
+  // Every property name reachable from a def (bounded depth): the table pins
+  // row-level fields (`email`, `turns`) that live one level in, under
+  // `byCaller.items`, not at the envelope's top level.
+  const declared = (def, depth = 0, seen = new Set()) => {
+    const node = typeof def === "string" ? contract.doc.$defs[def] : def;
+    if (!node || depth > 4) return [];
+    const out = [];
+    for (const [key, sub] of Object.entries(node.properties ?? {})) {
+      out.push(key, ...declared(sub, depth + 1, seen));
+      if (sub?.items) out.push(...declared(sub.items, depth + 1, seen));
+      if (sub?.additionalProperties && typeof sub.additionalProperties === "object") {
+        out.push(...declared(sub.additionalProperties, depth + 1, seen));
+      }
+    }
+    return out;
+  };
+  for (const row of rows) {
+    const cells = row.split("|").map((c) => c.trim());
+    const defsCell = cells[2] ?? "";
+    // The last row is the deliberate gap (no machine-readable def) — it must SAY so.
+    if (defsCell.includes("无机器可读定义")) continue;
+    const defs = [...defsCell.matchAll(/`([A-Za-z]+)`/g)].map((m) => m[1]);
+    assert.ok(defs.length > 0, `row names no def: ${row}`);
+    for (const d of defs) {
+      assert.ok(contract.doc.$defs[d], `the table names a def that does not exist: ${d}`);
+    }
+    // Every backticked field in the pinned-fields cell must be declared by one of them
+    // (dotted paths are checked by their first segment).
+    const fieldsCell = cells[4] ?? "";
+    const fields = [...fieldsCell.matchAll(/`([A-Za-z_][A-Za-z0-9_.\[\]]*)`/g)]
+      .map((m) => m[1].split(/[.[]/)[0]);
+    const allowed = new Set(defs.flatMap(declared));
+    const undeclared = [...new Set(fields)].filter((f) => !allowed.has(f));
+    assert.deepEqual(undeclared, [],
+      `the table pins fields no named def declares: ${undeclared.join(", ")}\n  row: ${row}`);
+  }
+});

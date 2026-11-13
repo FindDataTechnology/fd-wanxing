@@ -2,12 +2,25 @@
 
 ### Requirement: 借用边界的入向消费者同属契约
 
-萬星公开读面——目录 `GET /api/wanxing/v1/agents`、用量 `GET /api/wanxing/v1/ops/usage`、舰队板 `GET /api/fleet/v1/board`——的响应形状被兄弟线消费，其被消费字段 SHALL 登记在本 spec 的入向消费者表内。任一对被消费字段的改名、删除或语义变更 SHALL 视为契约变更：必须升 `x-contract-rev` 并在生产者与消费者两侧同步校验。被消费字段 MUST NOT 发生静默的语义漂移（字段名不变而口径改变，例如把「七日外部回合数」改成「全部回合数」）。
+萬星公开读面——目录 `GET /api/wanxing/v1/agents`、用量 `GET /api/wanxing/v1/ops/usage`、舰队板 `GET /api/fleet/v1/board`、A2A 回执 `POST /api/wanxing/v1/a2a/{slug}`、agent-card `GET …/.well-known/agent-card.json`——的响应形状被兄弟线消费，其被消费字段 SHALL 登记在下表内。任一对被消费字段的改名、删除或语义变更 SHALL 视为契约变更：必须升 `x-contract-rev` 并在生产者与消费者两侧同步校验。被消费字段 MUST NOT 发生静默的语义漂移（字段名不变而口径改变，例如把「七日外部回合数」改成「全部回合数」）。
+
+入向消费者表（`contracts/wanxing-public-api.v1.json` 的 `$defs` 与之逐面对应）：
+
+| 面 | `$defs` | 消费者 | 消费者钉住的字段 |
+|---|---|---|---|
+| `GET /api/wanxing/v1/agents` | `agentsResponse` / `catalogEntry` | 谦面供给脊柱（`facet/supply-catalog.js` → `/api/facades-catalog`）、萬星运维 MCP | `slug`、`name`、`description`、`status`、`status_as_of`、`chatable`、`category`、`featured`、`turns7d`、`cluster` |
+| `GET /api/wanxing/v1/ops/usage` | `opsUsageResponse` | 壹座主人跨线视图（`server/routes/fleets.js` 的 `byCaller[]`） | `email`、`turns`、`minutes`、`usd`、`pending` |
+| `GET /api/fleet/v1/board` | `fleetBoardResponse` | 壹座 ops-console、萬星 web 控制台 | `states`、`runners`、`ingest_lag`、`settled_pending`、`wake_ms`、`agents_total`、`leases`、`runner_liveness` |
+| `POST /api/wanxing/v1/a2a/{slug}` | `turnReceipt` | 柏讯工单直连（`fd_wire_api/demands/wanxing.py`）、萬星运维 MCP | `result.parts[].kind`、`result.parts[].text`、`result.messageId`、`error.code` |
+| `GET …/.well-known/agent-card.json` | `agentCard` | 萬星运维 MCP、任何先解析后调用的 A2A 客户端 | `name`、`description`、`url`、`capabilities`、`skills` |
+| `public/copilot.js` + `wx-copilot-*` 宿主协议 | **（无机器可读定义，缺口）** | 识律控制台副驾（`fd-lex`） | 宿主协议的消息名与载荷；目前只有代码与文档，尚未写成 `$defs` |
+
+最后一行的存在本身就是本表的价值：它是唯一还没有机器可读契约的被消费面，登记在册而不是靠"大家记得"。
 
 #### Scenario: 新增跨仓消费者
 
 - **WHEN** 兄弟线新增一处对萬星公开读面的读取
-- **THEN** 该消费者与其钉住的字段进入本 spec 的入向消费者表，契约修订号随之升号
+- **THEN** 该消费者与其钉住的字段进入上表对应的一行，契约修订号随之升号
 
 #### Scenario: 被消费字段被改名
 
