@@ -62,6 +62,10 @@
                   }
                 }
               }
+            },
+            "clusters": {
+              "type": "number",
+              "description": "Distinct cluster ids over the UNFILTERED public list (chips render whole, so the count never moves when a filter is applied)."
             }
           }
         }
@@ -471,6 +475,91 @@
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "agentCard": {
+      "type": "object",
+      "description": "GET /api/wanxing/v1/a2a/{slug}/.well-known/agent-card.json — the A2A discovery card. Consumers: wanxing-ops-mcp (relays it), any A2A client resolving an agent before calling it.",
+      "required": [
+        "name",
+        "description",
+        "url",
+        "capabilities",
+        "skills"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "number",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "object",
+          "description": "Redacted on the public card: a `url` pointing at a private/unroutable address is REMOVED, not rewritten. Absent url = the provider is not publicly reachable (see redact-agent-card-private-endpoints)."
+        },
+        "capabilities": {
+          "type": "object",
+          "description": "Defaults to {streaming: true} when the registry entry declares none."
+        },
+        "skills": {
+          "type": "array"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "description": "Declared example prompts; absent when undeclared (absent keeps the shape)."
+        },
+        "default_input_modes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Defaults to [\"text\"]."
+        },
+        "default_output_modes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Defaults to [\"text\"]."
+        },
+        "preferred_transport": {
+          "type": "string",
+          "description": "Defaults to \"jsonrpc\"."
+        },
+        "facade": {
+          "type": "boolean",
+          "description": "Present only for facade entries; ordinary agents omit it."
+        },
+        "facade_stance": {
+          "type": "string",
+          "description": "Rides with `facade`; defaults to \"hosted\"."
+        },
+        "url": {
+          "type": "string",
+          "description": "ALWAYS the facade's own a2a endpoint for this slug — never the internal runtime address. This is the field the redaction discipline protects."
+        },
+        "chatable": {
+          "type": "boolean",
+          "description": "The route appends it (not publicCard): present only when the chat gate admits this caller — the same fact /chat/{slug}/status answers. Absent means not chatable."
+        },
+        "cluster": {
+          "type": "object",
+          "description": "The route appends it (not publicCard): present only when the pack's manifest declares a cluster. Carries {id, ...}; `slug` + `url` are added when the cluster is a listed service unit."
         }
       }
     }
