@@ -39,7 +39,10 @@
 
 - [x] 7.1 `openspec validate unify-wanxing-shared-semantics --strict` 通过
 - [x] 7.2 全仓测试绿：`npm test`（19 个 `scripts/test-*.mjs`）无新增失败
-- [ ] 7.3 生产核对（出片后）：`kubectl exec` 进 facade pod，`env | grep -E "CELL_MEMORY|FD_MEMORY"` 与 `env | grep FLEET_OBSERVER` 各看一眼，确认线上配置的是哪一族；随后 `curl -s $FACADE/api/wanxing/v1/status` 与记忆可见页各打一次，两个面都不 503（**这是「同一上游两面一致」的现场证据**）
+- [x] 7.3 生产核对（出片后）：`kubectl exec` 进 facade pod，`env | grep -E "CELL_MEMORY|FD_MEMORY"` 与 `env | grep FLEET_OBSERVER` 各看一眼，确认线上配置的是哪一族；随后 `curl -s $FACADE/api/wanxing/v1/status` 与记忆可见页各打一次，两个面都不 503（**这是「同一上游两面一致」的现场证据**）
+  - **实测（2026-11-13，sha-3a7a29a 滚完后，facade pod 内读）**：线上配的是 **`FD_MEMORY_*`** 一族——`FD_MEMORY_URL=http://fd-memory.fd-prod.svc.cluster.local`、`FD_MEMORY_PLATFORM_TOKEN` 已设、另有 `WANXING_FACADE_MEMORY_DIGEST`；**没有任何 `CELL_MEMORY_*`**（那是壹座 `platform.yaml` 的族；两族混用正是本 change 要消灭的那类歧义）。`FLEET_OBSERVER_URL` / `FLEET_OBSERVER_TOKEN` 均已设。
+  - **两面都不 503（三层证据，不只靠状态码）**：①`/api/wanxing/v1/status` → `200 {"agents":{"value":18,"stale":false},"turns7d":{"value":11,"stale":false},"settlement_pending":{"count":0,"usd":0}}`；②记忆可见页 `…/console/deployments/<slug>/memory` 从外网与 pod 内各打一次都是 `401 console credential or verified identity required`——鉴权墙先答，不是 `503 MEMORY_LANE_UNCONFIGURED`；③`routes.js` 的 `memoryFetch` 只在 URL 与 token 都存在时非空，两者都设 ⇒ 该 503 分支在本部署上不可达；直连车道 `GET /memory?...` 带平台令牌得 `400 rootKey_required`（不是 401/503）——令牌被接受、服务在听、是 schema 在拒。
+  - 顺带确认 env 表的双拼写收敛生效：`resolveBase("facade","memory")` 同时认 `CELL_MEMORY_*` 与 `FD_MEMORY_*`，所以「聊天车道能跑、记忆页却 503」那个历史症状在本部署上不可能出现。
 
 ## 实测补记（2026-11-13）
 

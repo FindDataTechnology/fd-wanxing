@@ -242,8 +242,13 @@ test("contract: the spec's inbound-consumer table names real defs and real field
   const { fileURLToPath } = await import("node:url");
   const path = await import("node:path");
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const spec = readFileSync(path.join(here, "..", "openspec", "changes",
-    "close-wanxing-domain-linkage", "specs", "wanxing-borrowed-contracts", "spec.md"), "utf8");
+  // Read the **main spec**, not the change directory: a change is temporary by
+  // design, so a test pinned to `openspec/changes/<name>/…` dies the moment the
+  // change is archived (ENOENT — it did, 2026-11-13, on the very archive that
+  // merged this table in). The durable home of an ADDED requirement is
+  // `openspec/specs/<capability>/spec.md`.
+  const spec = readFileSync(path.join(here, "..", "openspec", "specs",
+    "wanxing-borrowed-contracts", "spec.md"), "utf8");
 
   const rows = spec.split("\n").filter((l) => l.startsWith("| `"));
   assert.ok(rows.length >= 5, `expected the consumer table's rows, saw ${rows.length}`);

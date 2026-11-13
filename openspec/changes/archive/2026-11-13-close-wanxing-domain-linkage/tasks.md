@@ -49,8 +49,10 @@
 
 - [x] 7.1 `openspec validate close-wanxing-domain-linkage --strict` 通过
 - [x] 7.2 `docs/wanxing-serving-api.md` 补「实例状态口径」一节：四态语义、7 日活跃口径、`unknown` 是合法终态、**不是 SLA 承诺**
-- [ ] 7.3 生产核对（出片后）：`curl -s https://wanxing.finddatatech.cloud/api/wanxing/v1/agents | grep -o '"status":"[a-z]*"' | sort | uniq -c` 出现非 unknown 的分布；谦面 `/api/facades-catalog` 同一 slug 的 `status` 与萬星一致
+- [x] 7.3 生产核对（出片后）：`curl -s https://wanxing.finddatatech.cloud/api/wanxing/v1/agents | grep -o '"status":"[a-z]*"' | sort | uniq -c` 出现非 unknown 的分布；谦面 `/api/facades-catalog` 同一 slug 的 `status` 与萬星一致
   - **必须同批出片的还有一条 auth 修复**（见下「顺带修掉的生产 bug」）：不带上它，7.3 核对的是旧镜像，登录面那个 1/256 的 403 也还在。
+  - **实测通过（2026-11-13 13:5x，出片 sha-3a7a29a 滚完后）**：萬星 `18` 条，`{idle:15, serving:3}`，18/18 带 `status_as_of`；谦面 `18` 条按 `id` 与萬星全等交集，`{idle:15, serving:3}`，**逐条不一致 = 0**。
+  - **第一次读是假的**：滚完立刻打谦面拿到 `unknown` 18/18，按 `slug` 还对不上——两个原因都记一下：①谦面条目的连接键是 `id` 不是 `slug`（按 slug join 会得到"全都不匹配"的假象）；②它的目录是 **TTL 300s 的 last-good 快照**（`facet/supply-catalog.js` 的 `createSource`），我打的那次快照时间戳 `05:41:28` 早于门面滚版完成（`05:44`），所以 a.status 还不存在。等一个 TTL 后 `05:46:27` 的快照即为 `{idle:15, serving:3}`。**判据要带快照时间戳一起读**，否则"消费方比生产方慢一个 TTL"会被误判成接线断了。
 
 ---
 
