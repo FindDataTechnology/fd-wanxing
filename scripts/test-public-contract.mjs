@@ -251,10 +251,15 @@ test("contract: the spec's inbound-consumer table names real defs and real field
   // Every property name reachable from a def (bounded depth): the table pins
   // row-level fields (`email`, `turns`) that live one level in, under
   // `byCaller.items`, not at the envelope's top level.
+  // Enum string values count as declared vocabulary too: a message type lives in
+  // `type.enum` (`wx-copilot-init`) and a hook in `name.enum` (`identify`) — the
+  // table names them without them being properties, and refusing them would push
+  // the table back toward prose instead of precision.
   const declared = (def, depth = 0, seen = new Set()) => {
     const node = typeof def === "string" ? contract.doc.$defs[def] : def;
     if (!node || depth > 4) return [];
     const out = [];
+    if (Array.isArray(node.enum)) out.push(...node.enum.filter((v) => typeof v === "string"));
     for (const [key, sub] of Object.entries(node.properties ?? {})) {
       out.push(key, ...declared(sub, depth + 1, seen));
       if (sub?.items) out.push(...declared(sub.items, depth + 1, seen));
