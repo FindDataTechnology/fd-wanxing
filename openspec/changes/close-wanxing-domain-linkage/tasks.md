@@ -107,3 +107,36 @@ preferred_transport` 五个字段在任何 def 里都不存在；另契约 `face
 
 **未做**：三处改动都停在各自仓的工作树里（fd-lex 在 `feat/line-token-verify` 上、
 fd-wire 与 wanxing-ops-mcp 在 `main` 上，均非本 change 的仓），按多会话协定不代提交。
+
+## 6.7 证据（2026-11-13 只读实探，供裁决）
+
+`GET https://wanxing.finddatatech.cloud/api/wanxing/v1/agents` → HTTP 200，**18 个条目**，
+其中 **0 个带 `status`**（本 change 未出片，符合预期），slug 全列如下（无一含 spider/heal）：
+
+```
+packs-6kdskgmb-…-data-scout            packs-ut_bjmuw5kxad83kimpmlg-reception
+packs-xfyxvzonqfelnfigm0djvw-lex-console-copilot
+packs-_fn7pti9th5jmg3ynqut0w-pack-wire-strategy-lab
+packs-_vcfzzuxpgkirsj5pozigg-builder
+packs-btnrv2p_jhmczqqxcf0gia-intro-{facet,guide,lex,wire,yizuo}
+packs-egayyoazvtf0fwllvagaqa-pack-wire-{macro-analyst,valuation-analyst}
+packs-ev5e51eth7e5mcvydrl9rg-market-flash-briefer
+packs-i262i0tuwtf9wslex12cow-mission-planner
+packs-nol2xkatzp2kierrc_gtka-pack-wire-adaptive-rotation-analyst
+packs-qnhd7b3j1-hkddkzzq_fuq-doc-report-writer
+packs-thd65-7sfbt_z0kftvhgiw-brief-writer
+packs-wqpd5rpcfl3qihg6oldamg-pack-wire-decision-review-analyst-d1da519d4
+```
+
+柏讯侧 `api/fd_wire_api/demands/wanxing.py:40` 的缺省值写死为
+`packs-kkcie7nlrhluo4likpnn0w-spider-heal` —— 该 slug **在门面上不存在**，所以快车道
+按缺省配置投递必然 404。该通路由 `WANXING_CALLER_KEY` 的存在决定是否可用（未配时
+报"未配置"而不是发请求），因此现状是"被礼貌拒掉"而不是"静默失败"。
+
+**两个选项（一句话可决）**：
+1. **退役**：撤掉快车道与其缺省 slug（工单仍走舰队拉取通道，零外部凭据那条）。
+2. **保住通道、去掉假缺省**：删 `WANXING_AGENT_SLUG_DEFAULT`，把 slug 变成必填 env，
+   未配即"未配置"——今天的事实是不指名就没有可投的 agent，缺省值只是把 404 推后一层。
+   若之后真部署 spider-heal，配一个 env 就恢复，不需要改代码。
+
+我没有替这个决定动手：它改的是柏讯的生产行为，且"修（补部署）"是产品决定。
