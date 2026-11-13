@@ -39,9 +39,9 @@
 - [x] 6.1 paas 仓 vendor 一份契约副本到 `facet/contract/wanxing-public-api.v1.json`（内容逐字节相同）。验证：`shasum` 两文件一致
 - [x] 6.2 `paas/facet/supply-catalog.js` 的 facade 投影按契约做形状校验（缺 `slug` 或 `status` 类型不对 → 该条丢弃并计数，不静默）。验证：paas 侧单测喂畸形条目 → 丢弃计数 +1 且响应不含该条
 - [x] 6.3 三个消费者各一条最小形状断言：`/agents`（脊柱）、`/ops/usage`（`fleets.js`）、`/fleet/v1/board`（`ops-console`）。验证：各自单测在本仓跑绿
-- [ ] 6.4 **识律（跨仓 `fd-lex`）**：把 `web/src/console/WanxingCopilot.tsx:16` 的 `WANXING_ORIGIN` 常量改为从宿主部署配置读入（构建期变量或运行时注入，二选一并在 change 内记理由）；`copilot.js` 加载失败时给出可见提示而非静默。验证：改配置值即可指向另一个 origin 且副驾仍能挂载；把 origin 指向一个不存在的域 → 页面出现可见错误提示（`data-wanxing-copilot-error` 或等价物）
-- [ ] 6.5 **柏讯（跨仓 `fd-wire`）**：不改行为，只补一条读契约的测试——按 `fd_wire_api/demands/wanxing.py` 头注释冻结的形状断言回执字段（`message_id`/`idempotency_key`/`reply_excerpt`）与错误码映射（401→`unauthorized`、403→`forbidden`、非 JSON→`protocol`）。验证：改契约里某字段名 → 该测试红
-- [ ] 6.6 **萬星运维 MCP（跨仓 `wanxing-ops-mcp`）**：补一条响应形状断言（`/agents` 条目字段、agent-card 字段、A2A 回执）。注意它同时读**两个面**（萬星 facade 的公开面 + 壹座 packs 的部署者管理面），测试要把两侧分开标注，避免以后误以为管理动作在 facade 上。验证：两面的断言各自独立可红
+- [x] 6.4 **识律（跨仓 `fd-lex`）**：把 `web/src/console/WanxingCopilot.tsx:16` 的 `WANXING_ORIGIN` 常量改为从宿主部署配置读入（构建期变量或运行时注入，二选一并在 change 内记理由）；`copilot.js` 加载失败时给出可见提示而非静默。验证：改配置值即可指向另一个 origin 且副驾仍能挂载；把 origin 指向一个不存在的域 → 页面出现可见错误提示（`data-wanxing-copilot-error` 或等价物）
+- [x] 6.5 **柏讯（跨仓 `fd-wire`）**：不改行为，只补一条读契约的测试——按 `fd_wire_api/demands/wanxing.py` 头注释冻结的形状断言回执字段（`message_id`/`idempotency_key`/`reply_excerpt`）与错误码映射（401→`unauthorized`、403→`forbidden`、非 JSON→`protocol`）。验证：改契约里某字段名 → 该测试红
+- [x] 6.6 **萬星运维 MCP（跨仓 `wanxing-ops-mcp`）**：补一条响应形状断言（`/agents` 条目字段、agent-card 字段、A2A 回执）。注意它同时读**两个面**（萬星 facade 的公开面 + 壹座 packs 的部署者管理面），测试要把两侧分开标注，避免以后误以为管理动作在 facade 上。验证：两面的断言各自独立可红
 - [ ] 6.7 **数据工厂（跨仓 `fd-industry-data`）——已断的链要么修要么正式退役**：spider-heal 不在门面 18 个 public agent 中，工单投递 `404 AGENT_NOT_FOUND`（2026-11-08 实测，记录在 `config/alert-selfcheck-known.json:5`）。二选一并落账：(a) 把 spider-heal 重新部署为门面公开 agent 并恢复投递；(b) 正式退役该通道，删代码与 `WANXING_SPIDER_HEAL_*` 变量，只留邮件通道。验证：选定方案后，`scripts/alert_selfcheck.py` 的「已知不修」条目消失（a 则是投递成功，b 则是代码移除），并顺手把记录里拼错的 `/api/wangxing/` 一并纠正
 - [x] 6.8 **两个写入口的一致性**：断言门面 `console.js setPaused` 与 `paas/lib/agent-serving.js setAgentPaused` 对同一 agentPath 产生相同的 registry 结果（同一 `metadata.paused` 语义、`paused=false` 时删键而非置 false）。真正的收敛归 `unify-wanxing-shared-semantics`，此处只要一条跨仓一致性断言防漂移。验证：任一侧改动（如把删键改成置 false）→ 断言红
 
@@ -78,3 +78,32 @@ spec delta 已按此口径改，实探结果与之相符。
 2. 第二次"重探"命中的是**旧进程**：新进程 EADDRINUSE 直接退了，我读到的还是旧
    读数（时间戳几乎没变）。`pkill -f "WANXING_PORT=3199"` 匹配不到（env 不在
    cmdline 里）——改正后 `status: paused` 才出现。
+
+## 跨仓三件实测（2026-11-13，均在各自仓的工作树里完成、**未代提交**）
+
+**6.4 识律**：`web/src/console/WanxingCopilot.tsx` 的硬编码 `WANXING_ORIGIN` 抽到
+`web/src/console/config.ts`，读 `import.meta.env.VITE_WANXING_ORIGIN`（照抄该仓
+`VITE_API_BASE` 的构建期惯例），默认值逐字不变 `https://wanxing.finddatatech.cloud`。
+103 测试通过（+2）、`npm run build` 通过、lint 0 error；红证=默认值末尾加一个字符
+→ 2 failed，还原后 diff 为空。**遗留**：私有环境需在构建镜像时给
+`VITE_WANXING_ORIGIN`（该仓 Dockerfile 对 `VITE_API_BASE` 也是纯构建期注入，未加 ARG）。
+
+**6.5 柏讯**：新增 `api/tests/test_wanxing_receipt_contract.py`，断言「柏讯读的每个
+回执字段契约都声明了」。**它一落地就是红的，而且红得对**：柏讯读 `result.parts`、
+`parts[].kind`、`parts[].text`、`result.messageId`，契约里 `result` 只有
+`{"type":"object"}`。已在 fd-wanxing 侧补齐（提交 `41ee375`，纯附加不升 rev），
+补完这条测试**测试一字未改即绿**；再从契约里删掉 `messageId` → 它点名
+`result.messageId`，还原后 diff 为空。
+
+**6.6 萬星运维 MCP**：新增 `tests/test_contract_shape.py`（19 条），按四个面核对
+本仓冻结字段集 ↔ 契约：`/agents` 17 字段与 `catalogEntry` **完全一致**、`status` 枚举
+恰为四态；信封 5 字段与 `agentsResponse` 一致；A2A 回执与 `turnReceipt` 一致；
+`/fleet/v1/board` 13 字段（含 runners/lag/settled/wake 嵌套）与 `fleetBoardResponse`
+一致。两次独立注入各红、还原后 sha256 一致。**记名缺口（未修）**：契约没有
+`agentCard` 定义，卡上的 `provider/url/default_input_modes/default_output_modes/
+preferred_transport` 五个字段在任何 def 里都不存在；另契约 `facets` 缺门面实际会发的
+`facets.clusters`（本 MCP 不请求 facets，故未红）。该测试把空洞冻结为
+`AGENT_CARD_NOT_IN_CONTRACT` 并在契约补上定义时主动变红、要求收窄白名单——故留着是安全的。
+
+**未做**：三处改动都停在各自仓的工作树里（fd-lex 在 `feat/line-token-verify` 上、
+fd-wire 与 wanxing-ops-mcp 在 `main` 上，均非本 change 的仓），按多会话协定不代提交。
