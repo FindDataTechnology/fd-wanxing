@@ -42,7 +42,7 @@
 - [x] 6.4 **识律（跨仓 `fd-lex`）**：把 `web/src/console/WanxingCopilot.tsx:16` 的 `WANXING_ORIGIN` 常量改为从宿主部署配置读入（构建期变量或运行时注入，二选一并在 change 内记理由）；`copilot.js` 加载失败时给出可见提示而非静默。验证：改配置值即可指向另一个 origin 且副驾仍能挂载；把 origin 指向一个不存在的域 → 页面出现可见错误提示（`data-wanxing-copilot-error` 或等价物）
 - [x] 6.5 **柏讯（跨仓 `fd-wire`）**：不改行为，只补一条读契约的测试——按 `fd_wire_api/demands/wanxing.py` 头注释冻结的形状断言回执字段（`message_id`/`idempotency_key`/`reply_excerpt`）与错误码映射（401→`unauthorized`、403→`forbidden`、非 JSON→`protocol`）。验证：改契约里某字段名 → 该测试红
 - [x] 6.6 **萬星运维 MCP（跨仓 `wanxing-ops-mcp`）**：补一条响应形状断言（`/agents` 条目字段、agent-card 字段、A2A 回执）。注意它同时读**两个面**（萬星 facade 的公开面 + 壹座 packs 的部署者管理面），测试要把两侧分开标注，避免以后误以为管理动作在 facade 上。验证：两面的断言各自独立可红
-- [ ] 6.7 **数据工厂（跨仓 `fd-industry-data`）——已断的链要么修要么正式退役**：spider-heal 不在门面 18 个 public agent 中，工单投递 `404 AGENT_NOT_FOUND`（2026-11-08 实测，记录在 `config/alert-selfcheck-known.json:5`）。二选一并落账：(a) 把 spider-heal 重新部署为门面公开 agent 并恢复投递；(b) 正式退役该通道，删代码与 `WANXING_SPIDER_HEAL_*` 变量，只留邮件通道。验证：选定方案后，`scripts/alert_selfcheck.py` 的「已知不修」条目消失（a 则是投递成功，b 则是代码移除），并顺手把记录里拼错的 `/api/wangxing/` 一并纠正
+- [x] 6.7 **数据工厂（跨仓 `fd-industry-data`）／柏讯（跨仓 `fd-wire`）——已断的链要么修要么正式退役**：spider-heal 不在门面 18 个 public agent 中，工单投递 `404 AGENT_NOT_FOUND`（2026-11-08 实测，记录在 `config/alert-selfcheck-known.json:5`）。**裁决：第三种——保住通道、只删假缺省**（用户授权自决；理由与两选项见下文「6.7 裁决与落地」）。落地＝`fd-wire` 删 `WANXING_AGENT_SLUG_DEFAULT`、slug 变必填、"有键无 slug"归到未配置（提交 `43f4a4e`，分支 `feat/wanxing-slug-required`）；`fd-industry-data` 随手把注释里拼错的 `/api/wangxing/` 改成 `/api/wanxing/` 并写明「服务面缺 agent ≠ 配置面」故记录保留（提交 `76015ae`，分支 `fix/alert-selfcheck-note`）。验证：两条测试红证（还原缺省 slug → 恰两条红；契约内层改名 → 形状断言红）；`fd-wire` 全量 `api/tests` 1924 passed / 13 skipped；**「已知不修」条目的存在被判定为仍然正确**——它记的是部署面事实，原任务把"条目消失"当判据是错的前提（见下文）
 - [x] 6.8 **两个写入口的一致性**：断言门面 `console.js setPaused` 与 `paas/lib/agent-serving.js setAgentPaused` 对同一 agentPath 产生相同的 registry 结果（同一 `metadata.paused` 语义、`paused=false` 时删键而非置 false）。真正的收敛归 `unify-wanxing-shared-semantics`，此处只要一条跨仓一致性断言防漂移。验证：任一侧改动（如把删键改成置 false）→ 断言红
 
 ## 7. 收口
@@ -79,7 +79,7 @@ spec delta 已按此口径改，实探结果与之相符。
    读数（时间戳几乎没变）。`pkill -f "WANXING_PORT=3199"` 匹配不到（env 不在
    cmdline 里）——改正后 `status: paused` 才出现。
 
-## 跨仓三件实测（2026-11-13，均在各自仓的工作树里完成、**未代提交**）
+## 跨仓三件（2026-11-13 在各自仓的工作树里完成，同日按裁决落到独立分支/提交）
 
 **6.4 识律**：`web/src/console/WanxingCopilot.tsx` 的硬编码 `WANXING_ORIGIN` 抽到
 `web/src/console/config.ts`，读 `import.meta.env.VITE_WANXING_ORIGIN`（照抄该仓
@@ -98,15 +98,42 @@ spec delta 已按此口径改，实探结果与之相符。
 **6.6 萬星运维 MCP**：新增 `tests/test_contract_shape.py`（19 条），按四个面核对
 本仓冻结字段集 ↔ 契约：`/agents` 17 字段与 `catalogEntry` **完全一致**、`status` 枚举
 恰为四态；信封 5 字段与 `agentsResponse` 一致；A2A 回执与 `turnReceipt` 一致；
-`/fleet/v1/board` 13 字段（含 runners/lag/settled/wake 嵌套）与 `fleetBoardResponse`
-一致。两次独立注入各红、还原后 sha256 一致。**记名缺口（未修）**：契约没有
-`agentCard` 定义，卡上的 `provider/url/default_input_modes/default_output_modes/
-preferred_transport` 五个字段在任何 def 里都不存在；另契约 `facets` 缺门面实际会发的
-`facets.clusters`（本 MCP 不请求 facets，故未红）。该测试把空洞冻结为
-`AGENT_CARD_NOT_IN_CONTRACT` 并在契约补上定义时主动变红、要求收窄白名单——故留着是安全的。
+`/fleet/v1/board` 与 `fleetBoardResponse` 一致——落笔时 13 字段，落分支前复跑时
+契约已长到 20 字段（本 change 当天给 board 补的 7 段观测：`states_window` /
+`runner_liveness` / `leases` / `cells` / `shortterm` / `agent_health` / `missions`），
+**这条断言当场变红并点出这 7 个名字**，正是它该红：board 工具是整包转发、无投影，
+契约多一段就是模型多看一段。已把 7 段连同内层字段（leases 六键+units 六键、
+agent_health 五键、missions 六键、shortterm 六计数、liveness 两键）一起钉住，
+夹具补齐 7 段实测形状，再红一次（`shortterm.workers_cap` 内层改名 → 红）、还原后
+无 diff。**记名缺口（未修）**：契约没有 `agentCard` 定义，卡上的 `provider/url/
+default_input_modes/default_output_modes/preferred_transport` 五个字段在任何 def 里
+都不存在——2026-11-13 已在本 change 侧补上 `$defs.agentCard`（纯附加）；另契约
+`facets` 缺门面实际会发的 `facets.clusters`（本 MCP 不请求 facets，故未红），同日
+已补。测试把空洞冻结为 `AGENT_CARD_NOT_IN_CONTRACT` 并在契约补上定义时主动变红、
+要求收窄白名单——故留着是安全的。
 
-**未做**：三处改动都停在各自仓的工作树里（fd-lex 在 `feat/line-token-verify` 上、
-fd-wire 与 wanxing-ops-mcp 在 `main` 上，均非本 change 的仓），按多会话协定不代提交。
+## 落账去向（2026-11-13，用户授权自决后执行）
+
+三处改动都**没有**提交到别人的活线上（多会话协定 1/2/4 条）：
+
+| 仓 | 落点 | 远端 | 说明 |
+|---|---|---|---|
+| `wanxing-ops-mcp` | `main` 直接提交 `0dea2db` | gitee（唯一远端） | 该仓 `main` 与 `gitee/main` 0/0、无本地独有提交、脏项仅 `.DS_Store`+`graphify-out/`，不是活线 |
+| `fd-lex` | 新分支 `feat/wanxing-copilot-contract` 提交 `d4497ef`（基于 `main`） | github(origin) + gitee | 原工作树停在 `feat/line-token-verify`——别人一条未推的「门 K 顾客轨」提交，**不动它**；用独立 worktree 从 `main` 落，三个文件与主工作树 sha256 逐字相同 |
+| `fd-wire` | 新分支 `feat/wanxing-slug-required` 提交 `cd9a745` + `43f4a4e`（基于 `gitee/main`） | gitee + github | 本地 `main` 落后远端 11 个提交、脏项 37 个（35 个是别人的），按协定不落；从 `gitee/main` 开独立 worktree |
+| `fd-industry-data` | 新分支 `fix/alert-selfcheck-note` 提交 `76015ae`（基于 `gitee/main`） | gitee | 该仓最后一次提交在 2 小时内＝活线，按协定不落 `main`；两远端已分叉（github 14 ahead / 20 behind），只推 gitee（部署真值那条） |
+
+`fd-wire` 分支里多出一个**顺手必修**的提交 `cd9a745`：`cell_provision/routes.py`
+`from ..demands.routes import _require_internal` 与 `demands/__init__` 的初始化链
+构成导入环，后果不是慢而是**整个模块导不进来**——干净检出的 `gitee/main` 上单独
+收集 `pytest tests/test_wanxing_client.py` 直接 ImportError（`bench_pull/routes.py`
+早就为同一个环"本地自持"了一整份拷贝并在注释里写了原因）。把闸移到叶子模块
+`fd_wire_api/internal_auth.py`，两个调用方改从它取，语义逐字不变；导入环消失后
+那 13 条测试才跑得起来，6.7 的改法也才有可验证的落点。全量 `api/tests` 1924 passed
+/ 13 skipped。
+
+**没有替 6.7 之外的柏讯行为做决定**：分支只改 slug 缺省与"未配置"判据，未动
+网关、未动投递路径、未动任何 env 名。
 
 ## 6.7 证据（2026-11-13 只读实探，供裁决）
 
@@ -139,4 +166,21 @@ packs-wqpd5rpcfl3qihg6oldamg-pack-wire-decision-review-analyst-d1da519d4
    未配即"未配置"——今天的事实是不指名就没有可投的 agent，缺省值只是把 404 推后一层。
    若之后真部署 spider-heal，配一个 env 就恢复，不需要改代码。
 
-我没有替这个决定动手：它改的是柏讯的生产行为，且"修（补部署）"是产品决定。
+### 裁决与落地（2026-11-13，用户授权自决 → 选 2）
+
+选 2 的理由不是"更保守"，而是**1 会把一条仍然可用的通道连根拔掉**：快车道的代码
+路径、事件留档（`wanxing_dispatched` / `wanxing_dispatch_failed`）与幂等键都在
+正常工作，唯一坏掉的是"缺省值猜了一个不存在的目标"。退役要删掉这条审计流；
+去掉假缺省只删一行常量，而且把一个**静默的错向**变成一句诚实的 503。
+
+落地（`fd-wire` 分支 `feat/wanxing-slug-required`，提交 `43f4a4e`）：
+- 删 `WANXING_AGENT_SLUG_DEFAULT`，`self._slug` 无缺省并 `strip()`；
+- `get_wanxing_client()` 在"有调用键但无（或空白）slug"时同样回 `None`——归到
+  "未配置"而不是"投递失败"，service 层据此 503 回绝、零留档，不发注定 404 的请求；
+- `tests/test_wanxing_client.py` 补 2 条（有键无 slug / 空白 slug → None）、改 2 条
+  既有用例（原先只给键、靠缺省 slug 才通过）；
+- 红证：把缺省 slug 与"无 slug 即未配置"两处还原 → 恰好这两条红，还原后无 diff。
+
+**遗留（本 change 不覆盖）**：`fd-lex` 侧 `WANXING_ORIGIN` 若要在私有环境指向
+别的门面，构建镜像时需给 `VITE_WANXING_ORIGIN`（该仓对 `VITE_API_BASE` 也是纯
+构建期注入，未加 ARG）——属该仓出片配置，不在本 change 的 delta 内。
