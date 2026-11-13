@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wanxing.finddatatech.cloud/contracts/wanxing-public-api.v1.json",
   "title": "Wanxing public read surfaces — consumer contract",
-  "x-contract-rev": "1",
+  "x-contract-rev": "2",
   "description": "The response shapes that sibling lines rely on. Only consumed fields are constrained; anything else may be added freely (additive changes do not bump the revision). Bumping x-contract-rev is required for any rename, removal, or semantic change of a field named here. Consumers: paas/facet/supply-catalog.js (spine), paas/server/routes/fleets.js (owner cross-line), paas/services/ops-console (fleet board), fd-lex (copilot loader — not covered here, see copilot.js contract), fd-wire (A2A receipt — covered by /turn below), wanxing-ops-mcp (catalog + card), fd-industry-data (A2A work-order dispatch).",
   "$defs": {
     "agentsResponse": {
@@ -400,18 +400,29 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "state": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "serving | resident | starting | draining | paused | warm — the five live states the OpsView legend names."
-              },
-              "seen_at": {
+              "last_seen_at": {
                 "type": [
                   "number",
                   "null"
-                ]
+                ],
+                "description": "The runner's last beat, ms epoch. null only when the row exists without a timestamp."
+              },
+              "age_ms": {
+                "type": "number",
+                "description": "now - last_seen_at, clamped at 0. This is the number the legend thresholds on."
+              },
+              "beats": {
+                "type": "number",
+                "description": "Cumulative beat count for the runner."
+              },
+              "presence": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "stale",
+                  "lost"
+                ],
+                "description": "ok = fresh beat; stale = late but inside tolerance; lost = silence we are willing to call a loss. Three states, never two — none of them may collapse into 'absent' (a runner missing from this map is not reported alive)."
               }
             }
           }
@@ -521,30 +532,60 @@
                 "type": "string",
                 "description": "The join key consumers index by."
               },
+              "consecutive": {
+                "type": "number",
+                "description": "Leading streak of failed TURNS (not hours) — a low-traffic agent that failed twice is not '3 hours bad'."
+              },
+              "consecutiveHours": {
+                "type": "number",
+                "description": "Same streak counted in hourly buckets (kept for the web's hour read)."
+              },
+              "declared_every_ms": {
+                "type": "number",
+                "description": "Present only for agents that declare a rhythm: the period they promised."
+              },
+              "errors": {
+                "type": "number"
+              },
+              "expected_turns": {
+                "type": "number",
+                "description": "Present only with a declared rhythm: how many turns the window implies."
+              },
               "health": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "description": "degraded | failing | ok — OpsView filters on the first two."
+                "description": "ok | silent | degraded | failing | paused; null only for a stale (unjudged) entry. OpsView filters on failing/degraded."
               },
-              "stalled": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "silent_ms": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "reason": {
+              "lastErrorKind": {
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "description": "The cause of the latest error (classified kind, or 'budget'/'unknown'); null when the window had no errors."
+              },
+              "since": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "When the current state began (ms epoch); null when unjudged."
+              },
+              "stale": {
+                "type": "boolean",
+                "description": "Always present. true = the pause flag could not be read this pass, so the entry is unjudged rather than healthy."
+              },
+              "stalled": {
+                "type": "boolean",
+                "description": "Present only when 'should have run at least stallMinExpected times, ran zero'. This is what separates 'nobody used it' from 'it should have fired and did not'."
+              },
+              "turns": {
+                "type": "number"
+              },
+              "window_hours": {
+                "type": "number",
+                "description": "The health window the counters were folded over (hours). Consumers must label the panel with this, or a 3-hour count reads as a 24-hour one."
               }
             }
           }
