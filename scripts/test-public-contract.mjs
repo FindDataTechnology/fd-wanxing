@@ -36,7 +36,7 @@ const mkEntry = (over = {}) => ({
   tags: ["t"], skills: [], capabilities: { streaming: true }, metadata: {}, ...over,
 });
 
-function harness({ deployments, entries, turns = {} }) {
+function harness({ deployments, entries, turns = {}, chatable = () => true, packs = null }) {
   const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "s-")), "wanxing.db") });
   const sub2api = {
     userId: 7, email: "platform@finddata.tech", degraded: () => false,
@@ -62,7 +62,8 @@ function harness({ deployments, entries, turns = {} }) {
       return new Response(entry ? JSON.stringify(entry) : "{}", { status: entry ? 200 : 404 });
     },
     usageTurnsByAgent: async () => new Map(Object.entries(turns)),
-    chatability: () => true,
+    chatability: chatable,
+    ...(packs ? { packsBrowseFetch: packs.browse, packsDetailFetch: packs.detail } : {}),
     config: { agentUrlFor: (p) => `http://upstream${p}/` },
     upstreamFetch: async () => new Response("{}", { status: 200 }),
   });
@@ -227,6 +228,82 @@ test("contract: turnReceipt covers BOTH producer shapes (runner Message and the 
     assert.deepEqual(contract.check("turnReceipt", receipt), [], `${label} violates turnReceipt`);
     assert.deepEqual(contract.coverage("turnReceipt", receipt), [],
       `${label} emits fields turnReceipt never declared`);
+  }
+});
+
+// ── 卡面：声明了就必须能被发端观测到（require-contract-observability）──────────
+//
+// 方向与覆盖判据相反：覆盖查「发了没声明」，这条查「声明了却从不发」。2026-11-13 实测
+// 线上卡面：契约声明 16 键、实发 12 键；缺的四个都是条件键——但在那之前没有任何东西把
+// 条件写下来，等于四条无从证伪的声明。这里给条件键一张显式豁免表：表里没有的声明键，
+// 只要真发端不发就红。
+//
+// 五个条件键被正反两侧同时钉住：bare 样本上**一个都不许出现**（否则豁免表会掩盖「其实
+// 一直发」），rich 样本上五个**必须全出现**（否则豁免表成了遮羞布）。条件逐条抄契约
+// `$defs.agentCard` 里各自的 description。
+const CARD_CONDITIONAL = new Map([
+  ["examples", "只有 registry 条目声明了非空 examples 才发"],
+  ["facade", "只有 entry.metadata.facade 存在才发"],
+  ["facade_stance", "与 facade 同进同出，默认 hosted"],
+  ["chatable", "只有聊天闸放行该调用方才发"],
+  ["cluster", "只有该部署是已声明 cluster 的 pack 成员（且详情点名了它）才发"],
+]);
+
+test("contract: every key the agent card declares is emitted, or a named conditional", async () => {
+  const { base, srv } = await harness({
+    deployments: [
+      { slug: "bare", agentPath: "/bare", agentId: "bare-1" },
+      { slug: "rich", agentPath: "/rich", agentId: "rich-1", packId: "p1" },
+    ],
+    entries: {
+      bare: mkEntry({ name: "Bare" }),
+      rich: mkEntry({ name: "Rich", examples: ["问我一个指标"], metadata: { facade: { stance: "hosted" } } }),
+    },
+    chatable: (state) => state.slug === "rich",
+    packs: {
+      browse: async () => [{ id: "p1", version: "1", agentCount: 2, name: "Team" }],
+      detail: async () => ({
+        manifest: {
+          cluster: { name: "Team", defaultAgents: ["rich-1"], optionalAgents: ["other-2"] },
+          agents: [{ id: "rich-1", name: "Rich" }, { id: "other-2", name: "Other" }],
+        },
+      }),
+    },
+  });
+  try {
+    const declared = Object.keys(contract.doc.$defs.agentCard.properties);
+    assert.ok(declared.length > 0, "the card declares no properties");
+
+    const cardOf = async (slug) => {
+      const r = await fetch(`${base}/api/wanxing/v1/a2a/${slug}/.well-known/agent-card.json`);
+      assert.equal(r.status, 200, `${slug}: the card route must answer 200`);
+      return r.json();
+    };
+
+    for (const slug of ["bare", "rich"]) {
+      const card = await cardOf(slug);
+      assert.deepEqual(contract.check("agentCard", card), [], `${slug}: the card violates its declared shape`);
+      const missing = declared.filter((k) => !(k in card) && !CARD_CONDITIONAL.has(k));
+      assert.deepEqual(missing, [],
+        `${slug}: declared but never emitted — if it is conditional, add it to CARD_CONDITIONAL with its condition: ${missing.join(", ")}`);
+    }
+
+    // 反面：条件不成立时，五个键一个都不许冒出来。
+    const bare = await cardOf("bare");
+    for (const key of CARD_CONDITIONAL.keys()) {
+      assert.ok(!(key in bare), `bare: ${key} must be absent unless its condition holds`);
+    }
+
+    // 正面：条件都成立时，五个必须全在。
+    const rich = await cardOf("rich");
+    assert.deepEqual(rich.examples, ["问我一个指标"]);
+    assert.equal(rich.facade, true);
+    assert.equal(rich.facade_stance, "hosted");
+    assert.equal(rich.chatable, true);
+    assert.equal(rich.cluster?.id, "p1");
+    assert.equal(rich.cluster?.role, "default");
+  } finally {
+    srv.close();
   }
 });
 
