@@ -456,6 +456,36 @@ test("exchange gate: chat logins admit off-allowlist identities; console keeps r
   assert.notEqual(chatTry, 403);
 });
 
+// ── The 0x30 shape trap: never sniff raw-vs-DER from the first byte ──────────
+//
+// A raw JWS signature is R||S. If R's first byte happens to be 0x30 — the DER
+// SEQUENCE tag — a `raw[0] === 0x30` sniff calls the whole 96-byte blob "already
+// DER", node's verify fails, and a *valid* login is refused. Probability is
+// ~1/256 per login; it showed up as a 1-in-11 flake of the exchange test above
+// before it was named (2026-11-13, reproduced 2/300 in a standalone loop).
+//
+// This test is deterministic: it grinds signatures until it finds one whose R
+// starts with 0x30 and asserts the facade still verifies it. On the old sniffing
+// code it fails every time; on shape-by-length it passes every time.
+
+test("logto: a raw signature whose R starts with 0x30 still verifies (shape by length, not by tag byte)", async () => {
+  // ECDSA is randomized per signature, so re-signing the same claims gives a new
+  // R every time — grind until one starts with the DER SEQUENCE tag (0x30).
+  let hit = null;
+  for (let i = 0; i < 20000 && !hit; i += 1) {
+    const token = sign(claims());
+    const raw = Buffer.from(token.split(".")[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    assert.equal(raw.length, 96, "a raw P-384 signature is 96 bytes");
+    if (raw[0] === 0x30) hit = token;
+  }
+  assert.ok(hit, "could not produce a raw signature starting with 0x30 — the signer changed shape");
+  // On the old `raw[0] === 0x30` sniff this returned null (identity refused:
+  // an intermittent 403 on ~1/256 of real logins).
+  assert.deepEqual(await make().verifyIdToken(hit), { email: "ops@x.test", sub: "u1" });
+  // And the plain path still works for every other signature.
+  assert.deepEqual(await make().verifyIdToken(sign(claims())), { email: "ops@x.test", sub: "u1" });
+});
+
 // ── Embed audience allowlist (add-embed-copilot-lane 1.2) ─────────────────────
 // Product-line SPA clients of the same tenant: their ID tokens open the chat
 // lane (host-relayed identity) only when the client is on WANXING_EMBED_AUDIENCES

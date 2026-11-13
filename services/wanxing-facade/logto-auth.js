@@ -71,22 +71,38 @@ export function createLogtoAuth({ endpoint, appId, allowlist, embedAudiences = "
       // JWS ECDSA signatures are raw R||S (96 bytes for P-384); node's verify
       // wants DER. Convert before checking (live finding: node-signed test
       // fixtures are DER and pass, real OP tokens never did).
+      //
+      // **Never sniff the shape from the first byte.** `raw[0] === 0x30` looks
+      // like "DER SEQUENCE", but a raw signature whose R happens to start with
+      // 0x30 (p ≈ 1/256) made this reject a perfectly valid token — an
+      // intermittent 403 on login, reproduced at ~0.7% in a 300-exchange loop
+      // (2026-11-13). The two shapes are told apart by **length** instead:
+      // P-384 raw is exactly 96 bytes, DER is 100-106 (two INTEGERs of 48-50
+      // bytes plus wrappers), so a 96-byte blob is raw and anything else must
+      // already be DER. Belt and braces: if the shape we chose does not verify,
+      // try the other one once before refusing — a wrong guess must never be
+      // the reason a real identity is turned away.
       const raw = b64u(s);
-      const der = (() => {
-        if (raw[0] === 0x30) return raw; // already DER
-        const n = raw.length / 2;
+      const toDer = (buf) => {
+        const n = buf.length / 2;
         const trim = (b) => {
           let i = 0;
           while (i < b.length - 1 && b[i] === 0) i += 1;
           const s2 = b.slice(i);
           return s2[0] & 0x80 ? Buffer.concat([Buffer.from([0]), s2]) : s2;
         };
-        const r = trim(raw.slice(0, n));
-        const s2 = trim(raw.slice(n));
+        const r = trim(buf.slice(0, n));
+        const s2 = trim(buf.slice(n));
         const body = Buffer.concat([Buffer.from([0x02, r.length]), r, Buffer.from([0x02, s2.length]), s2]);
         return Buffer.concat([Buffer.from([0x30, body.length]), body]);
-      })();
-      const okSig = cryptoVerify("sha384", Buffer.from(`${h}.${p}`), key, der);
+      };
+      const signed = Buffer.from(`${h}.${p}`);
+      const asRaw = raw.length === 96;
+      const first = asRaw ? toDer(raw) : raw;
+      const second = asRaw ? raw : toDer(raw);
+      const okSig =
+        cryptoVerify("sha384", signed, key, first) ||
+        cryptoVerify("sha384", signed, key, second);
       const iss = `${base}/oidc`;
       if (!okSig) return null;
       if (payload.iss !== iss) return null;
