@@ -190,3 +190,42 @@ test("contract: GET /api/fleet/v1/board conforms (the field set ops-console rend
     obs.close(); // clear the observer's timers so the test file can exit
   }
 });
+
+// ── turnReceipt：两条真实回执形状都要被覆盖 ───────────────────────────────
+//
+// 这个面有**两个生产者**，拼写还不一样：runner 透传的 A2A Message 用
+// `result.messageId`，门面自组的排队回执用 `result.message_id`。fd-wire 只认前者，
+// 所以后者对它是"永远读不到"——这正是上一轮它那条判据红出来的东西。
+// 覆盖判据必须两条都跑：只跑一条，另一条路上新增的字段仍然是隐形的。
+
+test("contract: turnReceipt covers BOTH producer shapes (runner Message and the facade's queued receipt)", () => {
+  // Runner passthrough: the A2A Message IS the result.
+  const runnerReply = {
+    jsonrpc: "2.0",
+    id: 7,
+    result: {
+      role: "agent",
+      parts: [{ kind: "text", text: "done", metadata: {} }],
+      messageId: "m-abc",
+      contextId: "wx:ctx",
+    },
+  };
+  // The facade's own queue-composed acknowledgement (async: true).
+  const queued = {
+    jsonrpc: "2.0",
+    id: 8,
+    result: {
+      message_id: "m-123",
+      context_id: "wx:ctx",
+      kind: "message",
+      parts: [{ kind: "text", text: "任务已入桌面机位队列" }],
+      task_id: "t-1",
+      async: true,
+    },
+  };
+  for (const [label, receipt] of [["runner reply", runnerReply], ["queued receipt", queued]]) {
+    assert.deepEqual(contract.check("turnReceipt", receipt), [], `${label} violates turnReceipt`);
+    assert.deepEqual(contract.coverage("turnReceipt", receipt), [],
+      `${label} emits fields turnReceipt never declared`);
+  }
+});

@@ -608,6 +608,10 @@
           "type": "object",
           "description": "The A2A reply. Two producers, one shape: the runner answers message/send with the Message itself (parts/kind + an id), so the id arrives as `messageId`; the facade's own queue-composed receipt (desktop seat queue) uses `message_id`. Both spellings mean the same thing and both are declared here — a consumer pinning only one of them silently loses the id on the other path. fd-wire reads `result.messageId`; wanxing-ops-mcp relays `result` verbatim.",
           "properties": {
+            "role": {
+              "type": "string",
+              "description": "A2A Message role on the runner's reply (\"agent\"). Absent on the facade's queue-composed acknowledgement, which is not a Message."
+            },
             "kind": {
               "type": "string",
               "description": "Message kind; \"message\" on the facade's composed receipt."
