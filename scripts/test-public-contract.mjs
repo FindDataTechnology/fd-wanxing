@@ -285,3 +285,38 @@ test("contract: the spec's inbound-consumer table names real defs and real field
       `the table pins fields no named def declares: ${undeclared.join(", ")}\n  row: ${row}`);
   }
 });
+
+// ── 宿主协议：契约里点名的消息，源码里必须真有（且没有多出来的）──────────────
+//
+// `public/copilot.js` 是唯一被消费、又不走 JSON 的面：它靠 postMessage 与各产品线
+// 页面通话。契约现在给它一个 `$defs`，而这条判据让那份定义绑在源码上——消息改名
+// 时契约不红、宿主页面照样收不到，症状是"点了没反应"。所以两边对账。
+
+test("contract: the copilot host protocol lists exactly the messages the loader sends and handles", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(path.join(here, "..", "wanxing-web", "public", "copilot.js"), "utf8");
+
+  const sent = new Set([...src.matchAll(/post\([^)]*?\{[^}]*type:\s*"(wx-copilot-[a-z-]+)"/g)].map((m) => m[1]));
+  const handled = new Set([...src.matchAll(/d\.type\s*===\s*"(wx-copilot-[a-z-]+)"/g)].map((m) => m[1]));
+
+  const declared = (side) => new Set(
+    contract.doc.$defs.copilotHost.properties[side].items.properties.type.enum,
+  );
+
+  assert.deepEqual([...declared("hostToWidget")].sort(), [...sent].sort(),
+    "hostToWidget must list exactly what the loader posts");
+  assert.deepEqual([...declared("widgetToHost")].sort(), [...handled].sort(),
+    "widgetToHost must list exactly what the loader handles");
+
+  // The three host hooks are the only extension points; a fourth would need a contract change.
+  const hookNames = [...contract.doc.$defs.copilotHost.properties.hooks.items.properties.name.enum].sort();
+  for (const name of hookNames) {
+    // Two read shapes in this file: `hook("name")` for function hooks, and a
+    // direct `api.name` for the map-shaped one (`intents`). Either counts.
+    const referenced = new RegExp(`hook\\("${name}"\\)`).test(src) || new RegExp(`api\\."?${name}`).test(src);
+    assert.ok(referenced, `the contract names hook ${name} but the loader never reads it`);
+  }
+});

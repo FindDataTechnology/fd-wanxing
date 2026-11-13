@@ -767,6 +767,138 @@
           "description": "The route appends it (not publicCard): present only when the pack's manifest declares a cluster. Carries {id, ...}; `slug` + `url` are added when the cluster is a listed service unit."
         }
       }
+    },
+    "copilotHost": {
+      "type": "object",
+      "description": "public/copilot.js 的宿主协议（postMessage）。消费者：识律控制台等各产品线的宿主页面——它们只声明三个钩子，消息由这份 loader 收发。这是唯一被消费、又不是 HTTP 面的一块，所以只在该文件里具名、不参与 JSON 传输。信任边界：只有同源且来自自己 frame 的消息被接受（ev.origin 与 ev.source 双检），payload 必须带同一个 slug。",
+      "required": [
+        "hostToWidget",
+        "widgetToHost",
+        "hooks"
+      ],
+      "properties": {
+        "hostToWidget": {
+          "type": "array",
+          "description": "宿主（loader）发给 iframe 内组件的消息类型。",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "wx-copilot-init",
+                  "wx-copilot-identity",
+                  "wx-copilot-context",
+                  "wx-copilot-intent-result"
+                ]
+              },
+              "intents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "init 携带：宿主能真正执行的动作名。组件只把声明过的意图渲染成可执行——没声明的给普通问答卡，绝不给死按钮。"
+              },
+              "token": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "identity 携带：每回合的身份。null 表示宿主没有身份，组件按自己的档位走（开放则匿名，否则升级登录）。"
+              },
+              "context": {
+                "type": "object",
+                "description": "context 携带：页面上下文（page/entity 等），ready 时与路由变化时推。"
+              },
+              "askId": {
+                "type": [
+                  "string",
+                  "number",
+                  "null"
+                ]
+              },
+              "questionId": {
+                "type": [
+                  "string",
+                  "number",
+                  "null"
+                ]
+              },
+              "ok": {
+                "type": "boolean",
+                "description": "intent-result 携带：动作是否真的执行了。"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "widgetToHost": {
+          "type": "array",
+          "description": "iframe 内组件发给宿主的消息类型。",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "wx-copilot-ready",
+                  "wx-copilot-identity-request",
+                  "wx-copilot-state",
+                  "wx-copilot-intent"
+                ]
+              },
+              "slug": {
+                "type": "string",
+                "description": "每条消息都带；不匹配宿主自己的 slug 一律丢弃。"
+              },
+              "open": {
+                "type": "boolean",
+                "description": "state 携带：折叠与否。宿主据此把 iframe 缩到 80px——整高透明框会吃掉宿主页面那一角的点击。"
+              },
+              "verb": {
+                "type": "string",
+                "description": "intent 携带：要宿主执行的动作名，必须出现在 init 声明的集合里。"
+              },
+              "arg": {},
+              "askId": {},
+              "questionId": {}
+            }
+          }
+        },
+        "hooks": {
+          "type": "array",
+          "description": "宿主可声明的四个可选钩子；缺省全部降级（无身份→组件用自己档位；无 context→不推上下文；无 intents→给普通问答卡；无 onEvent→没有可观测性，但一轮也不会坏）。",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": [
+                  "identify",
+                  "context",
+                  "intents",
+                  "onEvent"
+                ]
+              },
+              "async": {
+                "type": "boolean",
+                "description": "identify 可为 async（每回合调用一次）；intents 的值是一张 verb→函数 的表，不是函数。"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -13,9 +13,11 @@
 | `GET /api/fleet/v1/board` | `fleetBoardResponse` | 壹座 ops-console、萬星 web 控制台 | `states`、`runners`、`ingest_lag`、`settled_pending`、`wake_ms`、`agents_total`、`leases`、`runner_liveness` |
 | `POST /api/wanxing/v1/a2a/{slug}` | `turnReceipt` | 柏讯工单直连（`fd_wire_api/demands/wanxing.py`）、萬星运维 MCP | `result.parts[].kind`、`result.parts[].text`、`result.messageId`、`error.code` |
 | `GET …/.well-known/agent-card.json` | `agentCard` | 萬星运维 MCP、任何先解析后调用的 A2A 客户端 | `name`、`description`、`url`、`capabilities`、`skills` |
-| `public/copilot.js` + `wx-copilot-*` 宿主协议 | **（无机器可读定义，缺口）** | 识律控制台副驾（`fd-lex`） | 宿主协议的消息名与载荷；目前只有代码与文档，尚未写成 `$defs` |
+| `public/copilot.js` + `wx-copilot-*` 宿主协议 | `copilotHost` | 识律控制台副驾（`fd-lex`）等各产品线宿主页 | 双向消息类型、`init.intents` 的可执行动词、`identity.token`、`state.open`、`intent.{verb,arg}` 与三种钩子（`identify`/`context`/`intents`/`onEvent`） |
 
-最后一行的存在本身就是本表的价值：它是唯一还没有机器可读契约的被消费面，登记在册而不是靠"大家记得"。
+宿主协议那一行曾以「无机器可读定义，缺口」入表，随后补成 `$defs.copilotHost` 并由源码对账判据钉住
+（契约里点名的消息类型必须与 `public/copilot.js` 实际收发的一致，任一侧改名即红）——把它登记在册
+的效果就是它会自己收敛。
 
 #### Scenario: 新增跨仓消费者
 
