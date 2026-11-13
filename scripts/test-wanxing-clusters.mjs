@@ -169,6 +169,34 @@ test("A card: a member's agent card carries the same marker; a flat agent's card
   }
 });
 
+test("A card conforms to the published agentCard definition (owner-side, not just consumer-side)", async () => {
+  // The card is a public discovery face: A2A clients resolve it BEFORE they
+  // call anything, and 萬星运维 MCP relays it verbatim. Consumers each pin their
+  // own copy of its field list (that is how the five undeclared fields were
+  // found) — validating here, at the producer, is what makes one drift red
+  // everywhere at once. Contract: contracts/wanxing-public-api.v1.json.
+  const { loadContract } = await import("./lib/contract-check.mjs");
+  const contract = loadContract(new URL("../contracts/wanxing-public-api.v1.json", import.meta.url));
+  const h = harness();
+  try {
+    // A flat agent and a cluster member both, because the route appends
+    // `cluster` only for the latter and `chatable` only when admitted.
+    for (const route of ["/api/wanxing/v1/a2a/packs-p1-a/.well-known/agent-card.json",
+                         "/api/wanxing/v1/a2a/packs-p3-solo/.well-known/agent-card.json"]) {
+      const card = await h.call(route);
+      assert.equal(card.status, 200, `${route} must serve a card`);
+      assert.deepEqual(contract.check("agentCard", card.body), [],
+        `${route} violates the published agentCard definition`);
+      // The redaction discipline, pinned where it is produced: the card's url is
+      // ALWAYS the facade endpoint, never an internal runtime address.
+      assert.match(card.body.url, /^http:\/\/[^/]+\/api\/wanxing\/v1\/a2a\//,
+        "the card must point callers at the facade, not the runtime");
+    }
+  } finally {
+    await h.close();
+  }
+});
+
 test("A catalog: cluster= filters before pagination and composes with q; facets.clusters counts the unfiltered list", async () => {
   const h = harness();
   try {
