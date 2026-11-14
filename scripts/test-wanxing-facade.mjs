@@ -22,7 +22,7 @@ test.after(() => rmSync(tmp, { recursive: true, force: true }));
 
 const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
 const { createWanxingCore, slugFor, maskKey } = await import("../services/wanxing-facade/core.js");
-const { createA2aFace, contextIdFor } = await import("../services/wanxing-facade/a2a.js");
+const { createA2aFace, contextIdFor, turnErrorCode } = await import("../services/wanxing-facade/a2a.js");
 const { createChatFace } = await import("../services/wanxing-facade/chat.js");
 
 // A stub sub2api client with call counters — every behavior is programmable
@@ -1991,4 +1991,34 @@ test("turn budget: the default exists and WANXING_TURN_TIMEOUT_MS overrides it",
   );
   assert.equal(timeoutFromEnv({ WANXING_TURN_TIMEOUT_MS: "12345" }, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn), 12345);
   assert.equal(timeoutFromEnv({}, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn), OUTBOUND_TIMEOUT_DEFAULTS.turn);
+});
+
+test("turn budget: a budget hit is -32041 on every path, never the generic -32032", () => {
+  // Live 2026-11-15: the a2a message/send route shipped with only the
+  // "integer-code passthrough" branch, so a turn killed at its 600 s budget was
+  // recorded as {"code":-32032,"message":"turn forward exceeded 600s"} — right
+  // words, wrong code. Callers key on -32041 = "ran out of its own budget" vs
+  // -32032 = "could not talk upstream", and readers treat -32032 as "retry
+  // later", so the mislabel hid a real wall.
+  // The production transport is bypassed whenever upstreamFetch is injected
+  // (that IS the test seam), so a route-level test cannot reach this branch by
+  // construction: pin the shared decision instead — both call sites now route
+  // through turnErrorCode, so a regression here is a regression everywhere.
+  const timeout = new Error("turn forward exceeded 600s");
+  timeout.name = "TimeoutError";
+  assert.equal(turnErrorCode(timeout), -32041, "TimeoutError → -32041");
+
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+  assert.equal(turnErrorCode(abort), -32041, "AbortError → -32041");
+
+  // A DOMException's legacy numeric code must NOT be mistaken for a timeout
+  // (TimeoutError's legacy code is 23 — a small integer that looks protocolar).
+  const domLike = new Error("dns");
+  domLike.code = 23;
+  assert.equal(turnErrorCode(domLike), 23, "non-timeout integer code passes through");
+
+  assert.equal(turnErrorCode(new TypeError("fetch failed")), -32032, "transport fault → -32032");
+  assert.equal(turnErrorCode({ code: -32003 }), -32003, "upstream code passes through");
+  assert.equal(turnErrorCode(undefined), -32032, "no error object still yields a code");
 });

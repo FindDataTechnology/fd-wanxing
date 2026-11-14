@@ -24,6 +24,22 @@ const textOf = (message) => {
 
 const jsonRpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
+// A turn that exhausted ITS OWN budget is -32041 ("timed out"), never the generic
+// -32032 ("could not talk to the upstream"): callers key on that difference, and
+// the nightly inspection lane reads -32032 as "transport fault, retry later".
+// TWO paths can see a timeout — runMemberTurn's AbortSignal (member lane) and the
+// a2a message/send forward, which runs postJsonWithDeadline's own timer — so the
+// decision lives here once instead of being re-derived (and re-forgotten) per
+// catch block. 2026-11-15 live: the send route shipped with only the
+// "integer-code passthrough" branch, so a turn killed at its 600 s budget was
+// recorded as -32032 with an accurate message — right words, wrong code.
+// A DOMException's legacy `code` is a small integer (TimeoutError is 23), so the
+// name check must win over the passthrough.
+export function turnErrorCode(err) {
+  const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
+  return timedOut ? -32041 : Number.isInteger(err?.code) ? err.code : -32032;
+}
+
 // Context derivation: caller-supplied context_id passes through untouched; a
 // send without one gets a fresh external context derived from the idempotency
 // key (stable across replays — a replayed request resumes the same context),
@@ -430,7 +446,7 @@ export function createA2aFace({
       const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
       return {
         replayed: false,
-        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: timedOut ? -32041 : Number.isInteger(e?.code) ? e.code : -32032, message: timedOut ? `turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
+        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: turnErrorCode(e), message: timedOut ? `turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
         error: String(e?.message || e),
         timedOut,
         row,
@@ -856,7 +872,7 @@ export function createA2aFace({
         }
         if (holdsSlot) finish("error");
         else exitReadonly();
-        res.status(200).json(jsonRpcError(id, Number.isInteger(e?.code) ? e.code : -32032, String(e?.message || e)));
+        res.status(200).json(jsonRpcError(id, turnErrorCode(e), String(e?.message || e)));
       }
     });
   }
