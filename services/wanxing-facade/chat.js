@@ -724,7 +724,16 @@ export function createChatFace({
             actor: visitor.tier === "tenant" ? visitor.sub : null,
           });
         } catch (e) {
-          note("connector_identity_unregistered", slug, { code: e?.code || "register_failed", tier: visitor.tier });
+          // Write down WHY, not just that: a 400 here (bad scope, missing actor
+          // key) is a bug in this file, a 503 is the packs plane being down, and
+          // they get fixed by different people. Both leave the turn running —
+          // the connector call will fail closed with actor_registration_missing,
+          // which reads confusingly unless this line exists.
+          note("connector_identity_unregistered", slug, {
+            code: e?.code || "register_failed",
+            status: e?.status ?? null,
+            tier: visitor.tier,
+          });
         }
       }
       const rpcBody = (m) => JSON.stringify({
