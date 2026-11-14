@@ -140,6 +140,17 @@ export function createFleetReporter({ url, token, source = "facade", fetchImpl =
     lastStatsAt = t;
     return {
       id: `fstat-${source}-${Math.floor(t / 60_000)}`,
+      // `source` is REQUIRED by the observer's ingest gate — it was missing here
+      // from 2026-11-06 (only `runner`+`agent` were sent), so every batch that
+      // carried this stat was refused 400. The damage is narrower than "the
+      // stream died", and worth stating exactly: ingest rejects the WHOLE batch,
+      // but `lastStatsAt` advances even on the refused attempt, so the next
+      // flush (5s later) carries no stat and succeeds. Measured in production
+      // 2026-11-15: facade events DID land (712 rows, freshest = now); what
+      // never landed is THIS event — the board had no `facade` `runner_stats`
+      // row at all, so droppedEvents/spoolRows were blind for nine days, and one
+      // batch per 60s stat epoch was refused once before landing on the retry.
+      source,
       runner: source,
       agent: source,
       kind: "runner_stats",
