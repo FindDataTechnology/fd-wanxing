@@ -436,6 +436,28 @@ export function registerWanxingRoutes(app, {
       if (!r.ok) throw Object.assign(new Error(doc?.error || `host-settle ${r.status}`), { status: r.status });
       return doc;
     },
+    // Mediated connector identity (paas add-served-agent-connector-access D3):
+    // the facade registers who this turn is on the platform's internal face,
+    // before the first tool call can fire. Only the scope crosses — the raw sub
+    // stays here, which is the whole point of the hash (chat.js's own rule).
+    // `actor: null` is a positive "this visitor has no identity" (anon tier);
+    // the platform refuses an ABSENT registration but falls back visibly for a
+    // null one, so the two must not be collapsed into "don't call".
+    registerConnectorActor: async ({ packId, agentId, agentPath, scope, actor }) => {
+      const r = await packsInternalCall(
+        `/api/packs/internal/visitor-actor/${encodeURIComponent(packId)}/${encodeURIComponent(agentId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // `actor` MUST be sent even when null: the route rejects a body that
+          // omits the key rather than reading silence as "no identity".
+          body: JSON.stringify({ scope, actor, ...(agentPath ? { agent_path: agentPath } : {}) }),
+        },
+      );
+      const doc = await r.json().catch(() => null);
+      if (!r.ok) throw Object.assign(new Error(doc?.error || `visitor-actor ${r.status}`), { status: r.status });
+      return doc;
+    },
     sub2api,
     subsidyKey: env.WANXING_SUBSIDY_KEY || "",
     // Dedicated subsidy account (deploy decision 2026-10-09): the account
