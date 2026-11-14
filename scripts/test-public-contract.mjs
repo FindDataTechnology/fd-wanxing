@@ -490,3 +490,45 @@ test("contract: the copilot host protocol lists exactly the messages the loader 
     assert.ok(referenced, `the contract names hook ${name} but the loader never reads it`);
   }
 });
+
+test("catalog 与 status 对同一事实给同一个数——并把「省略」的两种成因钉死", async () => {
+  // 2026-11-14 实测（生产）：平台账本里 29 个 deployment，`/agents` 只回 18。
+  // 逐条查注册表后分类：10 个 `visibility: private`（按设计不公开）、1 个注册表
+  // **404**（部署还在、目录条目已随 pack 删除而消失，一个月没人发现）、其余 18 公开。
+  // 所以「少 11 个」不是缺陷；但如果哪天公开的少了一个，今天**没有任何地方会红**：
+  // `/agents` 只是少一行，`/status` 的数也跟着少 1，两个面永远自洽。
+  //
+  // 这条用例钉的是眼下真实成立的那两件事：
+  //   ① 省略只有两种成因（私有 / 条目缺失），两者都不进公开面；
+  //   ② 两个公开面对同一事实必须给同一个数（同族事故：paused 曾被常量 false 传进
+  //      chatability，导致 `/agents` 说可聊、`/chat/:slug/status` 说已暂停）。
+  const pub = { slug: "packs-p1-pub", agentPath: "/packs/p1/pub", packId: "p1" };
+  const priv = { slug: "packs-p2-priv", agentPath: "/packs/p2/priv", packId: "p2" };
+  const gone = { slug: "packs-p3-gone", agentPath: "/packs/p3/gone", packId: "p3" };
+  const { srv, base } = await harness({
+    deployments: [pub, priv, gone],
+    entries: {
+      [pub.slug]: mkEntry(),
+      [priv.slug]: mkEntry({ visibility: "private" }),
+      // gone: 注册表没有条目（harness 会对未登记的 slug 回 404，与生产一致）
+    },
+    turns: { [pub.slug]: 3 },
+  });
+  try {
+    const full = await (await fetch(`${base}/api/wanxing/v1/agents`)).json();
+    const status = await (await fetch(`${base}/api/wanxing/v1/status`)).json();
+
+    assert.deepEqual(full.agents.map((a) => a.slug), [pub.slug],
+      "私有与缺条目都不得进公开目录");
+    assert.equal(status.agents.value, full.agents.length,
+      "两个公开面对同一事实必须给同一个数");
+    assert.equal(status.agents.stale, false);
+
+    // 省略量的账要能算平：总投入 − 公开 = 私有 + 缺条目。
+    // 写成断言而不是注释，是为了让「以后没人记得这两个成因」这件事有据可查；
+    // 真要新增第三种省略原因，必须同时改这里——那正是「新形态不许悄悄出现」。
+    assert.equal(3 - full.agents.length, 2);
+  } finally {
+    srv.close();
+  }
+});
