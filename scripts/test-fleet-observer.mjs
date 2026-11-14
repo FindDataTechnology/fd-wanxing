@@ -757,9 +757,12 @@ test("leases: no events is 'unavailable', not 'nothing expired'; latest per unit
 // The scan above proves every emitted `kind` is REGISTERED. It cannot prove the
 // event's SHAPE passes ingest — and that gap shipped: from 2026-11-06 the
 // facade's board-stat event carried `runner`+`agent` but no `source`, so every
-// flush was refused 400 (one bad event rejects the WHOLE batch) and the facade
-// queue could never drain. The only trace was `flush refused (400) … keeping 1`
-// repeating forever: the facade→observer stream was dead and nothing said so.
+// batch carrying it was refused 400 (one bad event rejects the WHOLE batch).
+// Because `lastStatsAt` advances even on the refused attempt, facade events did
+// keep landing on the 5s retry — the event that never landed was the stat
+// itself: production had no `facade` `runner_stats` row at all, so the board's
+// droppedEvents/spoolRows were blind for nine days while the log repeated
+// `flush refused (400) … keeping N` once a minute.
 //
 // So drive the REAL emitter and put every event it produces through the same
 // predicate ingest uses. New fields/events are covered automatically.

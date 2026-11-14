@@ -94,11 +94,12 @@ export const MISSION_EVENT_KINDS = EVENT_KINDS.filter((k) => k.startsWith("missi
 // The ingest gate, named once. It lived inline in observer.js `POST /ingest`,
 // which meant the only guard over it (test-fleet-observer's facade-source scan)
 // could check that a kind is REGISTERED but never that the shape PASSES — and
-// on 2026-11-06 the facade's board-stat event started shipping without
-// `source` (it sent `runner`+`agent` instead). Ingest rejects the WHOLE batch
-// on one bad event, so the facade's queue could never drain: the log showed
-// only `flush refused (400) … keeping 1` forever, i.e. the facade→observer
-// stream was dead and nothing said so. Predicate first, senders second.
+// from 2026-11-06 to 2026-11-15 the facade's board-stat event shipped without
+// `source` (it sent `runner`+`agent` instead). Ingest rejects the WHOLE batch on
+// one bad event, so every batch that carried the stat was refused 400 and the
+// stat itself never landed — the board had no `facade` `runner_stats` row at all
+// (production, 2026-11-15), i.e. the facade's own droppedEvents/spoolRows
+// counters were blind and nothing said so. Predicate first, senders second.
 // Accepts numeric-string ts? No: the store requires @ts as a number, and the
 // gate is the one place that decides — keep it strict and let senders comply.
 export function isValidEventShape(e) {
