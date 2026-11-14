@@ -9,7 +9,7 @@ import { slugFor } from "../wanxing-facade/identity.js";
 // timelines only.
 
 import express from "express";
-import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS } from "./store.js";
+import { createEventStore, EVENT_KINDS, MISSION_EVENT_KINDS, isValidEventShape } from "./store.js";
 import { createBookkeeper } from "./bookkeeper.js";
 import { createStatsStore, packOfAgent } from "./stats-store.js";
 import { deriveFleetHealth, parseRhythmMs } from "./health.js";
@@ -310,8 +310,7 @@ export function createObserver({
       return res.status(400).json({ error: "events must be a non-empty array (≤5000)" });
     }
     for (const e of events) {
-      if (!e || typeof e.id !== "string" || !e.id || typeof e.source !== "string" || !e.source ||
-          typeof e.agent !== "string" || !e.agent || !EVENT_KINDS.includes(e.kind) || !Number.isFinite(Number(e.ts))) {
+      if (!isValidEventShape(e)) {
         return res.status(400).json({ error: `invalid event: ${JSON.stringify(e)?.slice(0, 200)}` });
       }
     }

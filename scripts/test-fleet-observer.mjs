@@ -751,3 +751,50 @@ test("leases: no events is 'unavailable', not 'nothing expired'; latest per unit
     obs.close(); srv.close(); clockMs = 1_800_001_234_567;
   }
 });
+
+// ── Shape, not just kind ────────────────────────────────────────────────────
+//
+// The scan above proves every emitted `kind` is REGISTERED. It cannot prove the
+// event's SHAPE passes ingest — and that gap shipped: from 2026-11-06 the
+// facade's board-stat event carried `runner`+`agent` but no `source`, so every
+// flush was refused 400 (one bad event rejects the WHOLE batch) and the facade
+// queue could never drain. The only trace was `flush refused (400) … keeping 1`
+// repeating forever: the facade→observer stream was dead and nothing said so.
+//
+// So drive the REAL emitter and put every event it produces through the same
+// predicate ingest uses. New fields/events are covered automatically.
+test("contract: every event the facade produces passes the ingest shape gate", async () => {
+  const { createFleetReporter } = await import("../services/wanxing-facade/fleet-report.js");
+  const { isValidEventShape } = await import("../services/fleet-observer/store.js");
+  const bodies = [];
+  const rep = createFleetReporter({
+    url: "http://observer.invalid",
+    token: "t",
+    source: "facade",
+    now: () => 1_800_000_000_000,
+    statsEveryMs: 0, // force the board-stat event onto the very first flush
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "" };
+    },
+  });
+  rep.report({ kind: "state_changed", agent: "a1", payload: { state: "running" } });
+  await rep.flush();
+
+  assert.equal(bodies.length, 1, "one flush, one body");
+  const sent = bodies[0].events;
+  // Blindness guard: the stat event must actually be in the sample, or this
+  // test would pass on a body that never exercised the defect.
+  assert.ok(sent.some((e) => e.kind === "runner_stats"),
+    `the board-stat event must ride this batch; got kinds=${sent.map((e) => e.kind).join(",")}`);
+  for (const e of sent) {
+    assert.ok(isValidEventShape(e), `ingest would reject this event: ${JSON.stringify(e)}`);
+  }
+
+  // Red arm: the exact historical shape must still be rejected. Without this,
+  // loosening the predicate would silently re-open the hole.
+  const stat = sent.find((e) => e.kind === "runner_stats");
+  const { source: _drop, ...noSource } = stat;
+  assert.equal(isValidEventShape(noSource), false,
+    "an event without `source` must be refused (source is NOT NULL in the store)");
+});

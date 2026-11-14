@@ -91,6 +91,25 @@ export const EVENT_KINDS = [
 // The mission family (add-mission-board): board synthesis keys off this set.
 export const MISSION_EVENT_KINDS = EVENT_KINDS.filter((k) => k.startsWith("mission."));
 
+// The ingest gate, named once. It lived inline in observer.js `POST /ingest`,
+// which meant the only guard over it (test-fleet-observer's facade-source scan)
+// could check that a kind is REGISTERED but never that the shape PASSES — and
+// on 2026-11-06 the facade's board-stat event started shipping without
+// `source` (it sent `runner`+`agent` instead). Ingest rejects the WHOLE batch
+// on one bad event, so the facade's queue could never drain: the log showed
+// only `flush refused (400) … keeping 1` forever, i.e. the facade→observer
+// stream was dead and nothing said so. Predicate first, senders second.
+// Accepts numeric-string ts? No: the store requires @ts as a number, and the
+// gate is the one place that decides — keep it strict and let senders comply.
+export function isValidEventShape(e) {
+  return Boolean(e) && typeof e === "object"
+    && typeof e.id === "string" && Boolean(e.id)
+    && typeof e.source === "string" && Boolean(e.source)
+    && typeof e.agent === "string" && Boolean(e.agent)
+    && EVENT_KINDS.includes(e.kind)
+    && Number.isFinite(Number(e.ts));
+}
+
 export function createEventStore({ file }) {
   mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);

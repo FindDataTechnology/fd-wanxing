@@ -140,6 +140,12 @@ export function createFleetReporter({ url, token, source = "facade", fetchImpl =
     lastStatsAt = t;
     return {
       id: `fstat-${source}-${Math.floor(t / 60_000)}`,
+      // `source` is REQUIRED by the observer's ingest gate (source TEXT NOT NULL)
+      // — it was missing here from 2026-11-06, and because one bad event rejects
+      // the whole batch, EVERY flush was refused and the facade's queue never
+      // drained (log: `flush refused (400) … keeping 1`, forever). This event
+      // rides along on every batch, so it took the whole stream down with it.
+      source,
       runner: source,
       agent: source,
       kind: "runner_stats",
