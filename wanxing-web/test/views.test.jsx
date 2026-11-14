@@ -16,6 +16,8 @@ beforeEach(() => resetStorages());
 
 const { CatalogView, segmentsOf, STATUS_UI, statusBadgeFor, allStatusesUnknown } = await import("../src/views/CatalogView.jsx");
 const { ChatView } = await import("../src/views/ChatView.jsx");
+const { EmbedView } = await import("../src/views/EmbedView.jsx");
+const { credSet } = await import("../src/embed-auth.js");
 const { FleetView } = await import("../src/views/console/FleetView.jsx");
 const { channelLabel, sourceBadge, planRequestBadge, fmtMs, fmtAgo } = await import("../src/views/console/shared.jsx");
 const { ErrorBoundary } = await import("../src/components/ErrorBoundary.jsx");
@@ -34,6 +36,34 @@ test("CatalogView renders empty (initial self-fetch state) without crashing", ()
 
 test("ChatView renders empty (pre-status state) without crashing", () => {
   renderOk(<ChatView focusSlug="some-agent" />, "ChatView empty");
+});
+
+// Anonymous turns have no identity of their own, so a connector action they
+// trigger runs as the DEPLOYER (paas add-served-agent-connector-access D5).
+// The facade's /status already carries `tier`, so the widget knows which
+// regime it is in without any new runner→facade signal — the notice is a
+// pure derivation. Asserted both ways: anon discloses, tenant does not
+// (a tenant visitor running as themselves must not be told otherwise).
+test("EmbedView discloses the deployer fallback on anon turns only", () => {
+  // `open=1` is the widget's expanded state; the notice lives in the dock
+  // panel (a collapsed widget has no conversation, so nothing to disclose).
+  location.hash = "#/embed/demo-agent?open=1";
+  try {
+    const anon = renderOk(<EmbedView focusSlug="demo-agent" />, "EmbedView anon");
+    assert.ok(anon.includes('data-testid="wx-embed-deployer-notice"'), "anon shows the notice");
+    assert.ok(anon.includes("部署者身份"), "anon names who actually executes");
+    assert.ok(anon.includes("而不是你本人"), "anon says it is not the visitor");
+    assert.ok(anon.includes("匿名"), "anon tier chip still reads 匿名");
+
+    // Same slug with a stored tenant credential: tier resolves to tenant at
+    // first render, so the notice must be absent.
+    credSet("demo-agent", { idToken: "h.p.s", email: "v@example.com" });
+    const tenant = renderOk(<EmbedView focusSlug="demo-agent" />, "EmbedView tenant");
+    assert.ok(!tenant.includes('data-testid="wx-embed-deployer-notice"'), "tenant shows no notice");
+    assert.ok(tenant.includes("已登录 · v@example.com"), "tenant chip names the visitor");
+  } finally {
+    location.hash = "";
+  }
 });
 
 test("FleetView renders empty console state without crashing (regression: 2a2644d/74ee780 class)", () => {

@@ -536,6 +536,23 @@ export function EmbedView({ focusSlug } = {}) {
         </span>
       </header>
 
+      {/* Anonymous turns have no identity of their own, so any external-system
+          action the assistant takes runs as the DEPLOYER, not as the visitor
+          (paas add-served-agent-connector-access D5). Saying it here is the
+          whole point: the failure mode this replaces was a turn that quietly
+          used someone else's account while everyone assumed it was theirs.
+          Phrased conditionally — "if it needs to reach an external system" —
+          because a turn that never touches a connector has nothing to disclose,
+          and a blanket "this ran as the deployer" would be a different lie. */}
+      {tier === "anon" && (
+        <div
+          data-testid="wx-embed-deployer-notice"
+          className={`border-b px-3 py-1.5 text-[11px] ${dark ? "border-slate-700 bg-slate-800 text-slate-300" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+        >
+          未登录：如需访问外部系统（订单、库存等），将以部署者身份执行，而不是你本人。
+        </div>
+      )}
+
       {hasContext && (
         <div data-testid="wx-embed-context" className={`border-b px-3 py-1.5 text-[11px] ${dark ? "border-slate-700 bg-slate-800 text-slate-300" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
           <span className="font-medium">页面上下文</span>
