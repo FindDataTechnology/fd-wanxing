@@ -1895,3 +1895,100 @@ test("healthz 3.3: dead sub2api degrades in <1s; process truth stays ok-shape", 
     srv.close();
   }
 });
+
+// ── turn budget: the long path owns its deadline (2026-11-15) ───────────────
+// Live shape this fixes: five consecutive message/send turns ended at
+// 300/301/301/300/284 s carrying `-32032 fetch failed`, while the same
+// registry hop answered a cheap request in 262 ms. 300 s is undici's
+// `headersTimeout` default, i.e. WE were giving up and then blaming the
+// transport. A turn answers only when it ends (2–5 min in production), so the
+// send path must carry its own budget and report an expiry as -32041.
+test("turn budget: the long forward returns the body well inside its deadline", async () => {
+  const { postJsonWithDeadline } = await import("../services/wanxing-facade/lib/postJsonWithDeadline.js");
+  const srv = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    // Slower than any control-plane bound (8s) would ever allow, to prove
+    // the caller — not the transport — sets the ceiling.
+    req.on("end", () =>
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { echoed: JSON.parse(body).probe } }));
+      }, 600)
+    );
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const t0 = Date.now();
+    const r = await postJsonWithDeadline(
+      `http://127.0.0.1:${srv.address().port}/agent/x/`,
+      { "content-type": "application/json" },
+      JSON.stringify({ probe: "ok" }),
+      5000,
+    );
+    const took = Date.now() - t0;
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 200);
+    assert.equal(r.json().result.echoed, "ok");
+    assert.ok(took >= 550 && took < 3000, `waited for the turn (${took}ms)`);
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});
+
+test("turn budget: expiry is a TimeoutError, not a transport fault", async () => {
+  const { postJsonWithDeadline } = await import("../services/wanxing-facade/lib/postJsonWithDeadline.js");
+  const hung = http.createServer(() => {}); // never answers — the 300 s wall's shape
+  await new Promise((r) => hung.listen(0, "127.0.0.1", r));
+  try {
+    const t0 = Date.now();
+    await assert.rejects(
+      () => postJsonWithDeadline(`http://127.0.0.1:${hung.address().port}/x`, {}, "{}", 300),
+      (e) => {
+        // The turn path maps these two names to -32041; anything else lands
+        // on -32032 and gets read as "the connection broke".
+        assert.ok(e.name === "TimeoutError" || e.name === "AbortError", `name=${e.name}`);
+        assert.match(e.message, /exceeded \d+s/);
+        return true;
+      },
+    );
+    assert.ok(Date.now() - t0 < 2500, "the budget, not the library default, ends it");
+  } finally {
+    hung.closeAllConnections();
+    hung.close();
+  }
+});
+
+test("turn budget: a refused turn still resolves so the caller maps -32033", async () => {
+  const { postJsonWithDeadline } = await import("../services/wanxing-facade/lib/postJsonWithDeadline.js");
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end('{"error":"upstream down"}');
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const r = await postJsonWithDeadline(`http://127.0.0.1:${srv.address().port}/x`, {}, "{}", 5000);
+    assert.equal(r.ok, false, "a refusal is an ANSWER, not a timeout");
+    assert.equal(r.status, 503);
+    assert.equal(r.json().error, "upstream down");
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});
+
+test("turn budget: the default exists and WANXING_TURN_TIMEOUT_MS overrides it", async () => {
+  const { OUTBOUND_TIMEOUT_DEFAULTS, timeoutFromEnv } = await import(
+    "../services/wanxing-facade/lib/fetchWithTimeout.js"
+  );
+  // Without this entry the long path silently inherits the 300 s default —
+  // which is exactly how five turns got labelled -32032.
+  assert.equal(typeof OUTBOUND_TIMEOUT_DEFAULTS.turn, "number");
+  assert.ok(
+    OUTBOUND_TIMEOUT_DEFAULTS.turn >= 600_000,
+    `a turn is minutes, not seconds (got ${OUTBOUND_TIMEOUT_DEFAULTS.turn})`,
+  );
+  assert.equal(timeoutFromEnv({ WANXING_TURN_TIMEOUT_MS: "12345" }, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn), 12345);
+  assert.equal(timeoutFromEnv({}, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn), OUTBOUND_TIMEOUT_DEFAULTS.turn);
+});

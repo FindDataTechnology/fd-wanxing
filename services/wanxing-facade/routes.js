@@ -346,6 +346,11 @@ export function registerWanxingRoutes(app, {
       // Runtime route through the registry proxy (ADR-0004's distribution
       // plane) — the facade never addresses runner origins directly.
       agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
+      // The turn's own budget (see lib/fetchWithTimeout.js: control-plane
+      // bounds are seconds, a turn is minutes). The send face forwards with
+      // THIS deadline instead of inheriting undici's 300 s headersTimeout,
+      // which used to arrive as a bare `fetch failed` → -32032.
+      turnTimeoutMs: timeoutFromEnv(env, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn),
       // Desktop-seat targets (add-desktop-fleet-runner ④): resolves the
       // seat's runner id when the entry is marked desktop_seat — the A2A
       // face then deposits the turn in the seat's mailbox instead of

@@ -11,6 +11,7 @@
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { statusFor } from "./core.js";
+import { postJsonWithDeadline } from "./lib/postJsonWithDeadline.js";
 
 const sha256 = (v) => createHash("sha256").update(String(v)).digest("hex");
 const EXTERNAL_CONTEXT_PREFIX = "wx:"; // the runner's reap pass keys on this (design D10)
@@ -378,12 +379,27 @@ export function createA2aFace({
       params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
     });
     const forward = async () => {
-      const upstream = await upstreamFetch(config.agentUrlFor(state.agentPath), {
-        method: "POST",
-        headers: { ...forwardHeaders(), "Content-Type": "application/json" },
-        body,
-        ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
-      });
+      const url = config.agentUrlFor(state.agentPath);
+      const headers = { ...forwardHeaders(), "Content-Type": "application/json" };
+      // A turn's answer lands only when the turn ENDS, so this call is
+      // minutes long. `fetch` cannot express that: undici's `headersTimeout`
+      // default (300 s) fires first and surfaces as a bare
+      // `TypeError: fetch failed`, which the catch below can only label
+      // -32032 (generic) — measured live 2026-11-14 as five consecutive
+      // 300–301 s turns while the same hop answered a cheap probe in 262 ms.
+      // So the long path owns its deadline: our own timer, our own budget,
+      // and an expiry that reaches the catch as a TimeoutError → -32041.
+      // Tests keep injecting `upstreamFetch`, which must stay untouched.
+      const injected = upstreamFetch !== fetch;
+      const upstream =
+        !injected && Number.isFinite(config.turnTimeoutMs) && config.turnTimeoutMs > 0
+          ? await postJsonWithDeadline(url, headers, body, config.turnTimeoutMs)
+          : await upstreamFetch(url, {
+              method: "POST",
+              headers,
+              body,
+              ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+            });
       const doc = await upstream.json().catch(() => null);
       if (!upstream.ok) {
         throw Object.assign(new Error(`agent route refused the turn (${upstream.status})`), { code: -32033 });
@@ -414,7 +430,7 @@ export function createA2aFace({
       const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
       return {
         replayed: false,
-        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: timedOut ? -32041 : Number.isInteger(e?.code) ? e.code : -32032, message: timedOut ? `member turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
+        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: timedOut ? -32041 : Number.isInteger(e?.code) ? e.code : -32032, message: timedOut ? `turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
         error: String(e?.message || e),
         timedOut,
         row,
@@ -820,6 +836,10 @@ export function createA2aFace({
           : null;
         const out = await runSendFlight({
           caller, slug, state, text, contextId, idemKey, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec,
+          // The public/pack send path used to pass NO budget at all, so the
+          // turn died on undici's 300 s default and was reported as -32032.
+          // The budget is the turn's own (WANXING_TURN_TIMEOUT_MS).
+          timeoutMs: config.turnTimeoutMs ?? null,
         });
         // A replay/join leaves without recording anything of its own.
         if (out.replayed) exitReadonly();
