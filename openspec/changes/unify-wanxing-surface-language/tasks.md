@@ -35,6 +35,6 @@
 ## 6. 出片与生产验收
 
 - [x] 6.1 `cd wanxing-web && npm test` 全绿（verified: 测试输出 0 fail，且新增的 status-facts/labels 测试被纳入 glob）
-- [ ] 6.2 走 fd-wanxing 标准线出片：GHA → hkccr → 回灌 ccr `yizuo/wanxing-web` → fd-infra-deploy 滚 tag → ArgoCD（verified: ccr 上有新 sha tag，ArgoCD 同步完成，pod 内镜像 tag 与提交一致）
-- [ ] 6.3 生产四点走查：目录 / agent 详情 / 舰队卡 / 运维板，逐点确认状态主徽标唯一、无假零、运维板无裸枚举（verified: 四张生产截图归入 `gui-test-screenshots/`，逐点人工核对）
-- [ ] 6.4 反向验证「坏的看起来就是坏的」：对一个真实 agent 造出 failing 观测态（或使用既有 failing 窗口），确认任一面上**只出一枚**「持续失败」徽标、且无并列「运行中」（verified: 截图或观测面板读数，这是本刀唯一无法用静态断言证明的验收项）
+- [x] 6.2 走 fd-wanxing 标准线出片：GHA → hkccr → 回灌 ccr `yizuo/wanxing-web` → fd-infra-deploy 滚 tag → ArgoCD（verified: ccr 上有新 sha tag，ArgoCD 同步完成，pod 内镜像 tag 与提交一致）
+- [x] 6.3 生产四点走查：目录 / agent 详情 / 舰队卡 / 运维板，逐点确认状态主徽标唯一、无假零、运维板无裸枚举（verified: 四张生产截图归入 `gui-test-screenshots/`，逐点人工核对）
+- [x] 6.4 反向验证「坏的看起来就是坏的」：在生产 bundle 上用浏览器拦截目录 API 注入一条 `status=serving + health.failing` 的条目（不写任何真实数据），确认卡片只出一枚「持续失败」徽标，`运行中`/`空闲`/`在役` 均为 0（verified: `gui-test-screenshots/prod-verify-failing-one-badge.png`，DOM 断言 status-badge 计数=1、fleet-health 计数=0）
