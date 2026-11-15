@@ -26,6 +26,7 @@ const { loadContract } = await import("./lib/contract-check.mjs");
 const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
 const { createWanxingCore } = await import("../services/wanxing-facade/core.js");
 const { createA2aFace } = await import("../services/wanxing-facade/a2a.js");
+const { registerPrefsRoutes } = await import("../services/wanxing-facade/prefs.js");
 const { createObserver } = await import("../services/fleet-observer/observer.js");
 const http = await import("node:http");
 
@@ -36,7 +37,7 @@ const mkEntry = (over = {}) => ({
   tags: ["t"], skills: [], capabilities: { streaming: true }, metadata: {}, ...over,
 });
 
-function harness({ deployments, entries, turns = {} }) {
+function harness({ deployments, entries, turns = {}, chatable = () => true, packs = null }) {
   const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "s-")), "wanxing.db") });
   const sub2api = {
     userId: 7, email: "platform@finddata.tech", degraded: () => false,
@@ -62,7 +63,8 @@ function harness({ deployments, entries, turns = {} }) {
       return new Response(entry ? JSON.stringify(entry) : "{}", { status: entry ? 200 : 404 });
     },
     usageTurnsByAgent: async () => new Map(Object.entries(turns)),
-    chatability: () => true,
+    chatability: chatable,
+    ...(packs ? { packsBrowseFetch: packs.browse, packsDetailFetch: packs.detail } : {}),
     config: { agentUrlFor: (p) => `http://upstream${p}/` },
     upstreamFetch: async () => new Response("{}", { status: 200 }),
   });
@@ -230,6 +232,132 @@ test("contract: turnReceipt covers BOTH producer shapes (runner Message and the 
   }
 });
 
+// ── 卡面：声明了就必须能被发端观测到（require-contract-observability）──────────
+//
+// 方向与覆盖判据相反：覆盖查「发了没声明」，这条查「声明了却从不发」。2026-11-13 实测
+// 线上卡面：契约声明 16 键、实发 12 键；缺的四个都是条件键——但在那之前没有任何东西把
+// 条件写下来，等于四条无从证伪的声明。这里给条件键一张显式豁免表：表里没有的声明键，
+// 只要真发端不发就红。
+//
+// 五个条件键被正反两侧同时钉住：bare 样本上**一个都不许出现**（否则豁免表会掩盖「其实
+// 一直发」），rich 样本上五个**必须全出现**（否则豁免表成了遮羞布）。条件逐条抄契约
+// `$defs.agentCard` 里各自的 description。
+const CARD_CONDITIONAL = new Map([
+  ["examples", "只有 registry 条目声明了非空 examples 才发"],
+  ["facade", "只有 entry.metadata.facade 存在才发"],
+  ["facade_stance", "与 facade 同进同出，默认 hosted"],
+  ["chatable", "只有聊天闸放行该调用方才发"],
+  ["cluster", "只有该部署是已声明 cluster 的 pack 成员（且详情点名了它）才发"],
+]);
+
+test("contract: every key the agent card declares is emitted, or a named conditional", async () => {
+  const { base, srv } = await harness({
+    deployments: [
+      { slug: "bare", agentPath: "/bare", agentId: "bare-1" },
+      { slug: "rich", agentPath: "/rich", agentId: "rich-1", packId: "p1" },
+    ],
+    entries: {
+      bare: mkEntry({ name: "Bare" }),
+      rich: mkEntry({ name: "Rich", examples: ["问我一个指标"], metadata: { facade: { stance: "hosted" } } }),
+    },
+    chatable: (state) => state.slug === "rich",
+    packs: {
+      browse: async () => [{ id: "p1", version: "1", agentCount: 2, name: "Team" }],
+      detail: async () => ({
+        manifest: {
+          cluster: { name: "Team", defaultAgents: ["rich-1"], optionalAgents: ["other-2"] },
+          agents: [{ id: "rich-1", name: "Rich" }, { id: "other-2", name: "Other" }],
+        },
+      }),
+    },
+  });
+  try {
+    const declared = Object.keys(contract.doc.$defs.agentCard.properties);
+    assert.ok(declared.length > 0, "the card declares no properties");
+
+    const cardOf = async (slug) => {
+      const r = await fetch(`${base}/api/wanxing/v1/a2a/${slug}/.well-known/agent-card.json`);
+      assert.equal(r.status, 200, `${slug}: the card route must answer 200`);
+      return r.json();
+    };
+
+    for (const slug of ["bare", "rich"]) {
+      const card = await cardOf(slug);
+      assert.deepEqual(contract.check("agentCard", card), [], `${slug}: the card violates its declared shape`);
+      const missing = declared.filter((k) => !(k in card) && !CARD_CONDITIONAL.has(k));
+      assert.deepEqual(missing, [],
+        `${slug}: declared but never emitted — if it is conditional, add it to CARD_CONDITIONAL with its condition: ${missing.join(", ")}`);
+    }
+
+    // 反面：条件不成立时，五个键一个都不许冒出来。
+    const bare = await cardOf("bare");
+    for (const key of CARD_CONDITIONAL.keys()) {
+      assert.ok(!(key in bare), `bare: ${key} must be absent unless its condition holds`);
+    }
+
+    // 正面：条件都成立时，五个必须全在。
+    const rich = await cardOf("rich");
+    assert.deepEqual(rich.examples, ["问我一个指标"]);
+    assert.equal(rich.facade, true);
+    assert.equal(rich.facade_stance, "hosted");
+    assert.equal(rich.chatable, true);
+    assert.equal(rich.cluster?.id, "p1");
+    assert.equal(rich.cluster?.role, "default");
+  } finally {
+    srv.close();
+  }
+});
+
+// ── 调用者偏好面：契约声明了就必须对得上（declare-caller-prefs-face）────────────
+//
+// 这个面被谦面 `facet prefs` 子命令消费（paas `facet/cli/facet.js` 读
+// `prefs.callbackUrl` / `callbackSecretSet` / `reapMinutes`），但契约里一直没有它——
+// 消费方按一份口口相传的形状写死，键一改名它只在运行时拿到 undefined。2026-11-13 扫
+// 「还有哪个公开面被兄弟线读却没登记」时撞出来的，正是契约表该收的那一类。
+test("contract: the caller-preferences face conforms, and never echoes the secret", async () => {
+  const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "p-")), "wanxing.db") });
+  const sub2api = {
+    userId: 7, email: "platform@finddata.tech", degraded: () => false,
+    async probeKeyLiveness() { return { ok: true }; },
+    async findUserByKey(k) { return k === "sk-good" ? { userId: 7, email: "platform@finddata.tech" } : null; },
+    async findUserByEmail() { return { userId: 7, email: "platform@finddata.tech" }; },
+    async adjustBalance() { return { ok: true }; },
+  };
+  const core = createWanxingCore({ store, sub2api, config: { ratePerMin: 0.1, rpmMax: 1000 } });
+  const app = express();
+  registerPrefsRoutes(app, { core, store }); // 与生产同一装配（routes.js:300）
+  const srv = await new Promise((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const call = (method, p, body) => fetch(base + p, {
+    method,
+    headers: { Authorization: "Bearer sk-good", ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+  try {
+    const empty = await call("GET", "/api/wanxing/v1/prefs/packs-p1-heal");
+    assert.equal(empty.status, 200);
+    assert.deepEqual(contract.check("prefsResponse", empty.body), [], "GET prefs violates the declaration");
+    assert.deepEqual(contract.coverage("prefsResponse", empty.body), [], "GET prefs emits undeclared fields");
+    assert.deepEqual(empty.body.prefs, { callbackUrl: null, callbackSecretSet: false, reapMinutes: null });
+
+    const set = await call("PUT", "/api/wanxing/v1/prefs/packs-p1-heal",
+      { callbackUrl: "https://cb.example/x", callbackSecret: "s3cret-xyz", reapMinutes: 60 });
+    assert.equal(set.status, 200);
+    assert.deepEqual(contract.check("prefsResponse", set.body), [], "PUT prefs violates the declaration");
+    assert.deepEqual(contract.coverage("prefsResponse", set.body), [], "PUT prefs emits undeclared fields");
+    assert.deepEqual(set.body.prefs,
+      { callbackUrl: "https://cb.example/x", callbackSecretSet: true, reapMinutes: 60 });
+    // 密钥只报存在，永不回显值——这条比形状更硬，串在里面兜底。
+    assert.ok(!JSON.stringify(set.body).includes("s3cret-xyz"),
+      "the response must never echo callbackSecret");
+  } finally {
+    srv.close();
+    store.close();
+  }
+});
+
 // ── 入向消费者表不能烂 ──────────────────────────────────────────────────────
 //
 // spec 的入向消费者表点名了每一面对应的 `$defs` 与消费者。表一旦和契约分家就退回
@@ -275,7 +403,10 @@ test("contract: the spec's inbound-consumer table names real defs and real field
     return out;
   };
   for (const row of rows) {
-    const cells = row.split("|").map((c) => c.trim());
+    // Markdown tables allow `\|` inside a cell; splitting on every pipe would
+    // shift the columns and read the def cell as a field cell (2026-11-13: the
+    // prefs row's `GET\|PUT …` was refused as "row names no def").
+    const cells = row.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
     const defsCell = cells[2] ?? "";
     // The last row is the deliberate gap (no machine-readable def) — it must SAY so.
     if (defsCell.includes("无机器可读定义")) continue;
@@ -284,13 +415,42 @@ test("contract: the spec's inbound-consumer table names real defs and real field
     for (const d of defs) {
       assert.ok(contract.doc.$defs[d], `the table names a def that does not exist: ${d}`);
     }
-    // Every backticked field in the pinned-fields cell must be declared by one of them
-    // (dotted paths are checked by their first segment).
+    // Every backticked field in the pinned-fields cell must be declared by one of
+    // them. Dotted paths are resolved SEGMENT BY SEGMENT — checking only the first
+    // segment let `prefs.<anything>` pass, which is how a made-up leaf slipped
+    // through on 2026-11-13 while this test stayed green. Longer names keep their
+    // dashes (`wx-copilot-init` is an enum value, not the token `wx`).
     const fieldsCell = cells[4] ?? "";
-    const fields = [...fieldsCell.matchAll(/`([A-Za-z_][A-Za-z0-9_.\[\]]*)`/g)]
-      .map((m) => m[1].split(/[.[]/)[0]);
+    const fields = [...fieldsCell.matchAll(/`([A-Za-z_][A-Za-z0-9_.\[\]-]*)`/g)].map((m) => m[1]);
     const allowed = new Set(defs.flatMap(declared));
-    const undeclared = [...new Set(fields)].filter((f) => !allowed.has(f));
+
+    // `a.b[].c` → ["a", "b", "[]", "c"], resolved through properties/items.
+    const tokens = (dotted) => {
+      const out = [];
+      for (const part of dotted.split(".")) {
+        const m = part.match(/^([A-Za-z_][A-Za-z0-9_-]*)((?:\[\])*)$/);
+        if (!m) return null;
+        out.push(m[1]);
+        for (let i = 0; i < m[2].length / 2; i += 1) out.push("[]");
+      }
+      return out;
+    };
+    const resolves = (dotted) => {
+      const toks = tokens(dotted);
+      if (!toks) return false;
+      for (const d of defs) {
+        let node = contract.doc.$defs[d];
+        for (const t of toks) {
+          if (!node) { node = null; break; }
+          node = t === "[]" ? node.items : (node.properties ?? {})[t];
+        }
+        if (node) return true;
+      }
+      return false;
+    };
+
+    const undeclared = [...new Set(fields)].filter((f) =>
+      (f.includes(".") || f.includes("[")) ? !resolves(f) : !allowed.has(f));
     assert.deepEqual(undeclared, [],
       `the table pins fields no named def declares: ${undeclared.join(", ")}\n  row: ${row}`);
   }
@@ -328,5 +488,47 @@ test("contract: the copilot host protocol lists exactly the messages the loader 
     // direct `api.name` for the map-shaped one (`intents`). Either counts.
     const referenced = new RegExp(`hook\\("${name}"\\)`).test(src) || new RegExp(`api\\."?${name}`).test(src);
     assert.ok(referenced, `the contract names hook ${name} but the loader never reads it`);
+  }
+});
+
+test("catalog 与 status 对同一事实给同一个数——并把「省略」的两种成因钉死", async () => {
+  // 2026-11-14 实测（生产）：平台账本里 29 个 deployment，`/agents` 只回 18。
+  // 逐条查注册表后分类：10 个 `visibility: private`（按设计不公开）、1 个注册表
+  // **404**（部署还在、目录条目已随 pack 删除而消失，一个月没人发现）、其余 18 公开。
+  // 所以「少 11 个」不是缺陷；但如果哪天公开的少了一个，今天**没有任何地方会红**：
+  // `/agents` 只是少一行，`/status` 的数也跟着少 1，两个面永远自洽。
+  //
+  // 这条用例钉的是眼下真实成立的那两件事：
+  //   ① 省略只有两种成因（私有 / 条目缺失），两者都不进公开面；
+  //   ② 两个公开面对同一事实必须给同一个数（同族事故：paused 曾被常量 false 传进
+  //      chatability，导致 `/agents` 说可聊、`/chat/:slug/status` 说已暂停）。
+  const pub = { slug: "packs-p1-pub", agentPath: "/packs/p1/pub", packId: "p1" };
+  const priv = { slug: "packs-p2-priv", agentPath: "/packs/p2/priv", packId: "p2" };
+  const gone = { slug: "packs-p3-gone", agentPath: "/packs/p3/gone", packId: "p3" };
+  const { srv, base } = await harness({
+    deployments: [pub, priv, gone],
+    entries: {
+      [pub.slug]: mkEntry(),
+      [priv.slug]: mkEntry({ visibility: "private" }),
+      // gone: 注册表没有条目（harness 会对未登记的 slug 回 404，与生产一致）
+    },
+    turns: { [pub.slug]: 3 },
+  });
+  try {
+    const full = await (await fetch(`${base}/api/wanxing/v1/agents`)).json();
+    const status = await (await fetch(`${base}/api/wanxing/v1/status`)).json();
+
+    assert.deepEqual(full.agents.map((a) => a.slug), [pub.slug],
+      "私有与缺条目都不得进公开目录");
+    assert.equal(status.agents.value, full.agents.length,
+      "两个公开面对同一事实必须给同一个数");
+    assert.equal(status.agents.stale, false);
+
+    // 省略量的账要能算平：总投入 − 公开 = 私有 + 缺条目。
+    // 写成断言而不是注释，是为了让「以后没人记得这两个成因」这件事有据可查；
+    // 真要新增第三种省略原因，必须同时改这里——那正是「新形态不许悄悄出现」。
+    assert.equal(3 - full.agents.length, 2);
+  } finally {
+    srv.close();
   }
 });
