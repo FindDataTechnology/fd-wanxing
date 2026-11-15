@@ -349,3 +349,14 @@ test("4.1 runner 生命周期枚举行说中文，且不与 agent 状态主徽�
     assert.ok(!agentLabels.includes(w), `agent 词汇里不该出现 runner 专用词「${w}」`);
   }
 });
+
+// ── 详情页路由回归（生产走查 2026-11-15 发现）：#/agent 必须拿到 focusSlug ──
+// App.jsx:217 的 focusSlug 白名单曾漏掉 #/agent，导致 5c8bcb2 上线以来详情页恒显
+// 「该 agent 已下线或转入私有」。这条锁住白名单与路由表的一致性。
+test("详情路由在 focusSlug 白名单里", async () => {
+  const src = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8"));
+  for (const key of ["#/console", "#/chat", "#/bundle", "#/agent"]) {
+    assert.ok(src.includes(`viewKey === "${key}"`), `关键是视图路由 ${key} 必须在 focusSlug 白名单里`);
+  }
+});
