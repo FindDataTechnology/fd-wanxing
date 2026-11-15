@@ -24,4 +24,13 @@ export const OUTBOUND_TIMEOUT_DEFAULTS = {
   registry: 8000, // WANXING_REGISTRY_TIMEOUT_MS — turn forwarding runs wide
   packs: 5000,    // WANXING_PACKS_TIMEOUT_MS — snapshot fresh/stale already backstops
   sub2api: 8000,  // WANXING_SUB2API_TIMEOUT_MS — synchronous admission path
+  // A model turn answers only when it finishes — production runs 2–5 minutes
+  // per ticket, so the three control-plane bounds above are the wrong shape
+  // for it. Without an entry here the long path inherited undici's 300 s
+  // `headersTimeout` and every turn that ran past it was recorded as the
+  // generic -32032 instead of -32041 (2026-11-14: five consecutive turns at
+  // 300–301 s while the same hop answered a cheap request in 262 ms — the
+  // transport was healthy and WE were the ones giving up). 15 minutes covers
+  // a turn plus its tool work; WANXING_TURN_TIMEOUT_MS tunes it per deployment.
+  turn: 900_000,
 };

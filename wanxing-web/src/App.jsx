@@ -214,7 +214,7 @@ export function App() {
       </header>
       <main className="max-w-5xl mx-auto px-4 py-6 w-full flex-1">
         <Suspense fallback={<ViewFallback />}>
-          <View focusSlug={viewKey === "#/console" || viewKey === "#/chat" || viewKey === "#/bundle" ? focusSlug : undefined} />
+          <View focusSlug={viewKey === "#/console" || viewKey === "#/chat" || viewKey === "#/bundle" || viewKey === "#/agent" ? focusSlug : undefined} />
         </Suspense>
       </main>
       {viewKey === "#/console" ? <ComplianceLine /> : <FamilyFooter />}

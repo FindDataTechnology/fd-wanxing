@@ -346,6 +346,11 @@ export function registerWanxingRoutes(app, {
       // Runtime route through the registry proxy (ADR-0004's distribution
       // plane) — the facade never addresses runner origins directly.
       agentUrlFor: (agentPath) => `${registryUrl()}/agent${agentPath}/`,
+      // The turn's own budget (see lib/fetchWithTimeout.js: control-plane
+      // bounds are seconds, a turn is minutes). The send face forwards with
+      // THIS deadline instead of inheriting undici's 300 s headersTimeout,
+      // which used to arrive as a bare `fetch failed` → -32032.
+      turnTimeoutMs: timeoutFromEnv(env, "WANXING_TURN_TIMEOUT_MS", OUTBOUND_TIMEOUT_DEFAULTS.turn),
       // Desktop-seat targets (add-desktop-fleet-runner ④): resolves the
       // seat's runner id when the entry is marked desktop_seat — the A2A
       // face then deposits the turn in the seat's mailbox instead of
@@ -429,6 +434,28 @@ export function registerWanxingRoutes(app, {
       );
       const doc = await r.json().catch(() => null);
       if (!r.ok) throw Object.assign(new Error(doc?.error || `host-settle ${r.status}`), { status: r.status });
+      return doc;
+    },
+    // Mediated connector identity (paas add-served-agent-connector-access D3):
+    // the facade registers who this turn is on the platform's internal face,
+    // before the first tool call can fire. Only the scope crosses — the raw sub
+    // stays here, which is the whole point of the hash (chat.js's own rule).
+    // `actor: null` is a positive "this visitor has no identity" (anon tier);
+    // the platform refuses an ABSENT registration but falls back visibly for a
+    // null one, so the two must not be collapsed into "don't call".
+    registerConnectorActor: async ({ packId, agentId, agentPath, scope, actor }) => {
+      const r = await packsInternalCall(
+        `/api/packs/internal/visitor-actor/${encodeURIComponent(packId)}/${encodeURIComponent(agentId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // `actor` MUST be sent even when null: the route rejects a body that
+          // omits the key rather than reading silence as "no identity".
+          body: JSON.stringify({ scope, actor, ...(agentPath ? { agent_path: agentPath } : {}) }),
+        },
+      );
+      const doc = await r.json().catch(() => null);
+      if (!r.ok) throw Object.assign(new Error(doc?.error || `visitor-actor ${r.status}`), { status: r.status });
       return doc;
     },
     sub2api,

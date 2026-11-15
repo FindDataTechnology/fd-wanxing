@@ -95,6 +95,15 @@ export function createChatFace({
   config, // { agentUrlFor(agentPath) }
   hostSettle = null, // ({ packId, agentId, usageId, minutes, rateUsdPerMin }) → { settled, duplicate } | throws (D5)
   mattersList = null, // ({ packId, agentId, visitorScope }) → matter rows (visitor-scoped; V2 panel)
+  registerConnectorActor = null, // ({ packId, agentId, agentPath, scope, actor }) → { ok } | throws
+  // Mediated connector identity (paas add-served-agent-connector-access D3): the
+  // facade is the only side that KNOWS who is talking, and the only side allowed
+  // to say so — the raw sub never travels to the serving plane, so the runner and
+  // the profile carry nothing. This registers `visitor_scope → actor` on the
+  // platform's internal face for the life of the turn. `actor: null` is a
+  // positive statement ("this visitor has no identity"): the platform falls back
+  // to the deployment binding VISIBLY for it, while an unregistered scope is
+  // refused outright — the two must never be confused.
   sub2api = null, // the platform's admin client — subsidy settlement resolves WANXING_SUBSIDY_KEY's holder
   subsidyKey = "", // the platform settlement key value (env; never logged)
   subsidyUserId = null, // dedicated subsidy account id (env WANXING_SUBSIDY_USER_ID — wins over the key: the dedicated account needs no key credential at all, upstream has no admin-side key minting)
@@ -696,6 +705,37 @@ export function createChatFace({
       // across conversations and different visitors never collide. Hashed
       // here; the raw sub never travels to the serving plane.
       const visitorScope = sha256(`visitor:${visitor.sub}`).slice(0, 32);
+      // Mediated connector identity (paas add-served-agent-connector-access D3):
+      // register who this turn is BEFORE the first tool call can fire. Awaited on
+      // purpose — the platform refuses an unregistered scope (fail closed), so a
+      // fire-and-forget race would show the visitor a refusal that is really our
+      // own latency. A failure never blocks the turn: connectors are optional,
+      // the registration is not the conversation.
+      if (registerConnectorActor && state.packId && state.agentId) {
+        try {
+          await registerConnectorActor({
+            packId: state.packId,
+            agentId: state.agentId,
+            agentPath: state.agentPath ?? null,
+            scope: visitorScope,
+            // null = a POSITIVE "this visitor has no identity" (anon tier): the
+            // platform falls back to the deployment binding and says so, instead
+            // of failing closed the way an absent registration does.
+            actor: visitor.tier === "tenant" ? visitor.sub : null,
+          });
+        } catch (e) {
+          // Write down WHY, not just that: a 400 here (bad scope, missing actor
+          // key) is a bug in this file, a 503 is the packs plane being down, and
+          // they get fixed by different people. Both leave the turn running —
+          // the connector call will fail closed with actor_registration_missing,
+          // which reads confusingly unless this line exists.
+          note("connector_identity_unregistered", slug, {
+            code: e?.code || "register_failed",
+            status: e?.status ?? null,
+            tier: visitor.tier,
+          });
+        }
+      }
       const rpcBody = (m) => JSON.stringify({
         jsonrpc: "2.0",
         id,

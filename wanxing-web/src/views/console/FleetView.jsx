@@ -15,6 +15,24 @@ import { DeployWizard } from "./DeployWizard.jsx";
 import { Drawer } from "../../components/Drawer.jsx";
 import { useToast } from "../../components/Toast.jsx";
 import { channelLabel, sourceBadge, HealthBadge } from "./shared.jsx";
+import { factOf, badgeFor } from "../../status-facts.js";
+
+// A deployment's single status fact (unify-wanxing-surface-language D1/D2).
+// The facade status is derived here because the fleet row carries only `paused`
+// plus the usage summary's turn count — the same "近 7 天有没有调用" the facade's
+// serving/idle means. When NEITHER source knows anything yet (summary not
+// landed and the health section unavailable) this answers null and the card
+// shows no status marker at all, rather than flashing a confident "状态未知".
+export function fleetFactOf({ paused, sig, summaryLanded, health, healthSectionUp }) {
+  const status =
+    paused === true
+      ? "paused"
+      : summaryLanded
+        ? (Number(sig?.turns7d) > 0 ? "serving" : "idle")
+        : undefined;
+  if (status === undefined && !healthSectionUp && !health) return null;
+  return factOf({ status, health, healthSectionUp });
+}
 
 // A deployment nobody can use must not sit below ones that work. Only
 // failing/degraded reorder; everything else keeps its original position.
@@ -397,31 +415,67 @@ export function FleetView({ focusSlug } = {}) {
               const sig = summary?.agents?.[d.slug] ?? null;
               const unknown = summary === null;
               const hh = healthByAgent?.[d.slug] ?? null;
+              // One badge per card: the status fact wins its slot outright, and
+              // HealthBadge only speaks when the fact is NOT one it already
+              // names (otherwise a failing agent wore both 「运行中」 and
+              // 「持续失败」 side by side — the exact contradiction this change
+              // removes). HealthBadge still carries the richer detail (failure
+              // cause, since, expected count), so it renders for failing /
+              // degraded / stalled and stays silent for paused / silent.
+              const fact = fleetFactOf({
+                paused: d.paused,
+                sig,
+                summaryLanded: summary !== null,
+                health: hh,
+                healthSectionUp: healthByAgent !== null,
+              });
+              // Richer detail lives in HealthBadge (failure cause, since, expected
+              // count); when it applies it REPLACES the plain fact badge so the card
+              // still carries exactly one status marker.
+              const useHealthChip = Boolean(hh) && ["failing", "degraded", "stalled"].includes(fact);
+              // 整组全零 = 新部署/没人用，而不是「坏了」；单格为 0 仍照常显示。
+              const allZero =
+                !unknown &&
+                !Number(sig?.turns7d) && !Number(sig?.minutes30d) && !Number(sig?.usd30d);
               return (
                 <div key={d.slug} className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5" data-testid={`fleet-card-${d.slug}`}>
                   <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${d.paused ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"}`}>
-                      {d.paused ? "已暂停" : "运行中"}
-                    </span>
-                    <HealthBadge health={hh} slug={d.slug} />
+                    {useHealthChip ? (
+                      <HealthBadge health={hh} slug={d.slug} />
+                    ) : fact ? (
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[11px] ${badgeFor(fact).cls}`}
+                        data-testid={`fleet-status-${d.slug}`}
+                      >
+                        {badgeFor(fact).label}
+                      </span>
+                    ) : null}
                     <span className="font-semibold text-sm">{d.name ?? d.slug}</span>
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{d.visibility === "private" ? "私有" : "公开"}</span>
                     <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-accent dark:text-accent hover:underline">对话 →</a>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 text-xs" data-testid={`fleet-signals-${d.slug}`}>
-                    <div>
-                      <div className="text-slate-400 text-[11px]">近 7 天回合</div>
-                      <div className="font-semibold">{unknown ? "…" : (sig?.turns7d ?? 0)}</div>
+                  {/* 三格：占位（未落地）→ 一句空态（已落地且全零）→ 正常数值。
+                      全零的判据是整组，不是单格：有回合但零分钟这种真事实必须照常显示 0。 */}
+                  {unknown || !allZero ? (
+                    <div className="grid grid-cols-3 gap-2 text-xs" data-testid={`fleet-signals-${d.slug}`}>
+                      <div>
+                        <div className="text-slate-400 text-[11px]">近 7 天回合</div>
+                        <div className="font-semibold">{unknown ? "…" : (sig?.turns7d ?? 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400 text-[11px]">近 30 天分钟</div>
+                        <div className="font-semibold">{unknown ? "…" : (sig?.minutes30d ?? 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400 text-[11px]">近 30 天结算</div>
+                        <div className="font-semibold">{unknown ? "…" : `$${(sig?.usd30d ?? 0).toFixed(2)}`}</div>
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-slate-400 text-[11px]">近 30 天分钟</div>
-                      <div className="font-semibold">{unknown ? "…" : (sig?.minutes30d ?? 0)}</div>
-                    </div>
-                    <div>
-                      <div className="text-slate-400 text-[11px]">近 30 天结算</div>
-                      <div className="font-semibold">{unknown ? "…" : `$${(sig?.usd30d ?? 0).toFixed(2)}`}</div>
-                    </div>
-                  </div>
+                  ) : (
+                    <p className="text-xs text-slate-400" data-testid={`fleet-signals-empty-${d.slug}`}>
+                      尚无调用记录——它已上线并可对话，说一句话就是第一条记录。
+                    </p>
+                  )}
                   {sig?.allowance && (
                     <div className="text-xs" data-testid={`fleet-allowance-${d.slug}`}>
                       <div className="flex justify-between text-slate-500">
@@ -436,7 +490,9 @@ export function FleetView({ focusSlug } = {}) {
                       </div>
                     </div>
                   )}
-                  <div className="flex gap-2 flex-wrap pt-0.5">
+                  {/* 操作分层（D5）：卡面只留高频的两个——暂停/恢复；其余低频管理面收进「更多」。
+                      每个按钮的 onClick / 端点 / testid 一字不改，只换容器。 */}
+                  <div className="flex gap-2 flex-wrap items-center pt-0.5">
                     <button
                       disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
                       onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
@@ -444,12 +500,19 @@ export function FleetView({ focusSlug } = {}) {
                     >
                       {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
                     </button>
-                    <button onClick={() => openPanel("config", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
-                    <button onClick={() => openPanel("usage", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
-                    {memoryLaneAvailable && <button onClick={() => openPanel("memory", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
-                    <button onClick={() => openPanel("allowance", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
-                    <button onClick={() => openPanel("embed", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
-                    <button onClick={() => openPanel("callers", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
+                    <details className="text-xs" data-testid={`fleet-more-${d.slug}`}>
+                      <summary className="cursor-pointer select-none px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-slate-500">
+                        更多管理
+                      </summary>
+                      <div className="flex gap-2 flex-wrap mt-1.5">
+                        <button onClick={() => openPanel("config", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
+                        <button onClick={() => openPanel("usage", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
+                        {memoryLaneAvailable && <button onClick={() => openPanel("memory", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
+                        <button onClick={() => openPanel("allowance", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
+                        <button onClick={() => openPanel("embed", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>
+                        <button onClick={() => openPanel("callers", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">允许清单</button>
+                      </div>
+                    </details>
                     <details className="text-[11px] text-slate-400 ml-auto self-center">
                       <summary className="cursor-pointer select-none">slug</summary>
                       <code className="block mt-1 font-mono">{d.slug}</code>

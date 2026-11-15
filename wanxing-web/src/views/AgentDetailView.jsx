@@ -4,6 +4,8 @@
 // detail and the grid can never disagree about fields. Non-chatable agents render
 // their examples read-only with an honest reason, mirroring the grid's gray state.
 import { useEffect, useState } from "react";
+import { factOf, badgeFor } from "../status-facts.js";
+import { label, isTranslated } from "../labels.js";
 
 export function AgentDetailView({ focusSlug }) {
   const [agent, setAgent] = useState(null); // entry object once found
@@ -64,8 +66,15 @@ export function AgentDetailView({ focusSlug }) {
       <div className="flex items-baseline gap-2 flex-wrap">
         <h1 className="text-xl font-semibold">{agent.name ?? agent.slug}</h1>
         <span className="text-xs text-slate-400">v{agent.version ?? "?"}</span>
+        <span
+          className={`text-xs px-1.5 py-0.5 rounded ${badgeFor(factOf({ status: agent.status, health: agent.health })).cls}`}
+          data-testid="agent-detail-status"
+          title={agent.status_as_of ? `状态取自 ${agent.status_as_of}` : undefined}
+        >
+          {badgeFor(factOf({ status: agent.status, health: agent.health })).label}
+        </span>
         {agent.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
-        {agent.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{agent.category}</span>}
+        {agent.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{label(agent.category)}</span>}
         {agent.cluster && <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">{agent.cluster.role === "default" ? "集群默认成员" : "集群可选成员"}{agent.cluster.name ? ` · ${agent.cluster.name}` : ""}</span>}
         <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid="detail-activity">
           近 7 天 {agent.turns7d ?? 0} 回合
@@ -120,6 +129,13 @@ export function AgentDetailView({ focusSlug }) {
         </section>
       )}
 
+      {(agent.examples ?? []).length === 0 && agent.chatable && (
+        <p className="text-xs text-slate-400" data-testid="detail-no-examples">
+          这个 agent 未声明示例问句——直接问一个你手上的真实问题即可开始；接口与鉴权见
+          <a className="ml-1 underline" href="#/docs">对接文档</a>。
+        </p>
+      )}
+
       {(agent.skills ?? []).length > 0 && (
         <section>
           <h2 className="font-semibold mb-2">技能</h2>
@@ -137,7 +153,13 @@ export function AgentDetailView({ focusSlug }) {
       {(agent.tags ?? []).length > 0 && (
         <section className="flex flex-wrap gap-1">
           {agent.tags.map((t) => (
-            <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{t}</span>
+            <span
+              key={t}
+              className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
+              title={isTranslated(t) ? `标签：${t}` : undefined}
+            >
+              {label(t)}
+            </span>
           ))}
         </section>
       )}

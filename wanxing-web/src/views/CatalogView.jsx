@@ -7,6 +7,8 @@
 // cluster. Error states are explicit — an unreachable catalog never renders
 // as "no agents".
 import { useEffect, useMemo, useState } from "react";
+import { factOf, badgeFor } from "../status-facts.js";
+import { label, isTranslated } from "../labels.js";
 
 const PAGE_SIZE = 12;
 
@@ -40,25 +42,105 @@ export function segmentsOf(list) {
   return segs;
 }
 
-// Instance status (close-wanxing-domain-linkage 5.1): the deployed-instance
-// view's own marker. Four states, visually distinct, and `unknown` is neutral —
-// never dressed up as online: a deployment whose status was not reported must
-// not look healthy. Exported so the mapping itself is testable.
-export const STATUS_UI = {
-  serving: { label: "运行中", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
-  idle: { label: "空闲", cls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
-  paused: { label: "已暂停", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
-  unknown: { label: "状态未知", cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
-};
-
-/** The badge for one entry; an absent/unknown status never reads as online. */
-export function statusBadgeFor(status) {
-  return STATUS_UI[status] ?? STATUS_UI.unknown;
-}
+// Instance status (close-wanxing-domain-linkage 5.1; unify-wanxing-surface-language D1/D2):
+// the marker now comes from the cross-surface fact table, so the catalog, the agent
+// detail, the fleet card and the ops board cannot disagree. Exactly one badge per
+// entry — a failing agent no longer wears an "在役"-looking chip beside its failure.
+// Exported so the mapping itself is testable.
+export const statusBadgeFor = (agent) =>
+  badgeFor(factOf({ status: agent?.status, health: agent?.health }));
 
 /** True when every entry on the page reports an unknown status (page-level staleness). */
 export function allStatusesUnknown(agents = []) {
   return agents.length > 0 && agents.every((a) => a.status === "unknown");
+}
+
+/** One catalog card. Exported so the no-examples / label rendering is testable without a fetch. */
+export function AgentCard({ agent: a }) {
+  return (
+    <div data-testid={`agent-card-${a.slug}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <a href={`#/agent/${encodeURIComponent(a.slug)}`} data-testid={`agent-detail-link-${a.slug}`} className="font-semibold hover:underline" title="查看详情">
+          {a.name ?? a.slug}
+        </a>
+        <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
+        {a.status && (
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeFor(a).cls}`}
+            data-testid={`status-badge-${a.slug}`}
+            title={a.status_as_of ? `状态取自 ${a.status_as_of}` : undefined}
+          >
+            {statusBadgeFor(a).label}
+          </span>
+        )}
+        {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
+        {a.cluster && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" data-testid={`cluster-role-${a.slug}`}>
+            {a.cluster.role === "default" ? "默认成员" : "可选成员"}
+          </span>
+        )}
+        {a.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" data-testid={`category-badge-${a.slug}`}>{label(a.category)}</span>}
+        {a.turns7d > 0 && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`activity-badge-${a.slug}`}>
+            近 7 天 {a.turns7d} 回合
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-slate-600 dark:text-slate-400 flex-1">{a.description ?? "—"}</p>
+      {(a.examples ?? []).length > 0 && (
+        <div className="flex flex-col gap-1" data-testid={`examples-${a.slug}`}>
+          {(a.examples ?? []).slice(0, 3).map((ex, i) => (
+            <a
+              key={i}
+              href={a.chatable ? `#/chat/${encodeURIComponent(a.slug)}?q=${encodeURIComponent(ex)}` : undefined}
+              className={`text-left text-xs px-2 py-1 rounded-lg border ${a.chatable ? "border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" : "border-slate-200 dark:border-slate-800 text-slate-400 cursor-default"}`}
+              title={a.chatable ? "点击开始这段对话" : "该 agent 暂未开放访客对话"}
+            >
+              试问 · {ex}
+            </a>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {(a.tags ?? []).map((t) => (
+          <span
+            key={t}
+            className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
+            title={isTranslated(t) ? `标签：${t}` : undefined}
+          >
+            {label(t)}
+          </span>
+        ))}
+      </div>
+      {/* 技能与 slug：skills 未声明时不渲染那个空列表——「（未声明）」是一个只在展开后才
+          发现的残缺。slug 本身仍可达（那是对接标识，不是技能）。unify-wanxing-surface-language D7。 */}
+      <details className="text-xs text-slate-500">
+        <summary className="cursor-pointer select-none">{(a.skills ?? []).length > 0 ? "技能与 slug" : "slug"}</summary>
+        {(a.skills ?? []).length > 0 && (
+          <ul className="mt-1 list-disc pl-4">
+            {(a.skills ?? []).map((sk, i) => (
+              <li key={i}>{typeof sk === "string" ? sk : sk?.name ?? sk?.id}</li>
+            ))}
+          </ul>
+        )}
+        <code className="block mt-1 text-slate-400 truncate" title={a.slug}>{a.slug}</code>
+      </details>
+      {a.chatable && (a.skills ?? []).length === 0 && (a.examples ?? []).length === 0 && (
+        <p className="text-xs text-slate-400" data-testid={`try-hint-${a.slug}`}>
+          对话即试用——直接问它一个你手上的真实问题。
+        </p>
+      )}
+      {a.chatable && (
+        <a
+          href={`#/chat/${encodeURIComponent(a.slug)}`}
+          data-testid={`chat-cta-${a.slug}`}
+          className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-accent text-white text-xs"
+        >
+          对话
+        </a>
+      )}
+    </div>
+  );
 }
 
 export function CatalogView() {
@@ -145,75 +227,6 @@ export function CatalogView() {
     return { featuredAgents: f, restAgents: list.filter((a) => a.featured !== true) };
   }, [doc]);
 
-  const card = (a) => (
-    <div key={a.slug} data-testid={`agent-card-${a.slug}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <a href={`#/agent/${encodeURIComponent(a.slug)}`} data-testid={`agent-detail-link-${a.slug}`} className="font-semibold hover:underline" title="查看详情">
-          {a.name ?? a.slug}
-        </a>
-        <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
-        {a.status && (
-          <span
-            className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeFor(a.status).cls}`}
-            data-testid={`status-badge-${a.slug}`}
-            title={a.status_as_of ? `状态取自 ${a.status_as_of}` : undefined}
-          >
-            {statusBadgeFor(a.status).label}
-          </span>
-        )}
-        {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
-        {a.cluster && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" data-testid={`cluster-role-${a.slug}`}>
-            {a.cluster.role === "default" ? "默认成员" : "可选成员"}
-          </span>
-        )}
-        {a.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" data-testid={`category-badge-${a.slug}`}>{a.category}</span>}
-        {a.turns7d > 0 && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`activity-badge-${a.slug}`}>
-            近 7 天 {a.turns7d} 回合
-          </span>
-        )}
-      </div>
-      <p className="text-sm text-slate-600 dark:text-slate-400 flex-1">{a.description ?? "—"}</p>
-      {(a.examples ?? []).length > 0 && (
-        <div className="flex flex-col gap-1" data-testid={`examples-${a.slug}`}>
-          {(a.examples ?? []).slice(0, 3).map((ex, i) => (
-            <a
-              key={i}
-              href={a.chatable ? `#/chat/${encodeURIComponent(a.slug)}?q=${encodeURIComponent(ex)}` : undefined}
-              className={`text-left text-xs px-2 py-1 rounded-lg border ${a.chatable ? "border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" : "border-slate-200 dark:border-slate-800 text-slate-400 cursor-default"}`}
-              title={a.chatable ? "点击开始这段对话" : "该 agent 暂未开放访客对话"}
-            >
-              试问 · {ex}
-            </a>
-          ))}
-        </div>
-      )}
-      <div className="flex flex-wrap gap-1">
-        {(a.tags ?? []).map((t) => (
-          <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">{t}</span>
-        ))}
-      </div>
-      <details className="text-xs text-slate-500">
-        <summary className="cursor-pointer select-none">技能与 slug</summary>
-        <ul className="mt-1 list-disc pl-4">
-          {(a.skills ?? []).length > 0 ? (a.skills ?? []).map((sk, i) => (
-            <li key={i}>{typeof sk === "string" ? sk : sk?.name ?? sk?.id}</li>
-          )) : <li>（未声明）</li>}
-        </ul>
-        <code className="block mt-1 text-slate-400 truncate" title={a.slug}>{a.slug}</code>
-      </details>
-      {a.chatable && (
-        <a
-          href={`#/chat/${encodeURIComponent(a.slug)}`}
-          data-testid={`chat-cta-${a.slug}`}
-          className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-accent text-white text-xs"
-        >
-          对话
-        </a>
-      )}
-    </div>
-  );
 
   // A presentation group (featured / rest) rendered as segments: flat runs
   // in a grid, each cluster under its own header. The header's count is
@@ -222,7 +235,7 @@ export function CatalogView() {
     segmentsOf(list).map((seg, i) => {
       if (seg.kind === "flat") {
         return (
-          <div key={`flat-${i}`} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-4">{seg.items.map(card)}</div>
+          <div key={`flat-${i}`} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-4">{seg.items.map((a) => <AgentCard key={a.slug} agent={a} />)}</div>
         );
       }
       const defaults = seg.items.filter((a) => a.cluster?.role === "default").length;
@@ -264,7 +277,7 @@ export function CatalogView() {
           ) : (
             <div className="mb-2 text-xs text-slate-400">尚不可整体调用——至少需要一个默认成员在役。</div>
           )}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{seg.items.map(card)}</div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{seg.items.map((a) => <AgentCard key={a.slug} agent={a} />)}</div>
         </div>
       );
     });
@@ -307,7 +320,7 @@ export function CatalogView() {
             className={`text-xs px-2.5 py-1 rounded-full border ${category === c.name ? "bg-sky-600 text-white border-transparent" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
             data-testid={`chip-${c.name}`}
           >
-            {c.name} {c.count}
+            {label(c.name)} {c.count}
           </button>
         ))}
         {cluster && (

@@ -44,6 +44,14 @@ export const EVENT_KINDS = [
   // just not yet present in that backlog window. scripts/test-fleet-observer.mjs
   // now scans the facade sources and fails if an emitted kind is missing here.
   "minted", "ask_answered", "cluster",
+  // Mediated connector identity (paas add-served-agent-connector-access): the
+  // chat face reports each turn whose scope→actor registration failed, so an
+  // operator can see "the connector call would have been refused for the wrong
+  // reason" instead of reading a 404 in a log nobody tails. Same class as the
+  // `minted` gap above: an emitted-but-unaccepted kind rejects the WHOLE batch,
+  // which is why the facade's source scan now fails the build instead of
+  // letting the spool grow.
+  "connector_identity_unregistered",
   // Mission lifecycle (add-mission-board): the facade's dispatch face emits
   // these on every state-machine transition — enumerated, not prefix-wild,
   // so the reject surface stays enumerable.
