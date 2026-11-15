@@ -11,6 +11,20 @@ import { SkeletonLines, SkeletonCards } from "../../components/Skeleton.jsx";
 
 const fmtWhen = (ms) => (ms ? new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false }) : "");
 
+// Runner lifecycle vocabulary (unify-wanxing-surface-language D4). Deliberately
+// its OWN words, not the agent status badges: this row answers "who is running
+// right now", while the badges answer "is this agent healthy". Sharing labels
+// would conflate the two.
+export const RUNNER_STATE_LABEL = {
+  serving: "在役",
+  resident: "常驻",
+  paused: "已暂停",
+  starting: "启动中",
+  draining: "退出中",
+  warm: "预热",
+  unknown: "未知",
+};
+
 export function OpsView() {
   const [board, setBoard] = useState(null);
   const [boardErr, setBoardErr] = useState(null);
@@ -273,8 +287,12 @@ export function OpsView() {
             <span className="text-2xl font-semibold">{board.agents_total ?? 0}</span>
             <span className="text-sm text-slate-500 mr-2">agents</span>
             {Object.entries(states).map(([k, v]) => (
-              <span key={k} className="text-xs px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800">
-                {k} <b>{Number(v)}</b>
+              <span
+                key={k}
+                className="text-xs px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800"
+                title={`runner 生命周期状态：${k}（与目录的 agent 状态不是同一套词汇）`}
+              >
+                {RUNNER_STATE_LABEL[k] ?? k} <b>{Number(v)}</b>
               </span>
             ))}
             {st && (
@@ -283,6 +301,12 @@ export function OpsView() {
               </span>
             )}
           </div>
+          {/* 口径脚注（D4）：板的 agents_total 是「窗口内被观测到的」，页脚状态条是「公开目录在役数」。
+              两个数字不相等是正常的，界面上不解释就等于让读者以为数据错了。 */}
+          <p className="text-[11px] text-slate-400 -mt-1" data-testid="ops-scope-note">
+            此处统计<b>窗口内被观测到</b>的 agent（{board.window ?? "24h"}）；页脚「N 个 agent 在役」是公开目录口径。
+            两者范围不同——数字不相等不是故障。悬停任一状态可读原始枚举值。
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-1.5">
               <div className="font-semibold mb-1">24h</div>
@@ -296,7 +320,7 @@ export function OpsView() {
             </div>
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 text-sm space-y-2">
               <div className="font-semibold">runners</div>
-              {!liveness && runners.length === 0 && <div className="text-slate-500">窗口内无 runner_stats</div>}
+              {!liveness && runners.length === 0 && <div className="text-slate-500">窗口内无 runner_stats——runner 尚未上报，或上报停在了窗口外。runner 一上报就会出现在这里（观测面 30s 自动刷新）。</div>}
               {liveness === null && runners.length > 0 && (
                 <div className="text-xs text-slate-500">存活判定不可用（observer 未升级）</div>
               )}
@@ -328,7 +352,7 @@ export function OpsView() {
               })}
               <div className="font-semibold pt-2">任务（24h）</div>
               {board.missions === undefined && <div className="text-slate-500">暂无数据（observer 未升级）</div>}
-              {board.missions?.length === 0 && <div className="text-slate-500">窗口内无任务</div>}
+              {board.missions?.length === 0 && <div className="text-slate-500">窗口内无任务——本窗口没有任务被提交或推进；任务由「我的任务」提交，提交后这里按 24h 窗口显示。</div>}
               {(board.missions ?? []).slice(0, 8).map((m) => (
                 <div key={m.id} className="text-xs flex gap-2 items-center">
                   <span className={`px-1.5 rounded font-mono ${m.status === "reported" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : m.status === "failed" || m.status === "aborted" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{m.status}</span>
@@ -384,8 +408,8 @@ export function OpsView() {
             </div>
           )}
         </div>
-        {board?.cells === undefined && <div className="text-slate-500">暂无数据（observer 未升级）</div>}
-        {board?.cells !== undefined && cells.length === 0 && <div className="text-slate-500">窗口内无 cell 遥测（gateway 未配置 FLEET_INGEST_URL）</div>}
+        {board?.cells === undefined && <div className="text-slate-500">此段不可用（observer 未升级到携带 cells）——升级 observer 后自动出现，无需前端改动。</div>}
+        {board?.cells !== undefined && cells.length === 0 && <div className="text-slate-500">窗口内无 cell 遥测——通常意味着 gateway 未配置 FLEET_INGEST_URL，或窗口内没有 cell 上报。</div>}
         {cells.map(([id, c]) => (
           <div key={id} className="font-mono text-xs flex flex-wrap gap-x-4 gap-y-1 items-baseline">
             <span className="text-slate-400 truncate max-w-64" title={id}>{id}</span>
