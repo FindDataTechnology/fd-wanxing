@@ -56,9 +56,15 @@ fire-and-forget 镜像写入，失败仅记日志不重试不阻塞——账本�
 3. **响应刻意不用 `{code,message,data}` 信封**：本文档与上游递交稿都按
    `{ok, usage_id, duplicate}` 三个顶层键读；facade 客户端的 `call()` 是
    `doc.data ?? doc`，两种形状都能落地，所以选契约优先。
-4. 读面：`GET /api/v1/admin/usage/mirrors?user_id=&limit=`（默认 50 / 上限 200，
-   走标准信封）。**面板 UI 还没接**——现在的可见面是 API 与运营排障，把它并进
-   用户侧用量页需要另做一次前端改动。
+4. 读面两条，视角不同、边界也不同：
+   - `GET /api/v1/admin/usage/mirrors?user_id=&limit=`——运营/排障视角，按 user_id
+     查任意人（默认 50 / 上限 200，走标准信封）。
+   - `GET /api/v1/usage/mirrors?limit=`——**本人视角**，user_id **只**取登录主体，
+     query 里的 `user_id` 一律不读、也不校验（去校验它反而会让人以为它有用）。
+     这是反越权的那条判据，单测里承重的就是它：主体 42 + `?user_id=99` ⇒ 仓储仍收到 42。
+5. **面板已接**：`frontend/src/components/user/UsageMirrorsCard.vue` 挂在用户用量页
+   （`views/user/UsageView.vue`）统计卡下方，三档形态（loading / 空 / 读失败＋重试）。
+   读失败只降级这张卡，不动页面上任何计费与配额读数——镜像终究只是展示面。
 
 **萬星侧（facade）**：`trySettle` 的 `settler === "plan"` 分支在
 `store.usageMarkSettled()` 之后调用 `mirrorPlanUsage(row)`（`services/wanxing-facade/core.js`），
@@ -80,7 +86,15 @@ throw 两种失败都不改结算、非 plan 不镜像），本机实跑 18/18 �
 这一步补的是 Go 单测用替身证不了的地方——`ON CONFLICT … RETURNING` 在冲突时到底返回
 什么，以及「读回的是首次那行」是否成立。
 
+**面板那一跳的本机读数（2026-11-17）**：`UsageMirrorsCard.spec.ts` 四臂（渲染一条镜像的
+分钟与说明、空档、读失败＋重试后恢复、缺 `items` 的坏载荷退化成空档而不是崩）**4/4 通过**；
+红证＝把组件里 `loading` 初值改成 `false`，那条「loading 档不许冒充空档」当场转红
+（1 失败 / 3 通过），复原回绿。**这一跳是本机真跑的**（vitest + jsdom + `@vue/test-utils`），
+与「Actions 被计费拦住」无关。
+
 **仍未验的**：真机端到端（上游未合入未上产）、以及 sub2api 那侧 Go 单测的**执行**
-（账号 GitHub Actions 被计费拦住，作业 `steps: []` 即失败；本机按硬规则不跑 Go 测试，
-只到 `go vet` 编译过）。
+（账号 GitHub Actions 被计费拦住，作业 `steps: []` 即失败；本机按硬规则不跑 Go 测试）。
+`go vet` 也只能算「编译过」而不能替代测试：2026-11-17 这一轮本机 vet 编译整图超过
+500s 被上限杀掉（`VET_EXIT=124`），所以那天的两包 vet **不作已验证项**。
+
 
