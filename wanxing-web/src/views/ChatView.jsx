@@ -261,7 +261,9 @@ export function ChatView({ focusSlug } = {}) {
     const ask = pendingAsk;
     if (!ask || ask.busy) return;
     setPendingAsk(null);
-    const { note } = await postAskAnswer(slug, ask.bearer, { askId: ask.askId, answers, cancelled });
+    // authFetch re-reads the console token per call and renews on 401 —
+    // a turn can outlive the id_token it started with.
+    const { note } = await postAskAnswer(slug, ask.bearer, { askId: ask.askId, answers, cancelled, fetchImpl: authFetch });
     const text = askSummaryText(ask.questions, { cancelled, answers: answers ?? [], note: note || undefined });
     setMessages((prev) => {
       const next = [...prev, { role: "ask", text, at: Date.now() }];

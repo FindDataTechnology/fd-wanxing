@@ -250,22 +250,74 @@ export async function signOut() {
 // throttling can delay the timer; the 401 path in authFetch is the backstop.
 let timer = null;
 
+// Renewal timer, and the boot arming that used to be missing (2026-11-16).
+//
+// The ONLY caller of scheduleRenewal used to be emit(), which fires on login
+// callback, cross-tab storage writes and sign-out — never on page load. So a
+// tab opened against an existing localStorage session armed nothing: the
+// id_token expired silently and the console kept painting a signed-in header
+// over an expired credential. The user's only cure was signing out and back
+// in, which is exactly the "every upgrade needs a re-login" report.
+//
+// Two halves, both required:
+//   · arm on boot for a still-valid token (scheduleRenewal below handles the
+//     future expiry);
+//   · renew IMMEDIATELY when the stored token is already expired — a timer at
+//     zero delay would do the same thing, but doing it up front means the very
+//     first paint and the first gated call see a fresh credential.
+// An id_token without a refresh grant (the ops service-token channel) is left
+// alone: nothing can renew it and it never expires.
+const tokenExpMs = (token) => {
+  try {
+    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const exp = Number(JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).exp) * 1000;
+    return Number.isFinite(exp) ? exp : 0;
+  } catch {
+    return 0; // unreadable token: not ours to schedule (opaque ops token)
+  }
+};
+
+async function armRenewalOnBoot() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token || !localStorage.getItem(REFRESH_KEY)) return;
+  const exp = tokenExpMs(token);
+  if (!exp) return;
+  if (exp <= Date.now()) {
+    // Already dead: renew now. A failure is NOT an automatic teardown — the
+    // surrounding surfaces degrade on their own 401s, and a transient /refresh
+    // (facade restart, network) must not sign the user out of a page they are
+    // reading. authFetch still tears down on a definitive 401-after-refresh.
+    await renewSession().catch(() => false);
+    return;
+  }
+  scheduleRenewal();
+}
+
 export function scheduleRenewal() {
   clearTimeout(timer);
   timer = null;
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token || !localStorage.getItem(REFRESH_KEY)) return;
-  let exp = 0;
-  try {
-    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    exp = Number(JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).exp) * 1000;
-  } catch {
-    return;
-  }
+  const exp = tokenExpMs(token);
+  if (!exp) return;
   timer = setTimeout(async () => {
     if (!(await renewSession()) && localStorage.getItem(TOKEN_KEY)) await teardownSession({ expired: true });
   }, Math.max(0, exp - Date.now() - 5 * 60_000));
+  // Do not hold the process open: in a browser this is inert, in node (tests,
+  // any future SSR/pre-render) an armed hour-long timer would keep the event
+  // loop alive and stall the run. The timer still fires if the process is
+  // otherwise busy; it simply stops being a reason to stay alive.
+  timer?.unref?.();
 }
+
+// Arm at module load (side effect, next to the `storage` subscription above):
+// the SPA is a single entry point, so every route gets the boot arming without
+// a component having to remember. Fire-and-forget; failures are silent here.
+void armRenewalOnBoot();
+
+// Test seam: the boot arming runs once at import. Tests that need to observe
+// the expired-token path call this directly rather than re-importing.
+export { armRenewalOnBoot };
 
 // Credentialed fetch for every console/fleet call: bearer from storage, and
 // on 401 one refresh-and-retry before giving up. A failed renewal tears the

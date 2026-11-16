@@ -7,7 +7,7 @@ import { installBrowserGlobals, resetStorages } from "./helpers.mjs";
 
 installBrowserGlobals();
 
-const { authState, subscribeAuth, setOpsToken, renewSession, teardownSession, scheduleRenewal, authFetch, EMBED_AUTH_MESSAGE } = await import("../src/auth.js");
+const { authState, subscribeAuth, setOpsToken, renewSession, teardownSession, scheduleRenewal, authFetch, EMBED_AUTH_MESSAGE, armRenewalOnBoot } = await import("../src/auth.js");
 
 // b64url helper to mint JWT-shaped tokens for renewal tests.
 const jwtWithExp = (expSec) => {
@@ -127,4 +127,83 @@ test("authFetch: 401 without a refresh grant passes through untouched (ops chann
 
 test("embed handshake vocabulary stays stable (postMessage contract)", () => {
   assert.equal(EMBED_AUTH_MESSAGE, "wx-embed-auth");
+});
+
+// ── Boot arming (2026-11-16) ────────────────────────────────────────────────
+//
+// The regression this pins: scheduleRenewal() was reachable only through
+// emit(), so a tab opened against an existing session armed NOTHING and the
+// id_token expired in silence — the user had to sign out and back in, and read
+// it as "every upgrade needs a re-login".
+
+// The load-time side effect itself (not just the exported function): seed an
+// expired session, import the module FRESH in a child process, and assert it
+// refreshed without anyone calling anything. This is the half the mutation
+// check found untested — deleting `void armRenewalOnBoot()` left a green suite.
+test("module load arms renewal by itself (the path that was missing)", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const script = `
+    globalThis.__wxTestGlobals = true;
+    const m = new Map();
+    const st = { getItem: k => m.has(k) ? m.get(k) : null, setItem: (k,v) => m.set(k,String(v)), removeItem: k => m.delete(k), clear: () => m.clear(), key: i => [...m.keys()][i] ?? null, get length(){return m.size} };
+    globalThis.localStorage = st;
+    globalThis.sessionStorage = { ...st, getItem: () => null, setItem: () => {}, removeItem: () => {} };
+    globalThis.window = globalThis;
+    globalThis.location = { origin: "https://t.local", href: "https://t.local/", search: "" };
+    globalThis.addEventListener = () => {};
+    const jwt = (e) => "h." + Buffer.from(JSON.stringify({exp:e})).toString("base64url") + ".s";
+    st.setItem("wanxing-console-token", jwt(Math.floor(Date.now()/1000) - 60));
+    st.setItem("wanxing-console-refresh", "r0");
+    let refreshed = 0;
+    globalThis.fetch = async (u) => {
+      if (String(u).endsWith("/auth/refresh")) { refreshed++; return { ok: true, json: async () => ({ id_token: jwt(Math.floor(Date.now()/1000)+3600), refresh_token: "r1" }) }; }
+      return { ok: true, json: async () => ({}) };
+    };
+    await import(${JSON.stringify(new URL("../src/auth.js", import.meta.url).href)});
+    await new Promise(r => setTimeout(r, 30));
+    process.stdout.write(String(refreshed) + ":" + (st.getItem("wanxing-console-refresh") || ""));
+  `;
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+  assert.equal(out, "1:r1", "import alone must renew an expired session and persist the rotated pair");
+});
+
+test("boot arming: an already-expired token renews immediately, not eventually", async () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) - 60));
+  localStorage.setItem("wanxing-console-refresh", "r");
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    if (url.endsWith("/auth/refresh")) return { ok: true, json: async () => ({ id_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), refresh_token: "r2" }) };
+    return { status: 200, json: async () => ({}) };
+  };
+  await armRenewalOnBoot();
+  assert.equal(calls.length, 1, "one refresh grant, fired at once");
+  assert.ok(calls[0].endsWith("/auth/refresh"));
+  assert.equal(localStorage.getItem("wanxing-console-refresh"), "r2", "rotated pair persisted");
+});
+
+test("boot arming: a still-valid token arms the timer and makes no call", async () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) + 3600));
+  localStorage.setItem("wanxing-console-refresh", "r");
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return { status: 200, json: async () => ({}) }; };
+  await armRenewalOnBoot();
+  assert.deepEqual(calls, [], "nothing to renew yet");
+});
+
+test("boot arming: no refresh grant (ops service token) is left alone", async () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) - 60));
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return { status: 200, json: async () => ({}) }; };
+  await armRenewalOnBoot();
+  assert.deepEqual(calls, [], "an unrefreshable token is not ours to renew");
+});
+
+test("boot arming: a failed refresh does not tear the session down", async () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) - 60));
+  localStorage.setItem("wanxing-console-refresh", "r");
+  globalThis.fetch = async () => ({ ok: false, status: 502, json: async () => ({ error: "facade restarting" }) });
+  await armRenewalOnBoot();
+  assert.equal(localStorage.getItem("wanxing-console-token") !== null, true, "session survives a transient failure");
+  assert.equal(authState().notice, "", "and is not marked expired");
 });

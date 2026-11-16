@@ -36,7 +36,7 @@
 // outcome. No click, no page action — host context and foreign-origin
 // messages can never trigger one.
 import { useEffect, useRef, useState } from "react";
-import { EMBED_AUTH_MESSAGE, prepareLogin } from "../auth.js";
+import { EMBED_AUTH_MESSAGE, authFetch, prepareLogin } from "../auth.js";
 import { anonClear, credClear, credGet, credSet, EmbedAuthError, refreshCred, resolveBearer } from "../embed-auth.js";
 import { AskCard } from "../components/AskCard.jsx";
 import {
@@ -285,7 +285,9 @@ export function EmbedView({ focusSlug } = {}) {
     if (!ask) return;
     pendingAskRef.current = null;
     setPendingAsk(null);
-    const { note } = await postAskAnswer(slug, ask.bearer, { askId: ask.askId, answers, cancelled });
+    // authFetch re-reads the console token per call and renews on 401 —
+    // a turn can outlive the id_token it started with.
+    const { note } = await postAskAnswer(slug, ask.bearer, { askId: ask.askId, answers, cancelled, fetchImpl: authFetch });
     const text = askSummaryText(ask.questions, { cancelled, answers: answers ?? [], note: note || undefined });
     setMessages((prev) => {
       const next = [...prev, { role: "ask", text, at: Date.now() }];

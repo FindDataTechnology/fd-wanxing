@@ -181,9 +181,17 @@ export async function parseTurnStream(body, { onAsk, onText } = {}) {
 // Answers ride the side route under the turn's own credential; the route is
 // metered by the turn, never by this POST. A refusal is reported as a note on
 // the transcript line so the card can converge to its resolved state.
-export async function postAskAnswer(slug, bearer, { askId, answers, cancelled } = {}) {
+//
+// This module stays import-free (ChatView and the embed widget both load it,
+// and auth.js pulls in the whole identity store) — so the caller injects the
+// transport. Pass `authFetch` from auth.js to get silent renewal on a 401;
+// omitting it keeps the plain fetch, which is what the own-key lane wants.
+// 2026-11-16: the route used to spend whatever bearer the caller captured at
+// turn start, so a turn outliving its id_token got a note instead of a
+// renewal — the answer was silently lost.
+export async function postAskAnswer(slug, bearer, { askId, answers, cancelled, fetchImpl = fetch } = {}) {
   try {
-    const r = await fetch(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/ask-answer`, {
+    const r = await fetchImpl(`/api/wanxing/v1/chat/${encodeURIComponent(slug)}/ask-answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
       body: JSON.stringify(cancelled ? { askId, cancelled: true } : { askId, answers }),
