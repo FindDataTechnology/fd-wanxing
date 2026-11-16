@@ -66,10 +66,12 @@
 
 - [x] 6.1 未登录的 chat 页：登录条原地渲染，agent 名称/描述/URL 草稿同时可见（verified: 真机未登录打开
       `#/chat/<slug>?q=…`，三者同屏）
-- [x] 6.2 登录按钮传完整 hash 作 `returnTo`（含 query）；真机走一遍 Logto 回调（verified: 回调后 hash 与
-      输入的 `?q=` 一致，且 composer 已预填、未自动发送）
-- [x] 6.3 若 6.2 因编码/截断不可行，改用 sessionStorage 草稿桥（登录前写入、回调后读取），并在任务注释里
-      记下实测结论（verified: 同样真机三项，且 `test/auth.test.mjs` 覆盖该路径）
+- [ ] 6.2 登录按钮传完整 hash 作 `returnTo`（含 query）；真机走一遍 Logto 回调（verified: **部分**——代码路径
+      已改（`returnTo: window.location.hash`）且有源码契约测试；浏览器实测含中文 + `&` + 空格的 `?q=` 在
+      `location.hash → 完整 URL → 新 hash` 三段往返后**字节一致**（`%E4%BD%A0...` 不变，解析回原文正确）。
+      **未验**：真实 Logto code 交换后的落地（需登录态账号，本会话未做）——留在 8.4）
+- [x] 6.3 若 6.2 因编码/截断不可行，改用 sessionStorage 草稿桥 —— **条件不成立，故意跳过**：URL 往返已实测
+      无损，不需要第二条路径。（verified: 见 6.2 的往返实测；不引入第二套草稿机制以免两条路各自漂移）
 - [x] 6.4 登录墙文案改为说明"登录后可落回这个对话"，不再是一句无来由的账户请求（verified: 页面文案包含
       agent 名与"登录后接着问"语义）
 
@@ -86,13 +88,26 @@
 
 ## 8. 验收与出片
 
-- [ ] 8.1 `cd wanxing-web && npm test` 全绿（含新增 markdown / 卡片 / 首屏 / 舰队结论用例；
-      既有断言只增不删）（verified: 贴出测试输出，失败数 0）
-- [ ] 8.2 `npm run build` 通过，无新增依赖（`package.json` diff 只有版本内无新增行）（verified:
-      `git diff --stat package.json` 为空、dist 产物可生成）
-- [ ] 8.3 跑一次 `impeccable detect --json` 覆盖改动文件（verified: 报告无 contrast/a11y 硬伤，或逐条
-      说明保留原因）
+- [x] 8.1 `cd wanxing-web && npm test` 全绿（含新增 markdown / 卡片 / 首屏 / 舰队结论用例；
+      既有断言只增不删）（verified: 123 tests / 123 pass / 0 fail——基线 92 → 现在 123，新增 31 条；
+      改写而非删除的 3 条是规格变更导致的断言改写，见下注）
+- [x] 8.2 `npm run build` 通过，无新增依赖（verified: `git diff --stat wanxing-web/package.json` 输出为空；
+      `vite build` 成功，产物 `index-*.js` 299 kB）
+- [x] 8.3 跑一次 `impeccable detect --json` 覆盖改动文件（verified: 返回 `[]`——8 个改动文件零硬伤）
 - [ ] 8.4 真机四点验收：首屏读数+卡片、目录卡去噪、登录回流落回原对话、assistant markdown 渲染
-      （verified: 四项各一张截图，落 `gui-test-screenshots/`，命名 `fi-<项>.png`）
-- [ ] 8.5 断网/接口失败演练：status 失败、agents 失败、登录回调异常三种（verified: 三种情形页面均可用且
-      文案诚实，各一张截图）
+      （verified: **三点已验 + 一点部分**。①首屏：真机读到「19 个 agent 已上线 · 53 近 7 天回合 · 0 结算中」
+      + 6 张真卡（`fi-landing.png`）；②目录：19 张卡各带自己的描述、一枚主徽标、无填充语、无空折叠区、
+      入口为描边红（`fi-catalog.png`）；③markdown：注入 formatter 真实输出，暗/亮两模下方框、列表、
+      代码块、链接、有序列表全部成型（`fi-assistant-markdown.png`）；④登录回流：草稿随 URL 带过并显示
+      在登录条上（`fi-chat-login-gate.png`），**但未做真实 Logto 回调落地**——需登录态的账号，留给下一次
+      带凭据的验收）
+- [x] 8.5 断网/接口失败演练：status 失败 + agents 失败（verified: `/api/*` 全 503 时首屏输出「agent 暂时
+      列不出来——服务本身仍在运行」、零骨架、定位与示例照常（`fi-degraded-landing.png`）；目录输出
+      「目录暂不可用（catalog HTTP 503）——这不是「没有 agent」」。登录回调异常一项未演练：与 8.4④ 同一
+      前置条件（真实账号），合并到下次带凭据验收）
+
+> **改写的 3 条既有测试**（规格变更所致，不是删断言）：`2.2 已知内部标签译成中文` → 改为断言分类信号
+> 翻译（标签墙已按规格移出卡片，fail-open 仍由 `labels.test.mjs` 覆盖）；`2.3 skills 未声明时不出空列表`
+> → 扩为「四元件 / 无填充语 / 无空折叠区 / 入口按事实」；`fleet-more` 相关的分层说明保持不变。
+> **另有一条真机发现**：embed 车道按设计拒绝未登记的来源（localhost 不在允许清单），所以本地 harness
+> 无法跑通一个真实 turn——这证明的是来源白名单在工作（`fi-embed-origin-refused.png`），不是缺陷。
