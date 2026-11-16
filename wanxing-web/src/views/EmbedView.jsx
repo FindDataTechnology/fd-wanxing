@@ -218,7 +218,35 @@ export function EmbedView({ focusSlug } = {}) {
       }
     };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+
+    // 握手不能由宿主的 init 触发（spread-line-copilot 真机 2026-11-16 抓到的死锁）：
+    // loader 只在收到 ready 后才发 init，而这里原本只在收到 init 后才发 ready ——
+    // 双方互等，ready 永不到达，于是 hostOriginRef 始终为 null、identity-request
+    // 被第 238 行整条跳过，宿主身份（识律的 Logto 票）从未递到 widget。
+    // 正确做法：iframe 在本源内加载完成就主动报 ready。ready 不含任何凭据，
+    // 提前发出不削弱可信来源判定——那条仍由「首条宿主消息的 ev.source 必须是
+    // window.parent」把关，这里只是把「我活着」先说出去。
+    //
+    // 只对本源内的 parent 宣告；跨源嵌入时 parent 的 origin 取不到，仍等宿主先说话。
+    const announce = () => {
+      if (window.parent === window) return;
+      // 能拿到 referrer 就定向投递（浏览器不发跨源 origin 回执，所以这只是
+      // 缩小投递面，不是信任判定）；拿不到才退 "*"，loader 侧仍会校验
+      // ev.origin === 自己的源 && ev.source === frame.contentWindow。
+      const target = referrerOrigin() ?? "*";
+      try {
+        window.parent.postMessage({ type: "wx-copilot-ready", slug }, target);
+      } catch {
+        /* host gone */
+      }
+    };
+    announce();
+    const t = setTimeout(announce, 600); // parent 监听器可能晚于本帧就绪
+
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("message", onMessage);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
