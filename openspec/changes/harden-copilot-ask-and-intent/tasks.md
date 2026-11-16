@@ -7,7 +7,7 @@
 
 ## 2. 问询卡规则（pack prompt 侧，主工作量）
 
-- [ ] 2.1 把 D2 的三条判据 + 反面清单写成一份可复用的规则段（verified: 规则文本成型，四条线可引用同一份）
+- [x] 2.1 把 D2 的三条判据 + 反面清单写成一份可复用的规则段（verified: 规则文本成型，四条线可引用同一份）
 - [ ] 2.2 识律副驾 agent 接入该规则段（verified: 真机问一个离散选择问题，`[data-testid^="wx-ask"]` 计数 > 0）
 - [ ] 2.3 柏讯专家 agent 接入（verified: 同上）
 - [ ] 2.4 谦面专家 agent 接入（verified: 同上）
@@ -16,17 +16,17 @@
 
 ## 3. 宿主意图规则（pack prompt 侧）
 
-- [ ] 3.1 把 D3 的两条铁律（动词白名单由宿主动态声明；提议走 envelope 不退化成自然语言）写进规则段（verified: 规则文本成型）
+- [x] 3.1 把 D3 的两条铁律（动词白名单由宿主动态声明；提议走 envelope 不退化成自然语言）写进规则段（verified: 规则文本成型）
 - [ ] 3.2 识律副驾接入，真机说「带我去用量页面」（verified: 产出 `intent:navigate` 问询，点选后控制台真的跳到对应路由）
 - [ ] 3.3 未声明动词的反面验证（verified: 要求一个宿主没声明的动作时，agent 只口头说明，不出可执行选项）
 - [ ] 3.4 不动作验证（verified: 产出提议但不点选，宿主 URL 不变）
 
 ## 4. 宿主侧补齐
 
-- [ ] 4.1 官网 `fd-official-web`：声明 `navigate`（站内锚点），实测跳转（verified: 点选后 URL 锚点变化）
-- [ ] 4.2 柏讯 `fd-wire` 控制台：补 `context()` 递当前页面/数据集（verified: widget 上下文栏显示宿主递的值，且首轮文本带标记前缀）
-- [ ] 4.3 柏讯控制台的 `intents` 收敛到控制台路由白名单（verified: 非法路由被宿主拒绝并回 `ok:false`）
-- [ ] 4.4 谦面 `facet/web`：按产品面补 `context()`（verified: 同 4.2）
+- [ ] 4.1 官网 `fd-official-web`：声明 `navigate`（站内锚点）——**代码已写并构建通过**，真机跳转待上游恢复后实测（verified: 待验）
+- [ ] 4.2 柏讯 `fd-wire` 控制台：补 `context()` 递当前页面/数据集——**代码已写、tsc+build 通过**，真机待验（verified: 待验）
+- [x] 4.3 柏讯控制台的 `intents` 收敛到路由白名单（verified: `src/copilotIntents.test.ts` 4 条用例通过——已知路由放行、回落成 home 的未知路由拒绝、站外 URL 与 javascript: 拒绝；wire 全量 71 文件 1105 用例绿）
+- [ ] 4.4 谦面 `facet/web`：补 `context()`——**代码已写**（pathname 路由，popstate 时 push），真机待验（verified: 待验）
 
 ## 5. 上下文递送语义
 
