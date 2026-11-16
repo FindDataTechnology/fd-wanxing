@@ -339,13 +339,19 @@ export { armRenewalOnBoot };
 // session down (the login card takes over); the ops service token — no
 // refresh grant — passes 401s through untouched.
 export async function authFetch(url, options = {}) {
-  const call = () =>
-    fetch(url, {
-      ...options,
-      headers: { ...(options.headers ?? {}), Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` },
-    });
+  // 调用方已显式给 Authorization 时**不要覆盖**（harden-copilot-ask-and-intent 真机
+  // 抓到的缺陷）：问答路回合用的是「发起该 ask 时的凭据」——嵌入车道里那是宿主递来的
+  // 票，而本函数会拿 localStorage 里的控制台 token 顶掉它，于是 ask-answer 用另一个
+  // 身份发出去，服务端按 visitor.sub 找不到这笔 ask，回 404 ASK_UNKNOWN，
+  // 用户看到「该问询已被回答或已失效」。
+  const callerProvidedAuth = Boolean(options.headers && options.headers.Authorization);
+  const call = () => {
+    const base = { ...(options.headers ?? {}) };
+    if (!callerProvidedAuth) base.Authorization = `Bearer ${localStorage.getItem(TOKEN_KEY)}`;
+    return fetch(url, { ...options, headers: base });
+  };
   let r = await call();
-  if (r.status === 401 && localStorage.getItem(REFRESH_KEY) && localStorage.getItem(TOKEN_KEY)) {
+  if (r.status === 401 && !callerProvidedAuth && localStorage.getItem(REFRESH_KEY) && localStorage.getItem(TOKEN_KEY)) {
     if (!(await renewSession())) {
       await teardownSession({ expired: true });
     } else {

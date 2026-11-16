@@ -238,3 +238,26 @@ test("signedIn: an opaque ops token has no exp and reads as signed in", () => {
   assert.equal(s.signedIn, true, "a token with no exp never expires by design");
   assert.equal(s.tokenExpired, false);
 });
+
+// harden-copilot-ask-and-intent 真机缺陷：authFetch 曾无条件覆盖 Authorization，
+// 把嵌入车道「发起 ask 时的宿主票」顶成控制台 token，服务端按 visitor.sub 找不到
+// 那笔 ask → 404 ASK_UNKNOWN → 用户看到「该问询已被回答或已失效」。
+test("authFetch 不覆盖调用方显式提供的 Authorization（嵌入车道 ask-answer）", async () => {
+  localStorage.setItem("wanxing-console-token", "CONSOLE_TOKEN");
+  const seen = [];
+  globalThis.fetch = async (_url, opts = {}) => {
+    seen.push(opts.headers?.Authorization ?? null);
+    return { status: 200, ok: true, json: async () => ({ accepted: true }) };
+  };
+
+  // 显式给了宿主票：必须原样保留
+  await authFetch("/api/wanxing/v1/chat/a/ask-answer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer HOST_TICKET" },
+  });
+  assert.equal(seen.at(-1), "Bearer HOST_TICKET", "显式 Authorization 不得被覆盖");
+
+  // 没给：照旧注入控制台 token
+  await authFetch("/api/wanxing/v1/console/deployments");
+  assert.equal(seen.at(-1), "Bearer CONSOLE_TOKEN", "未显式提供时仍注入控制台 token");
+});
