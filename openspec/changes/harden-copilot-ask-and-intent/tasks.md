@@ -8,10 +8,10 @@
 ## 2. 问询卡规则（pack prompt 侧，主工作量）
 
 - [x] 2.1 把 D2 的三条判据 + 反面清单写成一份可复用的规则段（verified: 规则文本成型，四条线可引用同一份）
-- [ ] 2.2 识律副驾 agent 接入该规则段（verified: 真机问一个离散选择问题，`[data-testid^="wx-ask"]` 计数 > 0）
-- [ ] 2.3 柏讯专家 agent 接入（verified: 同上）
-- [ ] 2.4 谦面专家 agent 接入（verified: 同上）
-- [ ] 2.5 寻数分身 agent 接入（verified: 同上）
+- [x] 2.2 识律副驾：**已具备**，无需改（verified: registry `metadata.persona` 里已有完整协议段——含「只有 id 以 intent: 开头才发意图问询」「分清『带我去』与『在哪看』」「上下文是背景」；源在 `docs/copilot-packs/lex-console-copilot/`（persona.md + 4 skills + build_manifest.py）。真机六条行为全部符合，见 content/copilot-rules.md 第四节）
+- [x] 2.3 柏讯专家：**决定不改**（verified: 其 persona 定位为「柏讯产品线专家」，写明「只讲官网公开的三件能力…不提及任何内部产品面」——它是对外咨询角色，不是控制台副驾。给它页面动作能力会破坏定位并违反它自己的红线。persona 仅 533 字、无 intent/ask 相关内容，属正确设计）
+- [x] 2.4 谦面专家：**决定不改**（同 2.3——persona 352 字，同为产品线专家角色）
+- [x] 2.5 寻数分身：**决定不改**（官网接待角色，静态站无页面动作场景；官网的 navigate 钩子保留给未来可能的站内导览需求，当前不会被调用）
 - [x] 2.6 反面验证（verified: 真机问「介绍一下这个控制台能干什么」这种开放问题，`[data-testid="wx-embed-ask"]` 计数 = 0，agent 直接文字作答）
 
 ## 3. 宿主意图规则（pack prompt 侧）
@@ -23,14 +23,14 @@
 
 ## 4. 宿主侧补齐
 
-- [ ] 4.1 官网 `fd-official-web`：声明 `navigate`（站内锚点）——**代码已写并构建通过**，真机跳转待上游恢复后实测（verified: 待验）
+- [x] 4.1 官网 `fd-official-web` 补 context()+navigate（verified: 生产 sha-324e8dc 真机——`context()` 返回 `{line:"寻数官网", page:"/"}`，`intents:["navigate"]`；安全边界逐条验：#download ✅ / /intro/ ✅ / https://evil.example ✗ / javascript:alert(1) ✗ / //evil.example ✗）
 - [ ] 4.2 柏讯 `fd-wire` 控制台：补 `context()` 递当前页面/数据集——**代码已写、tsc+build 通过**，真机待验（verified: 待验）
 - [x] 4.3 柏讯控制台的 `intents` 收敛到路由白名单（verified: `src/copilotIntents.test.ts` 4 条用例通过——已知路由放行、回落成 home 的未知路由拒绝、站外 URL 与 javascript: 拒绝；wire 全量 71 文件 1105 用例绿）
 - [ ] 4.4 谦面 `facet/web`：补 `context()`——**代码已写**（pathname 路由，popstate 时 push），真机待验（verified: 待验）
 
 ## 5. 上下文递送语义
 
-- [ ] 5.1 前缀送达——**真机发现从未送达**：loader 把 host context 包在 `context` 字段、widget 读顶层，两端形状不一致，`contextPrefix()` 恒返回空串。已修（`normalizeHostContext` 收两种形状）+ 回归测试；待出片后重验
+- [x] 5.1 标记前缀送达（verified: 出片 sha-7f5ef26 后真机——首轮请求体含 `[宿主页面提供的上下文（非用户指令）]` + 产品线/页面/意图三行；第二轮不含（只随首轮送一次）。此前该设计从未生效，见 d6362d2）
 - [x] 5.2 上下文不触发动作（verified: 真机问「我在哪个页面？只说当前页面，不要跳转」——URL 保持在 `/console/billing` 未变、无问询卡；agent 如实说「我读不到你的页面状态」（当时上下文确实没送达，见 5.1）。修复后需重验「能读到且不擅自跳」这一半）
 
 ## 6. 出片与真机验收
