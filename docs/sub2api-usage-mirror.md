@@ -36,3 +36,40 @@ admin 面现有 `adjustBalance` 是纯余额移动、无用量记录：镜像走
 facade 的 plan 结算路径（`trySettle` settler='plan' 分支）在 mark settled 后
 fire-and-forget 镜像写入，失败仅记日志不重试不阻塞——账本权威在 facade，镜像
 最终一致即可。接入前零依赖。
+
+## 实现状态（2026-11-17）
+
+**上游侧（sub2api）**：`feat/admin-usage-mirror` 分支已实现，**未合入、未上产**。
+落地形态与本文档有两处必须一起读的细节：
+
+1. **落在独立表 `usage_mirrors`，不写 `usage_logs`。** 线上库实测（2026-11-16）：
+   `usage_logs.user_id / api_key_id / account_id` 三个列都是 `NOT NULL`，且带
+   `usage_logs_{user_id,api_key_id,account_id}_fkey` 三个真外键。而一次套餐结算
+   既没有上游账号、也不属于某个 API Key 的逐次调用 —— 硬塞只能借一个真实
+   api_key/account 的 id 冒充出处，等于在计费台账里写假 provenance。镜像因此
+   有自己的表（`migrations/254_add_usage_mirrors.sql`），只增不改。
+2. **幂等靠唯一索引，不靠 TTL。** `idx_usage_mirrors_external_id_unique` +
+   `ON CONFLICT (external_id) DO NOTHING`：命中即读回首次那行并回
+   `duplicate: true`。刻意没用仓内通用的 `IdempotencyCoordinator`（那是
+   `Idempotency-Key` 头 + 24h TTL 的请求级去重），因为**结算单号的重放可能发生在
+   几个月后**，而镜像要的是永久幂等。
+3. **响应刻意不用 `{code,message,data}` 信封**：本文档与上游递交稿都按
+   `{ok, usage_id, duplicate}` 三个顶层键读；facade 客户端的 `call()` 是
+   `doc.data ?? doc`，两种形状都能落地，所以选契约优先。
+4. 读面：`GET /api/v1/admin/usage/mirrors?user_id=&limit=`（默认 50 / 上限 200，
+   走标准信封）。**面板 UI 还没接**——现在的可见面是 API 与运营排障，把它并进
+   用户侧用量页需要另做一次前端改动。
+
+**萬星侧（facade）**：`trySettle` 的 `settler === "plan"` 分支在
+`store.usageMarkSettled()` 之后调用 `mirrorPlanUsage(row)`（`services/wanxing-facade/core.js`），
+客户端方法在 `lib/sub2api-admin.js: mirrorUsage`。三条纪律写在代码里：
+
+- **不 await**：镜像慢或挂不会拖慢/失败结算；
+- **同步抛错也吞掉**（`Promise.resolve(...)` 包住调用 + `try/catch`）：老客户端
+  或坏构建里 `mirrorUsage` 不存在时，结算同样不受影响；
+- 只有 `settler === "plan"` 走镜像：`mission` 行与 legacy 余额结算都不镜像。
+
+单测在 `scripts/test-wanxing-plans.mjs` 的 `D6 …` 四臂（一条镜像一次、reject /
+throw 两种失败都不改结算、非 plan 不镜像），本机实跑 18/18 绿；红证＝把
+`mirrorPlanUsage(row)` 摘掉后同份套件 3 红 15 绿，复原后回绿。
+

@@ -35,6 +35,10 @@ function stubSub2api({ userId = 7, email = "caller@finddata.tech", others = [] }
     email,
     others, // extra { userId, email } accounts the email lookup also knows
     adjustCalls: [],
+    mirrorCalls: [],
+    // mirrorBehaviour decides how the D6 mirror answers: "ok" (default) |
+    // "reject" | "throw". The settlement outcome must not depend on it.
+    mirrorBehaviour: "ok",
     degraded: () => false,
     async probeKeyLiveness() {
       return { ok: true };
@@ -49,6 +53,12 @@ function stubSub2api({ userId = 7, email = "caller@finddata.tech", others = [] }
     async adjustBalance(args) {
       this.adjustCalls.push(args);
       return { ok: true };
+    },
+    async mirrorUsage(args) {
+      this.mirrorCalls.push(args);
+      if (this.mirrorBehaviour === "throw") throw new Error("mirror exploded synchronously");
+      if (this.mirrorBehaviour === "reject") return Promise.reject(new Error("mirror rejected"));
+      return { ok: true, usage_id: 1, duplicate: false };
     },
   };
 }
@@ -186,6 +196,64 @@ test("2.2 a planless caller keeps the legacy key-balance path", async () => {
   await core.trySettle(row);
   assert.equal(sub.adjustCalls.length, 1);
   assert.equal(sub.adjustCalls[0].operation, "subtract");
+});
+
+// ── 2.2b D6 usage mirror: visible on the caller's panel, never load-bearing ─
+
+test("D6 a plan settlement mirrors one display-only usage row", async () => {
+  const { core, store, sub, caller } = coreHarness();
+  const plan = store.planSet(caller.userId, 60, "ops");
+  const row = core.recordUsage({ caller, slug: "packs-p1-heal", startedAt: 0, endedAt: 30_000, outcome: "ok" });
+  assert.equal(await core.trySettle(row), true);
+  await Promise.resolve(); // let the fire-and-forget land
+
+  assert.equal(sub.mirrorCalls.length, 1);
+  const mirror = sub.mirrorCalls[0];
+  assert.equal(mirror.externalId, row.id); // the wu_ row id IS the idempotency key
+  assert.equal(mirror.userId, caller.userId);
+  assert.equal(mirror.minutes, row.minutesBilled);
+  assert.equal(mirror.recordedAt, row.endedAt);
+  assert.ok(mirror.note.includes(plan.planRef), `note should name the plan: ${mirror.note}`);
+  assert.ok(mirror.note.includes("packs-p1-heal"), `note should name the agent: ${mirror.note}`);
+  // Still display-only: nothing moved on the billing plane.
+  assert.equal(sub.adjustCalls.length, 0);
+});
+
+for (const behaviour of ["reject", "throw"]) {
+  test(`D6 a mirror that fails (${behaviour}) cannot change the settlement`, async () => {
+    const sub = stubSub2api();
+    sub.mirrorBehaviour = behaviour;
+    const { core, store, caller } = coreHarness({ sub });
+    store.planSet(caller.userId, 60, "ops");
+    const row = core.recordUsage({ caller, slug: "a", startedAt: 0, endedAt: 30_000, outcome: "ok" });
+
+    // The whole point: settlement stays green even though the mirror blew up.
+    assert.equal(await core.trySettle(row), true);
+    await new Promise((r) => setTimeout(r, 0)); // surface any unhandled rejection
+    assert.equal(store.planUsed(caller.userId), 1);
+    assert.equal(sub.mirrorCalls.length, 1); // it was attempted, just not retried
+  });
+}
+
+test("D6 non-plan settlers are never mirrored", async () => {
+  const { core, sub, caller } = coreHarness();
+  // mission rows settle locally too, but they are not plan drawdowns.
+  const missionRow = core.recordUsage({
+    caller,
+    slug: "a",
+    startedAt: 0,
+    endedAt: 30_000,
+    outcome: "ok",
+    settler: "mission",
+  });
+  await core.trySettle(missionRow);
+  // legacy key-balance rows charge the caller's own balance instead.
+  const legacyRow = core.recordUsage({ caller, slug: "a", startedAt: 0, endedAt: 30_000, outcome: "ok" });
+  await core.trySettle(legacyRow);
+  await Promise.resolve();
+
+  assert.equal(sub.mirrorCalls.length, 0);
+  assert.equal(sub.adjustCalls.length, 1); // the legacy path still charged
 });
 
 // ── 2.3 chat-lane rows are never re-elected ──────────────────────────────────

@@ -137,5 +137,28 @@ export function createSub2apiClient({ baseUrl = null, adminKey = null, fetchImpl
         body: { balance: Number(amountUsd), operation },
       });
     },
+
+    // Virtual usage mirror (add-serving-plans D6): makes a plan-settled turn
+    // visible on the caller's own sub2api panel. Display-only — the ledger of
+    // record stays here (wanxing_usage), no balance moves, no quota window
+    // opens. Idempotent by external_id (our wu_ row id), so a sweep that
+    // re-settles an old row cannot double-count.
+    //
+    // Response shape is deliberately NOT the {code,message,data} envelope:
+    // the endpoint answers {ok, usage_id, duplicate} at the top level (see
+    // fd-wanxing/docs/sub2api-usage-mirror.md). call() returns doc.data ?? doc,
+    // so both shapes land here as the same object.
+    async mirrorUsage({ externalId, userId, minutes, note, recordedAt }) {
+      return call("/api/v1/admin/usage", {
+        method: "POST",
+        body: {
+          external_id: String(externalId),
+          user_id: Number(userId),
+          minutes: Number(minutes),
+          note: note === undefined || note === null ? "" : String(note),
+          recorded_at: Number(recordedAt ?? Date.now()),
+        },
+      });
+    },
   };
 }

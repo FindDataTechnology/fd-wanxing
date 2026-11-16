@@ -409,6 +409,41 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     }
   }
 
+  // Virtual usage mirror (add-serving-plans D6): a plan-settled turn is
+  // invisible on the caller's own sub2api panel — nothing was charged there,
+  // the drawdown happened against our plan ledger. Mirror it as a
+  // display-only row so the customer can see what the plan consumed.
+  //
+  // Discipline (the contract's own words): fire-and-forget. The ledger of
+  // record is wanxing_usage; a mirror failure must never fail, delay, or
+  // retry the settlement — retrying would re-open the suspension ladder for
+  // a cosmetic write. external_id is our wu_ row id, so a sweep that
+  // re-marks an old row cannot double-count: the sub2api side is unique on it.
+  function mirrorPlanUsage(row) {
+    if (!sub2api || typeof sub2api.mirrorUsage !== "function") return; // no mirror capability
+    if (typeof sub2api.degraded === "function" && sub2api.degraded()) return; // no admin credential
+    const minutes = Number(row.minutesBilled ?? row.minutes_billed ?? 0);
+    if (!(minutes > 0)) return; // waived / zero-duration rows have nothing to mirror
+    const planRef = row.planRef ?? row.plan_ref ?? "(unknown)";
+    const agent = row.agentSlug ?? row.agent_slug ?? "-";
+    const warn = (e) => console.warn(`[wanxing:mirror] usage mirror failed for ${row.id}: ${e?.message || e}`);
+    try {
+      // Promise.resolve wraps both shapes: a client that rejects and one that
+      // throws synchronously (older stub / broken build) must both end here.
+      Promise.resolve(
+        sub2api.mirrorUsage({
+          externalId: row.id,
+          userId: row.callerId ?? row.caller_id,
+          minutes,
+          note: `wanxing plan ${planRef} (agent ${agent})`,
+          recordedAt: row.endedAt ?? row.ended_at ?? Date.now(),
+        }),
+      ).catch(warn);
+    } catch (e) {
+      warn(e);
+    }
+  }
+
   async function trySettle(row) {
     // A waived row has nothing to move. `recordUsage` bills only `outcome ===
     // "ok"`, so an error/cancelled row carries minutes_billed 0 — and asking
@@ -430,6 +465,9 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     // settle + sweep racing) is a no-op UPDATE.
     if (row.settler === "plan") {
       store.usageMarkSettled(row.id);
+      // add-serving-plans D6: make the drawdown visible on the caller's own
+      // panel. Not awaited on purpose — see mirrorPlanUsage.
+      mirrorPlanUsage(row);
       return true;
     }
     // Mission dispatch rows (add-mission-definitions D4) settle locally for
