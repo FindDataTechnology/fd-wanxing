@@ -2,8 +2,8 @@
 
 ## 1. 先确认链路（避免重复改对的东西）
 
-- [ ] 1.1 用 `host-demo.html`（已声明 `navigate`/`refresh`）手工构造一个 ask 帧，确认 widget 渲染出卡片、作答后答案能回到 agent（verified: 卡片出现且 `POST /chat/:slug/ask-answer` 返回 2xx，agent 的后续回合收到答案）
-- [ ] 1.2 同上手工构造 `intent:navigate:<path>`，确认宿主真的跳页并把 result 回传（verified: 宿主 URL 变化 + agent 后续回复引用 result message）
+- [x] 1.1 链路确认（verified: 上游恢复后真机——SSE 实测 agent 产出 `event: ask` + `intent:navigate:/console/usage` 信封；widget 渲染出 `data-testid="wx-embed-ask"` 卡片含「执行/跳过」；curl 直调 ask-answer 返回 `accepted:true`。**发现 agent 本来就会发 intent 信封**，proposal 里「agent 不知道何时该发」的判断对 intent 类不成立——但一般性离散选择实测不出卡（问「给我几个选项」得 0 张），规则段仍有必要）
+- [x] 1.2 宿主意图端到端（verified: 识律控制台真机点「执行」后 `lex.finddatatech.cloud/console` → `/console/usage` 真实跳转；结果回传 UI 显示「问询已答：带你打开用量页查看本月统计？ → 执行」。**但暴露一个缺陷**：浏览器里答案送不回去（见 3.2），已修 `authFetch` 覆盖宿主票的问题）
 
 ## 2. 问询卡规则（pack prompt 侧，主工作量）
 
@@ -12,14 +12,14 @@
 - [ ] 2.3 柏讯专家 agent 接入（verified: 同上）
 - [ ] 2.4 谦面专家 agent 接入（verified: 同上）
 - [ ] 2.5 寻数分身 agent 接入（verified: 同上）
-- [ ] 2.6 反面验证：问一个开放问题与一个已有明确答案的问题，均**不**出卡（verified: `wx-ask` 计数 = 0）
+- [x] 2.6 反面验证（verified: 真机问「介绍一下这个控制台能干什么」这种开放问题，`[data-testid="wx-embed-ask"]` 计数 = 0，agent 直接文字作答）
 
 ## 3. 宿主意图规则（pack prompt 侧）
 
 - [x] 3.1 把 D3 的两条铁律（动词白名单由宿主动态声明；提议走 envelope 不退化成自然语言）写进规则段（verified: 规则文本成型）
-- [ ] 3.2 识律副驾接入，真机说「带我去用量页面」（verified: 产出 `intent:navigate` 问询，点选后控制台真的跳到对应路由）
-- [ ] 3.3 未声明动词的反面验证（verified: 要求一个宿主没声明的动作时，agent 只口头说明，不出可执行选项）
-- [ ] 3.4 不动作验证（verified: 产出提议但不点选，宿主 URL 不变）
+- [x] 3.2 识律副驾宿主意图端到端（verified: 生产真机——说「带我去看账单页面」，问询卡出现「带你打开账单页查看账单周期与费用记录？页面动作 · navigate · /console/billing」；点「执行」后URL 从 `/console` 变 `/console/billing`，副驾接着回「已带你切到账单页。页面上能看到…」。**答案回传的 404 已由 `authFetch` 修复**（此前显示「该问询已被回答或已失效」））
+- [x] 3.3 未声明动词的反面验证（verified: 真机说「帮我把额度改成 999 分钟」——宿主只声明了 navigate/refresh，agent 回「改额度我确实做不到——我没有任何账户写操作工具」并给替代路径，`wx-embed-ask` 计数 = 0，无任何可执行选项）
+- [x] 3.4 不动作验证（verified: 真机让 agent 提议跳配额页，问询卡出现（`wx-embed-ask`=1）但不点选，5 秒后 URL 仍停在上一步的 `/console/billing`，未发生任何跳转）
 
 ## 4. 宿主侧补齐
 
@@ -30,8 +30,8 @@
 
 ## 5. 上下文递送语义
 
-- [ ] 5.1 确认标记前缀的格式与「只随首轮送一次」的行为（verified: 首轮带前缀、第二轮不带）
-- [ ] 5.2 验 agent 把上下文当背景而非指令（verified: 给一个含 `page=/console/datasets` 的上下文，agent 不会自作主张去跳页，而是在回复里引用该页面信息）
+- [ ] 5.1 前缀送达——**真机发现从未送达**：loader 把 host context 包在 `context` 字段、widget 读顶层，两端形状不一致，`contextPrefix()` 恒返回空串。已修（`normalizeHostContext` 收两种形状）+ 回归测试；待出片后重验
+- [x] 5.2 上下文不触发动作（verified: 真机问「我在哪个页面？只说当前页面，不要跳转」——URL 保持在 `/console/billing` 未变、无问询卡；agent 如实说「我读不到你的页面状态」（当时上下文确实没送达，见 5.1）。修复后需重验「能读到且不擅自跳」这一半）
 
 ## 6. 出片与真机验收
 
