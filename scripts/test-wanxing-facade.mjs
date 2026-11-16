@@ -2477,4 +2477,67 @@ test("4.1 the body-less-timeout hint names the self-loop POSSIBILITY, not a verd
   assert.match(msg, /self-loop/);
   assert.match(msg, /proxy_pass_url/, "must name the field an operator has to fix");
   assert.doesNotMatch(msg, /\bis\b.*(?:wrong|the cause)/i, "must not assert it is the cause");
+// ── D6 usage mirror: the client speaks the documented contract over real HTTP ─
+//
+// The unit arms in test-wanxing-plans.mjs prove the kernel calls the mirror at
+// the right moment and survives its failure. This arm proves the *wire*: the
+// request body carries exactly the five documented keys, the admin credential
+// rides x-api-key, and a duplicate reply is surfaced (not swallowed) so the
+// caller can log it. No cluster involved — the upstream is a local express app
+// implementing fd-wanxing/docs/sub2api-usage-mirror.md.
+test("D6 mirror client: request body matches the contract; duplicate is surfaced", async () => {
+  const { createSub2apiClient } = await import("../services/wanxing-facade/lib/sub2api-admin.js");
+  const app = express();
+  app.use(express.json());
+  const seen = [];
+  app.post("/api/v1/admin/usage", (req, res) => {
+    seen.push({ body: req.body, key: req.get("x-api-key") });
+    // First call inserts; every later call is a replay of the same external_id.
+    const duplicate = seen.length > 1;
+    res.json({ ok: true, usage_id: 41, duplicate });
+  });
+  const server = http.createServer(app);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+
+  try {
+    const client = createSub2apiClient({
+      baseUrl: `http://127.0.0.1:${server.address().port}`,
+      adminKey: "admin-test",
+    });
+
+    const first = await client.mirrorUsage({
+      externalId: "wu_deadbeef",
+      userId: 7,
+      minutes: 3,
+      note: "wanxing plan wp_ab12cd (agent packs-p1-heal)",
+      recordedAt: 1760000000000,
+    });
+    assert.deepEqual(first, { ok: true, usage_id: 41, duplicate: false });
+
+    const second = await client.mirrorUsage({
+      externalId: "wu_deadbeef",
+      userId: 7,
+      minutes: 3,
+    });
+    assert.equal(second.duplicate, true, "a replay must be visible to the caller");
+
+    // Exactly the documented keys — a renamed field would silently 400 upstream.
+    assert.deepEqual(Object.keys(seen[0].body).sort(), [
+      "external_id",
+      "minutes",
+      "note",
+      "recorded_at",
+      "user_id",
+    ]);
+    assert.equal(seen[0].body.external_id, "wu_deadbeef");
+    assert.equal(seen[0].body.user_id, 7);
+    assert.equal(seen[0].body.minutes, 3);
+    assert.equal(seen[0].body.recorded_at, 1760000000000);
+    assert.equal(seen[0].key, "admin-test", "admin credential rides x-api-key");
+    // recorded_at defaults to "now" when the caller omits it, never to 0.
+    assert.ok(Number.isFinite(seen[1].body.recorded_at) && seen[1].body.recorded_at > 1e12);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });
