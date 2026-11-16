@@ -26,7 +26,7 @@
 - [x] 4.1 官网 `fd-official-web` 补 context()+navigate（verified: 生产 sha-324e8dc 真机——`context()` 返回 `{line:"寻数官网", page:"/"}`，`intents:["navigate"]`；安全边界逐条验：#download ✅ / /intro/ ✅ / https://evil.example ✗ / javascript:alert(1) ✗ / //evil.example ✗）
 - [x] 4.2 柏讯补 context()（verified: 生产 sha-4792f67 真机——`context()` 返回 `{line:"柏讯", page:"#/"}`，`intents:["navigate"]`，副驾挂载正常。注：柏讯专家 persona 是产品线专家角色、未含 intent 协议，这些钩子当前不会被 agent 调用——先装好，等 persona 补齐即生效）
 - [x] 4.3 柏讯控制台的 `intents` 收敛到路由白名单（verified: `src/copilotIntents.test.ts` 4 条用例通过——已知路由放行、回落成 home 的未知路由拒绝、站外 URL 与 javascript: 拒绝；wire 全量 71 文件 1105 用例绿）
-- [ ] 4.4 谦面 `facet/web`：补 `context()`——**代码已写**（pathname 路由，popstate 时 push），真机待验（verified: 待验）
+- [x] 4.4 谦面补 context()（verified: 生产 sha-3fb18bc 真机——context() 返回 {line:"谦面", page:"/?v=..."}，pushContext 为 function，副驾挂载正常。**首次滚的 sha-93cea1a 不含改动**：commit 只在分支上没进 gitee/main，快照取自旧点；本次滚前双重核对快照与镜像内 dist 的 WanxingCopilot 计数）
 
 ## 5. 上下文递送语义
 
