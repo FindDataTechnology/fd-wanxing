@@ -14,7 +14,7 @@ import { authFetch } from "../../auth.js";
 import { DeployWizard } from "./DeployWizard.jsx";
 import { Drawer } from "../../components/Drawer.jsx";
 import { useToast } from "../../components/Toast.jsx";
-import { channelLabel, sourceBadge, HealthBadge } from "./shared.jsx";
+import { channelLabel, sourceBadge, HealthBadge, healthCauseLabel } from "./shared.jsx";
 import { factOf, badgeFor } from "../../status-facts.js";
 
 // A deployment's single status fact (unify-wanxing-surface-language D1/D2).
@@ -39,6 +39,39 @@ export function fleetFactOf({ paused, sig, summaryLanded, health, healthSectionU
 // flag-stalled-rhythm-agents 3.2: a stalled agent outranks a merely silent one
 // — "should have run and did not" is actionable, "nobody called it" is not.
 const healthRank = (h) => (h?.health === "failing" ? 0 : h?.health === "degraded" ? 1 : h?.stalled === true ? 2 : 3);
+
+/**
+ * One sentence a deployer reads before any figure (wanxing-first-impression D5).
+ * It is a SENTENCE-IZATION of facts the card already holds — never a new
+ * judgement. Every branch therefore agrees with the badge beside it; a
+ * disagreement means something bypassed the fact table.
+ */
+export function fleetConclusion({ fact, sig, health, summaryLanded }) {
+  const turns = Number(sig?.turns7d);
+  const cause = health?.lastErrorKind ? healthCauseLabel(health.lastErrorKind) : "";
+  switch (fact) {
+    case "paused":
+      return "已暂停，访客不可用";
+    case "unknown":
+      return "状态未知（快照不可得）";
+    case "failing":
+      return `持续失败${cause ? ` · ${cause}` : ""}`;
+    case "degraded":
+      return `部分失败${cause ? ` · ${cause}` : ""}`;
+    case "stalled": {
+      const n = Number(health?.expected_turns);
+      return Number.isFinite(n) ? `该跑没跑 · 按声明应有 ${n} 次` : "该跑没跑";
+    }
+    case "unused":
+      return summaryLanded ? "尚无调用" : "尚无调用记录";
+    case "live":
+      return summaryLanded && Number.isFinite(turns) && turns > 0
+        ? `近 7 天 ${turns} 回合，无健康告警`
+        : "在役";
+    default:
+      return null; // no conclusion beats a confident wrong one
+  }
+}
 
 export function FleetView({ focusSlug } = {}) {
   const toast = useToast();
@@ -433,6 +466,7 @@ export function FleetView({ focusSlug } = {}) {
               // count); when it applies it REPLACES the plain fact badge so the card
               // still carries exactly one status marker.
               const useHealthChip = Boolean(hh) && ["failing", "degraded", "stalled"].includes(fact);
+              const conclusion = fleetConclusion({ fact, sig, health: hh, summaryLanded: summary !== null });
               // 整组全零 = 新部署/没人用，而不是「坏了」；单格为 0 仍照常显示。
               const allZero =
                 !unknown &&
@@ -454,6 +488,15 @@ export function FleetView({ focusSlug } = {}) {
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">{d.visibility === "private" ? "私有" : "公开"}</span>
                     <a href={`#/chat/${encodeURIComponent(d.slug)}`} className="ml-auto text-xs text-accent dark:text-accent hover:underline">对话 →</a>
                   </div>
+                  {/* The card opens with a readable conclusion (7.1): a deployer
+                      scanning the grid learns each deployment's situation before
+                      reading a single figure. Derived from the same facts as the
+                      badge above — never a second judgement. */}
+                  {conclusion && (
+                    <p className="text-xs text-slate-600 dark:text-slate-300" data-testid={`fleet-conclusion-${d.slug}`}>
+                      {conclusion}
+                    </p>
+                  )}
                   {/* 三格：占位（未落地）→ 一句空态（已落地且全零）→ 正常数值。
                       全零的判据是整组，不是单格：有回合但零分钟这种真事实必须照常显示 0。 */}
                   {unknown || !allZero ? (
@@ -490,23 +533,23 @@ export function FleetView({ focusSlug } = {}) {
                       </div>
                     </div>
                   )}
-                  {/* 操作分层（D5）：卡面只留高频的两个——暂停/恢复；其余低频管理面收进「更多」。
-                      每个按钮的 onClick / 端点 / testid 一字不改，只换容器。 */}
+                  {/* 操作分层（D5）：卡面留两个高频的——配置 / 记录；其余低频管理面
+                      与暂停/恢复收进「更多」。每个按钮的 onClick / 端点 / testid 一字不改，只换容器。 */}
                   <div className="flex gap-2 flex-wrap items-center pt-0.5">
-                    <button
-                      disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
-                      onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
-                      className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs disabled:opacity-40"
-                    >
-                      {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
-                    </button>
+                    <button onClick={() => openPanel("config", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
+                    <button onClick={() => openPanel("usage", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
                     <details className="text-xs" data-testid={`fleet-more-${d.slug}`}>
                       <summary className="cursor-pointer select-none px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-slate-500">
                         更多管理
                       </summary>
                       <div className="flex gap-2 flex-wrap mt-1.5">
-                        <button onClick={() => openPanel("config", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">配置</button>
-                        <button onClick={() => openPanel("usage", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记录</button>
+                        <button
+                          disabled={busy === `${d.slug}:${d.paused ? "resume" : "pause"}`}
+                          onClick={() => manage(d.slug, d.paused ? "resume" : "pause")}
+                          className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs disabled:opacity-40"
+                        >
+                          {busy === `${d.slug}:${d.paused ? "resume" : "pause"}` ? "…" : d.paused ? "恢复" : "暂停"}
+                        </button>
                         {memoryLaneAvailable && <button onClick={() => openPanel("memory", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">记忆</button>}
                         <button onClick={() => openPanel("allowance", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">额度</button>
                         <button onClick={() => openPanel("embed", d.slug)} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-xs">嵌入</button>

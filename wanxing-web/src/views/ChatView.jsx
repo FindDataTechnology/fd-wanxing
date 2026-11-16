@@ -17,6 +17,7 @@ import {
   ownKeyOf,
   parseTurnStream,
   postAskAnswer,
+  renderMarkdown,
   saveHistory,
   setOwnKey as persistOwnKey,
 } from "../chat-core.js";
@@ -281,11 +282,23 @@ export function ChatView({ focusSlug } = {}) {
       </div>
 
       {!auth.token ? (
-        <div className="max-w-sm mx-auto mt-10 space-y-3 text-center">
-          <p className="text-sm text-slate-500">登录萬星后即可与 agent 对话（每日有免费额度）。</p>
+        /* The gate renders IN PLACE (wanxing-first-impression 6.1): agent name,
+           description and any draft question are above it, so a visitor sees
+           whom they are about to talk to before signing in. The login carries
+           the FULL hash — including ?q= — back through the identity round trip
+           (6.2), so the draft survives and lands in the composer. */
+        <div className="max-w-md mx-auto mt-10 space-y-3 text-center" data-testid="chat-login-gate">
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            登录后即可与 {agentName} 对话（每日有免费额度），登录会回到这个对话继续。
+          </p>
+          {input && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 px-3 py-2 text-left text-xs text-slate-500 dark:text-slate-400" data-testid="chat-login-draft">
+              你的问题会带过去：<span className="text-slate-700 dark:text-slate-200">{input}</span>
+            </div>
+          )}
           <button
             onClick={() =>
-              loginLogto({ gate: "chat", returnTo: `#/chat/${encodeURIComponent(slug)}` }).catch((e) =>
+              loginLogto({ gate: "chat", returnTo: window.location.hash || `#/chat/${encodeURIComponent(slug)}` }).catch((e) =>
                 alert(String(e?.message || e)),
               )
             }
@@ -377,10 +390,18 @@ export function ChatView({ focusSlug } = {}) {
                       ? "max-w-[85%] rounded-lg border border-amber-400 text-amber-700 dark:text-amber-300 px-3 py-2"
                       : m.role === "system"
                         ? "mx-auto text-xs text-slate-400"
-                        : "mr-auto max-w-[85%] rounded-lg bg-slate-100 dark:bg-slate-800 px-3 py-2 whitespace-pre-wrap"
+                        : "mr-auto max-w-[85%] rounded-lg bg-slate-100 dark:bg-slate-800 px-3 py-2 wx-md"
                 }
               >
-                {m.text}
+                {/* Assistant text goes through the shared controlled formatter
+                    (wanxing-first-impression 2.4); visitor text stays literal.
+                    renderMarkdown escapes everything outside its white-list, so
+                    the HTML it returns is the only HTML this bubble carries. */}
+                {m.role === "assistant" ? (
+                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
+                ) : (
+                  m.text
+                )}
               </div>
             ))}
             <div ref={bottomRef} />

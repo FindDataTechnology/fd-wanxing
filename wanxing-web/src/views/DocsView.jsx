@@ -37,7 +37,7 @@ export function DocsView() {
         <h2 className="font-semibold mb-2">三行快速开始</h2>
         <ol className="list-decimal pl-5 space-y-1 text-slate-600 dark:text-slate-400">
           <li>在 <a className="underline" href="https://token.finddatatech.cloud" target="_blank" rel="noreferrer">token.finddatatech.cloud</a> 自铸一个调用键（sk-…）。</li>
-          <li>在<a className="underline" href="#/catalog">目录</a>挑一个 agent，复制其 slug（卡片上可直接复制）。</li>
+          <li>在<a className="underline" href="#/catalog">目录</a>挑一个 agent，进它的详情页复制 slug（卡片上一个点击就到）。</li>
           <li>用下方示例发第一条 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">message/send</code>——收到的就是回执。</li>
         </ol>
       </section>
@@ -100,6 +100,17 @@ export function DocsView() {
           <li><b>聚合</b>：<code className="px-1 rounded bg-slate-100 dark:bg-slate-800">metadata.aggregation</code> = <code>all</code>（缺省，各成员各一节）/ <code>first</code>（最先成功者）/ <code>summary</code>（声明序首个成功默认成员多跑一回合综合）。</li>
           <li><b>计费</b>：每个成员回合按直调口径逐个计费（失败/跳过成员免计）；<code>summary</code> 额外多一个回合。集群单位本身不另计费。</li>
           <li>应答的 <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">metadata.cluster</code> 携各成员状态（ok / error / skipped 及原因、分钟数、summaryBy）。</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">计费口径</h2>
+        <ul className="list-disc pl-5 space-y-1 text-slate-600 dark:text-slate-400">
+          <li><b>API 车道（A2A）</b>：按回合时长计费，分钟向上取整 × 档位单价，回合结束即时结算到你的调用键。</li>
+          <li><b>对话 / 嵌入车道</b>：访客免费——平台补贴基线内不计费，超出后用主人池或自带调用键。</li>
+          <li><b>失败回合</b>：不计费（仍记账，对账可查）。费率不在本页发明——以
+            <a className="underline" href="https://token.finddatatech.cloud" target="_blank" rel="noreferrer">计费面板</a>
+            的实际结算为准，或联系运营询价。</li>
         </ul>
       </section>
 

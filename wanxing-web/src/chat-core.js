@@ -220,6 +220,119 @@ export function askSummaryText(questions, outcome = {}) {
   return `问询已答：${rows.join("；") || "（空）"}${outcome.note ? `\n${outcome.note}` : ""}`;
 }
 
+// ── Assistant text: one controlled markdown formatter (wanxing-first-impression) ──
+//
+// Both shells render assistant text through THIS function, so one agent never
+// looks like two products (spec: "the two conversation surfaces share one
+// rendering contract").
+//
+// Why hand-rolled instead of `marked`: the subset is seven constructs, and a
+// white-list renderer that can only ever emit those tags is a smaller security
+// surface than an external parser plus a sanitizer (which itself needs a
+// config that's easy to get wrong). Everything outside the subset is escaped
+// plain text — raw HTML in a reply is never interpreted.
+//
+// Allowed output: <p> <br> <ul>/<ol>/<li> <pre><code> <code> <strong> <h4>
+//                 <a href> <hr>. Nothing else. Add a tag → add a test.
+const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+
+// ponytail: only http(s)/mailto links become anchors; anything else stays
+// literal text. If a scheme is ever needed (tel:, magnet:), add it here AND in
+// the injection test.
+const safeHref = (raw) => {
+  const url = String(raw).trim().replace(/&amp;/g, "&");
+  return /^(https?:\/\/|mailto:)/i.test(url) ? url : null;
+};
+
+function inline(raw) {
+  // Escape first, then look for constructs in the escaped text — an injected
+  // tag has already become inert before any pattern runs.
+  const parts = escapeHtml(raw).split(/(`[^`\n]+`)/);
+  return parts
+    .map((p, i) => {
+      if (i % 2 === 1) return `<code>${p.slice(1, -1)}</code>`;
+      let out = p.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (whole, label, href) => {
+        const u = safeHref(href);
+        return u ? `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${label}</a>` : whole;
+      });
+      return out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    })
+    .join("");
+}
+
+const FENCE_RE = /^\s{0,3}(```|~~~)/;
+const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*)$/;
+const HR_RE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+const UL_RE = /^\s*[-*+]\s+(.*)$/;
+const OL_RE = /^\s*\d{1,9}[.)]\s+(.*)$/;
+
+export function renderMarkdown(text) {
+  if (typeof text !== "string" || !text) return "";
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let para = [];
+  let i = 0;
+  const flushPara = () => {
+    if (para.length) {
+      out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+      para = [];
+    }
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (FENCE_RE.test(line)) {
+      flushPara();
+      i += 1;
+      const body = [];
+      // An unterminated fence runs to the end and still renders as escaped
+      // code — a truncated stream must not leak unparsed markup.
+      while (i < lines.length && !FENCE_RE.test(lines[i])) body.push(lines[i++]);
+      if (i < lines.length) i += 1; // closing fence
+      out.push(`<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+    if (!line.trim()) {
+      flushPara();
+      i += 1;
+      continue;
+    }
+    const h = HEADING_RE.exec(line);
+    if (h) {
+      flushPara();
+      out.push(`<h4>${inline(h[2])}</h4>`);
+      i += 1;
+      continue;
+    }
+    if (HR_RE.test(line)) {
+      flushPara();
+      out.push("<hr>");
+      i += 1;
+      continue;
+    }
+    const ordered = OL_RE.test(line) && !UL_RE.test(line);
+    if (UL_RE.test(line) || ordered) {
+      flushPara();
+      const re = ordered ? OL_RE : UL_RE;
+      const items = [];
+      // ponytail: flat lists only — nesting is not in the subset. Upgrade path:
+      // track leading-space depth and emit nested <ul> if agents start using it.
+      while (i < lines.length && re.test(lines[i]) && (ordered ? !UL_RE.test(lines[i]) : true)) {
+        items.push(`<li>${inline(re.exec(lines[i])[1])}</li>`);
+        i += 1;
+      }
+      out.push(ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    para.push(line);
+    i += 1;
+  }
+  flushPara();
+  return out.join("");
+}
+
 // A turn's conversation context: the marked prefix the agent sees for host
 // page facts (data, NOT an instruction). Wording is unchanged from the embed
 // lane's shipped form — the tests and the agent's prompt both key on it.

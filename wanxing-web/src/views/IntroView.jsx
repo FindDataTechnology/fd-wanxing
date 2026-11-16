@@ -1,35 +1,84 @@
-// The landing intro: static and Chinese-first. Value hero on top, then the
-// caller quick facts (the A2A sample shared with the docs view). No live
-// data — catalog and fleet state belong to the catalog and console views.
+// The landing intro: live readouts first, then real agents, then the story.
+//
+// wanxing-first-impression: the old landing opened with three self-describing
+// feature cards and a pricing table while the site's only live numbers sat in
+// the footer at 12px — an inverted hierarchy for a product whose identity is a
+// machine that is running. Now the first thing a visitor sees is how many
+// agents are serving and how much work they did this week, immediately
+// followed by cards they can actually click into. Pricing and the about
+// statement move below; the caller-facing caliber lives in the docs view.
+//
+// Live dependency is bounded to one endpoint (the same curated public status
+// the footer reads) plus one catalog read for the cards. Both fail to a
+// sentence, never to a skeleton, an error banner, or a blank page.
+import { useEffect, useState } from "react";
 import { A2aSample } from "../components/A2aSample.jsx";
+import { usePublicStatus, statusReadouts } from "../components/StatusStrip.jsx";
+import { AgentCard } from "./CatalogView.jsx";
 
-const FEATURES = [
-  {
-    title: "服务目录",
-    body: "浏览已上线的公开 Agent 服务：名称、说明、版本与标签，分页加载、页内检索。",
-  },
-  {
-    title: "A2A 调用",
-    body: "原生 A2A（JSON-RPC 2.0 over HTTP）端点，Bearer 调用键鉴权；幂等键重放窗内不双跑、不双计。",
-  },
-  {
-    title: "计量与计费",
-    body: "按时长计费、分钟向上取整，回合结束即时结算；失败回合不计费（仍记账），余额不足即拒付。",
-  },
-];
+const LANDING_CARDS = 6;
+
+function LandingReadouts() {
+  const data = usePublicStatus();
+  const rows = statusReadouts(data);
+  // Not loaded yet renders nothing (no skeleton): the row is decoration until
+  // there is something true to put in it.
+  if (!rows.length) return null;
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-8 gap-y-3" data-testid="landing-readouts">
+      {rows.map((r) => (
+        <div key={r.label} className="flex items-baseline gap-1.5">
+          <span className="font-mono text-2xl font-semibold tabular-nums">{r.value}</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">{r.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LandingAgents() {
+  const [doc, setDoc] = useState(null); // null = loading/not attempted; false = failed
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/wanxing/v1/agents?page_size=${LANDING_CARDS}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => { if (live) setDoc(d); })
+      .catch(() => { if (live) setDoc(false); });
+    return () => { live = false; };
+  }, []);
+
+  if (doc === false) {
+    return (
+      <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="landing-agents-down">
+        agent 暂时列不出来——服务本身仍在运行，<a className="underline" href="#/catalog" >稍后到目录看看</a>。
+      </p>
+    );
+  }
+  const agents = (doc?.agents ?? []).slice(0, LANDING_CARDS);
+  if (!agents.length) return null; // still loading, or genuinely empty: no fake cards
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="landing-agents">
+      {agents.map((a) => <AgentCard key={a.slug} agent={a} />)}
+    </div>
+  );
+}
 
 export function IntroView() {
   return (
     <div className="space-y-10 text-sm leading-relaxed">
-      <section className="py-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Agent 服务的对外运行与服务平台</h1>
-        <p className="mt-3 text-slate-600 dark:text-slate-400">部署 · 驻留 · 门面 · 计费与机群观测</p>
-        <div className="mt-6 flex gap-3">
+      <section className="space-y-6 py-6">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">Agent 服务的对外运行与服务平台</h1>
+          <p className="text-slate-600 dark:text-slate-400">部署 · 驻留 · 门面 · 计费与机群观测</p>
+        </div>
+        <LandingReadouts />
+        <LandingAgents />
+        <div className="flex gap-3">
           <a
             href="#/catalog"
-            className="px-4 py-2 rounded-md bg-slate-900 text-white text-sm transition-colors hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
+            className="px-4 py-2 rounded-md bg-accent text-white text-sm transition-colors hover:bg-accent-strong"
           >
-            浏览目录
+            浏览全部
           </a>
           <a
             href="#/docs"
@@ -40,14 +89,10 @@ export function IntroView() {
         </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-3">
-        {FEATURES.map((f) => (
-          <div key={f.title} className="rounded-lg border border-slate-200 dark:border-slate-800 p-4">
-            <h2 className="font-semibold mb-1.5">{f.title}</h2>
-            <p className="text-slate-600 dark:text-slate-400">{f.body}</p>
-          </div>
-        ))}
-      </section>
+      {/* The three self-describing feature cards are gone (proposal ①): every
+          sentence in them was a claim, while the site holds measured numbers.
+          The story that remains is the one a visitor needs — how a call flows
+          and what it costs — not an inventory of the product's own virtues. */}
 
       <section>
         <h2 className="font-semibold mb-2">工作原理</h2>
@@ -55,6 +100,16 @@ export function IntroView() {
           <p>调用方 → 萬星门面（A2A API + 幂等键）→ runner → agent 回合</p>
           <p className="mt-1">门面侧计量记账，按调用者账户结算</p>
         </div>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">开始调用</h2>
+        <A2aSample />
+        <p className="mt-2 text-slate-500">
+          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">agentSlug</code> 取自
+          <a className="underline" href="#/catalog">目录</a>；鉴权、幂等与错误码的完整说明见
+          <a className="underline" href="#/docs">对接文档</a>。
+        </p>
       </section>
 
       <section>
@@ -102,16 +157,6 @@ export function IntroView() {
         </p>
         <p className="mt-2 text-slate-600 dark:text-slate-400">
           运营方：寻数科技（FindData）。问题与合作：见页脚联系方式。
-        </p>
-      </section>
-
-      <section>
-        <h2 className="font-semibold mb-2">开始调用</h2>
-        <A2aSample />
-        <p className="mt-2 text-slate-500">
-          <code className="px-1 rounded bg-slate-100 dark:bg-slate-800">agentSlug</code> 取自
-          <a className="underline" href="#/catalog">目录</a>；鉴权、幂等与错误码的完整说明见
-          <a className="underline" href="#/docs">对接文档</a>。
         </p>
       </section>
     </div>

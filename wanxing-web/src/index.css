@@ -29,3 +29,54 @@
 body {
   @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased;
 }
+
+/* ── Assistant bubble typography (wanxing-first-impression 2.5) ─────────────
+   Scope for the shared markdown formatter's output (chat-core.js is the only
+   producer, so this list is the complete set of tags it can emit). Kept in CSS
+   rather than utility classes per node because the formatter returns an HTML
+   string — one rule block beats sprinkling classes through a parser.
+   Contrast: every color here pairs with the bubble's own background
+   (slate-100 / slate-800) at ≥4.5:1. */
+.wx-md > :first-child {
+  margin-top: 0;
+}
+.wx-md > :last-child {
+  margin-bottom: 0;
+}
+.wx-md p {
+  @apply my-1.5;
+}
+.wx-md h4 {
+  @apply mt-3 mb-1 text-[13px] font-semibold;
+}
+.wx-md ul,
+.wx-md ol {
+  @apply my-1.5 pl-5 space-y-0.5;
+}
+.wx-md ul {
+  @apply list-disc;
+}
+.wx-md ol {
+  @apply list-decimal;
+}
+.wx-md li > p {
+  @apply my-0;
+}
+.wx-md code {
+  @apply rounded px-1 py-0.5 font-mono text-[12px] bg-slate-200 text-slate-800 dark:bg-slate-700 dark:text-slate-100;
+}
+.wx-md pre {
+  @apply my-2 overflow-x-auto rounded-lg px-2.5 py-2 bg-slate-200 dark:bg-slate-900;
+}
+.wx-md pre code {
+  @apply block bg-transparent p-0 text-[12px] leading-relaxed whitespace-pre;
+}
+.wx-md a {
+  @apply underline underline-offset-2 text-slate-800 dark:text-slate-100 hover:text-accent-strong dark:hover:text-accent;
+}
+.wx-md hr {
+  @apply my-3 border-slate-300 dark:border-slate-700;
+}
+.wx-md strong {
+  @apply font-semibold;
+}

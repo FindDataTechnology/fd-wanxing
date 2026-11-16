@@ -49,6 +49,7 @@ import {
   parseIntent,
   parseTurnStream,
   postAskAnswer,
+  renderMarkdown,
   saveHistory,
   setOwnKey as persistOwnKey,
 } from "../chat-core.js";
@@ -613,10 +614,16 @@ export function EmbedView({ focusSlug } = {}) {
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 ${bubbleClass(m.role, dark)}`}
+              className={`max-w-[85%] rounded-lg px-3 py-2 ${m.role === "assistant" ? "wx-md" : "whitespace-pre-wrap"} ${bubbleClass(m.role, dark)}`}
               style={m.role === "user" ? { background: accent } : undefined}
             >
-              {m.text}
+              {/* Same controlled formatter as #/chat (2.4) — one surface's
+                  answer must never look different in the other. */}
+              {m.role === "assistant" ? (
+                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
+              ) : (
+                m.text
+              )}
             </div>
           </div>
         ))}

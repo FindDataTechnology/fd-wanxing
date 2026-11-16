@@ -8,7 +8,7 @@
 // as "no agents".
 import { useEffect, useMemo, useState } from "react";
 import { factOf, badgeFor } from "../status-facts.js";
-import { label, isTranslated } from "../labels.js";
+import { label } from "../labels.js";
 
 const PAGE_SIZE = 12;
 
@@ -55,8 +55,25 @@ export function allStatusesUnknown(agents = []) {
   return agents.length > 0 && agents.every((a) => a.status === "unknown");
 }
 
-/** One catalog card. Exported so the no-examples / label rendering is testable without a fetch. */
+/**
+ * One catalog card. Exported so the no-examples / label rendering is testable without a fetch.
+ *
+ * Four elements at most (wanxing-first-impression): the name line, ONE primary
+ * status fact, at most one curation signal, one entry action. Everything else
+ * the card used to carry (chatability chip, cluster chip, activity chip, tag
+ * wall, slug fold, filler sentence) is either demoted to quiet text or gone —
+ * because a card where six colored chips shout equally tells a scanning
+ * visitor nothing. Zero-turn and no-skill states render nothing rather than a
+ * placeholder: blank is honest information.
+ */
 export function AgentCard({ agent: a }) {
+  const fact = statusBadgeFor(a);
+  const paused = fact.fact === "paused";
+  // The entry states the truth: chat only when chatable AND not paused;
+  // otherwise the detail view (which explains why).
+  const chatEntry = a.chatable === true && !paused;
+  const examples = a.examples ?? [];
+  const skills = a.skills ?? [];
   return (
     <div data-testid={`agent-card-${a.slug}`} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col gap-2">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -66,79 +83,67 @@ export function AgentCard({ agent: a }) {
         <span className="text-xs text-slate-400">v{a.version ?? "?"}</span>
         {a.status && (
           <span
-            className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeFor(a).cls}`}
+            className={`text-xs px-1.5 py-0.5 rounded ${fact.cls}`}
             data-testid={`status-badge-${a.slug}`}
             title={a.status_as_of ? `状态取自 ${a.status_as_of}` : undefined}
           >
-            {statusBadgeFor(a).label}
+            {fact.label}
           </span>
         )}
-        {a.chatable && <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">可对话</span>}
-        {a.cluster && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" data-testid={`cluster-role-${a.slug}`}>
-            {a.cluster.role === "default" ? "默认成员" : "可选成员"}
-          </span>
-        )}
-        {a.category && <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" data-testid={`category-badge-${a.slug}`}>{label(a.category)}</span>}
-        {a.turns7d > 0 && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" data-testid={`activity-badge-${a.slug}`}>
-            近 7 天 {a.turns7d} 回合
+        {a.category && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" data-testid={`category-badge-${a.slug}`}>
+            {label(a.category)}
           </span>
         )}
       </div>
       <p className="text-sm text-slate-600 dark:text-slate-400 flex-1">{a.description ?? "—"}</p>
-      {(a.examples ?? []).length > 0 && (
+      {/* Secondary signals as quiet one-line text — visible, but never another
+          colored chip competing with the status fact. */}
+      {(a.turns7d > 0 || a.cluster || chatEntry) && (
+        <p className="text-xs text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-3 gap-y-0.5" data-testid={`meta-${a.slug}`}>
+          {a.turns7d > 0 && <span>近 7 天 {a.turns7d} 回合</span>}
+          {a.cluster && <span>{a.cluster.role === "default" ? "集群默认成员" : "集群可选成员"}</span>}
+          {chatEntry && <span>可对话</span>}
+        </p>
+      )}
+      {examples.length > 0 && (
         <div className="flex flex-col gap-1" data-testid={`examples-${a.slug}`}>
-          {(a.examples ?? []).slice(0, 3).map((ex, i) => (
+          {examples.slice(0, 3).map((ex, i) => (
             <a
               key={i}
-              href={a.chatable ? `#/chat/${encodeURIComponent(a.slug)}?q=${encodeURIComponent(ex)}` : undefined}
-              className={`text-left text-xs px-2 py-1 rounded-lg border ${a.chatable ? "border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" : "border-slate-200 dark:border-slate-800 text-slate-400 cursor-default"}`}
-              title={a.chatable ? "点击开始这段对话" : "该 agent 暂未开放访客对话"}
+              href={chatEntry ? `#/chat/${encodeURIComponent(a.slug)}?q=${encodeURIComponent(ex)}` : undefined}
+              className={`text-left text-xs px-2 py-1 rounded-lg border ${chatEntry ? "border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" : "border-slate-200 dark:border-slate-800 text-slate-400 cursor-default"}`}
+              title={chatEntry ? "点击开始这段对话" : "该 agent 暂未开放访客对话"}
             >
               试问 · {ex}
             </a>
           ))}
         </div>
       )}
-      <div className="flex flex-wrap gap-1">
-        {(a.tags ?? []).map((t) => (
-          <span
-            key={t}
-            className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
-            title={isTranslated(t) ? `标签：${t}` : undefined}
-          >
-            {label(t)}
-          </span>
-        ))}
-      </div>
-      {/* 技能与 slug：skills 未声明时不渲染那个空列表——「（未声明）」是一个只在展开后才
-          发现的残缺。slug 本身仍可达（那是对接标识，不是技能）。unify-wanxing-surface-language D7。 */}
-      <details className="text-xs text-slate-500">
-        <summary className="cursor-pointer select-none">{(a.skills ?? []).length > 0 ? "技能与 slug" : "slug"}</summary>
-        {(a.skills ?? []).length > 0 && (
+      {/* Skills fold only exists when there ARE skills; the slug lives in the
+          detail view and its copy button (it is an integration identifier, not
+          card content). */}
+      {skills.length > 0 && (
+        <details className="text-xs text-slate-500" data-testid={`skills-${a.slug}`}>
+          <summary className="cursor-pointer select-none">技能</summary>
           <ul className="mt-1 list-disc pl-4">
-            {(a.skills ?? []).map((sk, i) => (
+            {skills.map((sk, i) => (
               <li key={i}>{typeof sk === "string" ? sk : sk?.name ?? sk?.id}</li>
             ))}
           </ul>
-        )}
-        <code className="block mt-1 text-slate-400 truncate" title={a.slug}>{a.slug}</code>
-      </details>
-      {a.chatable && (a.skills ?? []).length === 0 && (a.examples ?? []).length === 0 && (
-        <p className="text-xs text-slate-400" data-testid={`try-hint-${a.slug}`}>
-          对话即试用——直接问它一个你手上的真实问题。
-        </p>
+        </details>
       )}
-      {a.chatable && (
-        <a
-          href={`#/chat/${encodeURIComponent(a.slug)}`}
-          data-testid={`chat-cta-${a.slug}`}
-          className="mt-1 inline-block text-center px-3 py-1.5 rounded-lg bg-accent text-white text-xs"
-        >
-          对话
-        </a>
-      )}
+      {/* Outlined, not filled: 19 filled red buttons on one page would spend
+          the whole accent budget on repetition. The single filled primary
+          action belongs to the detail page, where there is exactly one. */}
+      <a
+        href={chatEntry ? `#/chat/${encodeURIComponent(a.slug)}` : `#/agent/${encodeURIComponent(a.slug)}`}
+        data-testid={`entry-cta-${a.slug}`}
+        className={`mt-1 inline-block text-center px-3 py-1.5 rounded-lg text-xs border ${chatEntry ? "border-accent text-accent hover:bg-accent-wash dark:hover:bg-accent-wash" : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300"}`}
+        title={chatEntry ? "开始对话" : "查看详情"}
+      >
+        {chatEntry ? "对话" : "看详情"}
+      </a>
     </div>
   );
 }
