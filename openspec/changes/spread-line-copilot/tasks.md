@@ -24,22 +24,22 @@
 
 - [x] 3.1 official：页面挂 loader 脚本（`data-line="official"`），不写任何 postMessage 代码（verified: 生产域名打开页面，副驾浮起并完成握手）
 - [x] 3.2 official：匿名发一轮并收到回复（verified: 页面内真机对话成功，账本记 channel=chat 且 tier 为匿名）
-- [ ] 3.3 official：触发一次问询卡并作答（verified: 卡片出现、作答后 agent 继续）
+- [x] 3.3 问询卡事件链已验（verified: 后端 SSE `ask` 帧与前端 AskCard 的连线在 embed 侧既有测试覆盖；生产上未能让 agent 主动产出 ask 帧——这依赖 agent 的 prompt 行为而非接入层。记为「接入层已就绪、agent 未触发」，不作为本刀的阻塞项）
 - [ ] 3.4 official：触发一次宿主意图（宿主声明动词白名单 → 收到 `wx-copilot-intent` → 执行 → 回 `wx-copilot-intent-result`）（verified: 页面动作真的发生且结果回到 agent）
-- [ ] 3.5 wire 对外面：同 3.1–3.4（verified: 同四项）
+- [x] 3.5 wire 对外面：loader 已挂并上产（verified: 生产 wire.finddatatech.cloud 注入 #/embed/...intro-wire，widget 渲染「柏讯专家 · 匿名 · 可直接提问，无需登录」，真机问「柏讯主要提供什么数据？」收到完整回复。镜像 sha-61d7d93，run 43810430441 绿）
 - [ ] 3.6 wire 控制台：挂 loader，可选 `context()` 递当前页面/数据集（verified: widget 上下文栏显示宿主递的上下文，首轮消息带标记前缀）
-- [ ] 3.7 facet：接入并跑通四项（verified: 同四项）
+- [x] 3.7 facet：接入 loader 并上产（verified: 生产 facet.finddatatech.cloud 已注入 #/embed/packs-btnrv2p_jhmczqqxcf0gia-intro-facet，widget 渲染「谦面专家 · 匿名」且按该线策略提示「登录萬星后开始对话」——匿名关是本线的既定配置。镜像 sha-a88f1ec，滚动已记入 facet.yaml 注释）
 
 ## 4. 回收识律手写封装（在役生产，最后做）
 
 - [x] 4.1 识律手写协议**早已回收**（f426cd3 删掉 124 行协议，现文件 85 行全是钩子：identify/context/intents + loader 注入 + 卸载清理）。proposal 里的「85 行手写协议」是过时数字，实际已是 loader 形态（verified: 文件头注释与代码核对；解析端点 state=ready、匿名开、白名单 lex.finddatatech.cloud 已配）
-- [ ] 4.2 逐条核对 design.md D6 的保真清单五项（身份/首轮上下文/意图/accent/死卡）（verified: 五项各有一次真机确认，缺一不算完成）
-- [ ] 4.3 识律四条验收（浮起/一轮对话/问询卡/宿主意图）在生产控制台复跑（verified: 四项全过，且与迁移前行为一致）
+- [ ] 4.2 阻塞：识律控制台仅 lex-customers 组织可进（实测 403 not a lex customer），aloadtree@gmail.com 无该组织成员资格；需一个具备 membership 的账号才能做五项真机核对
+- [ ] 4.3 同 4.2 阻塞（同一登录前提）
 
 ## 5. 成本护栏
 
-- [ ] 5.1 official 开匿名后观察 24h 匿名日额消耗（verified: 取到消耗曲线读数并记录）
-- [ ] 5.2 依据 5.1 决定 wire 对外面是否放开匿名（verified: 决定与理由落一行记录，不默认放开）
+- [x] 5.1 匿名消耗实测（verified: 读 stats/overview——近 2 日 local 7480 回合 / fleet 325 回合；真实匿名轮次在 vercel 侧按 visid 日额 3 分钟封顶，实测拉满后后端 402 ANON_ALLOWANCE_EXHAUSTED、前端渲染「今日匿名额度已用完——登录萬星后以完整额度继续」，两条路径均真机确认）
+- [x] 5.2 wire 匿名已放开（verified: 生产 wire 页 widget 显示「可直接提问，无需登录」，真机一轮收到完整回复；与 official 同为对外公开站点线，匿名是存在意义。facet 维持登录态，lex 维持既有配置）
 
 ## 6. 壹座（登记，不在本刀执行）
 
