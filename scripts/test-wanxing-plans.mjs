@@ -219,6 +219,22 @@ test("D6 a plan settlement mirrors one display-only usage row", async () => {
   assert.equal(sub.adjustCalls.length, 0);
 });
 
+test("D6 mirror minutes are integers (the sub2api field is a Go int)", async () => {
+  const { core, store, sub, caller } = coreHarness();
+  store.planSet(caller.userId, 60, "ops");
+  const row = core.recordUsage({ caller, slug: "a", startedAt: 0, endedAt: 30_000, outcome: "ok" });
+  // 上游今天恒为整数（Math.ceil），但字段一旦变成小数，Go 侧 int 会在
+  // ShouldBindJSON 上回 400，而镜像失败只有一行 warn ⇒ 取整在我们这侧做掉。
+  row.minutesBilled = 2.4;
+
+  assert.equal(await core.trySettle(row), true);
+  await Promise.resolve();
+
+  assert.equal(sub.mirrorCalls.length, 1);
+  assert.equal(sub.mirrorCalls[0].minutes, 2);
+  assert.ok(Number.isInteger(sub.mirrorCalls[0].minutes), "minutes must be an integer: " + sub.mirrorCalls[0].minutes);
+});
+
 for (const behaviour of ["reject", "throw"]) {
   test(`D6 a mirror that fails (${behaviour}) cannot change the settlement`, async () => {
     const sub = stubSub2api();

@@ -74,6 +74,10 @@ fire-and-forget 镜像写入，失败仅记日志不重试不阻塞——账本�
 - **同步抛错也吞掉**（`Promise.resolve(...)` 包住调用 + `try/catch`）：老客户端
   或坏构建里 `mirrorUsage` 不存在时，结算同样不受影响；
 - 只有 `settler === "plan"` 走镜像：`mission` 行与 legacy 余额结算都不镜像。
+- **`minutes` 必须整数**：sub2api 侧该字段是 Go 的 `int`，JSON 里出现 `2.4` 会让
+  `ShouldBindJSON` 直接回 400，而镜像失败只打一行 warn（看着像网络抖动、其实每次都失败）。
+  上游今天由 `Math.ceil` 产生、恒为整数，facade 仍在发送前 `Math.round`：展示面以分钟
+  为单位，取整不动结算（结算照原 `minutesBilled` 扣 plan）。
 
 单测在 `scripts/test-wanxing-plans.mjs` 的 `D6 …` 四臂（一条镜像一次、reject /
 throw 两种失败都不改结算、非 plan 不镜像），本机实跑 18/18 绿；红证＝把

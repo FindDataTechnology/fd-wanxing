@@ -422,7 +422,12 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   function mirrorPlanUsage(row) {
     if (!sub2api || typeof sub2api.mirrorUsage !== "function") return; // no mirror capability
     if (typeof sub2api.degraded === "function" && sub2api.degraded()) return; // no admin credential
-    const minutes = Number(row.minutesBilled ?? row.minutes_billed ?? 0);
+    // minutes 必须是整数：sub2api 侧该字段是 Go 的 `int`，收到 2.4 会在
+    // ShouldBindJSON 上失败回 400，而镜像失败只打一行 warn —— 那形态（端点写了、
+    // 每轮都 400、日志里只有一行）看不出是 bug。今天上游 minutesBilled 出自
+    // Math.ceil 恒为整数，这里取整只是把「将来有人把它改成小数」的后果从
+    // 「静默不落」变成「按分钟四舍五入」。
+    const minutes = Math.round(Number(row.minutesBilled ?? row.minutes_billed ?? 0) || 0);
     if (!(minutes > 0)) return; // waived / zero-duration rows have nothing to mirror
     const planRef = row.planRef ?? row.plan_ref ?? "(unknown)";
     const agent = row.agentSlug ?? row.agent_slug ?? "-";
