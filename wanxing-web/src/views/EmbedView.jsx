@@ -230,10 +230,13 @@ export function EmbedView({ focusSlug } = {}) {
     // 只对本源内的 parent 宣告；跨源嵌入时 parent 的 origin 取不到，仍等宿主先说话。
     const announce = () => {
       if (window.parent === window) return;
-      // 能拿到 referrer 就定向投递（浏览器不发跨源 origin 回执，所以这只是
-      // 缩小投递面，不是信任判定）；拿不到才退 "*"，loader 侧仍会校验
-      // ev.origin === 自己的源 && ev.source === frame.contentWindow。
-      const target = referrerOrigin() ?? "*";
+      // 目标源必须**不是自己**：iframe 重载/内部导航时 document.referrer 会等于
+      // 本页自己的源（2026-11-16 实测：referrer = https://wanxing.finddatatech.cloud/，
+      // 而宿主是 lex.finddatatech.cloud）。拿自己的源当 target，消息会被浏览器
+      // 静默丢弃，握手又回到死锁。所以只接受「与自己不同源的 referrer」，
+      // 否则退 "*"——安全性由 loader 侧的 ev.origin / ev.source 校验兜底。
+      const ref = referrerOrigin();
+      const target = ref && ref !== window.location.origin ? ref : "*";
       try {
         window.parent.postMessage({ type: "wx-copilot-ready", slug }, target);
       } catch {
