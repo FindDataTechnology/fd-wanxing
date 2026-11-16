@@ -71,5 +71,16 @@ fire-and-forget 镜像写入，失败仅记日志不重试不阻塞——账本�
 
 单测在 `scripts/test-wanxing-plans.mjs` 的 `D6 …` 四臂（一条镜像一次、reject /
 throw 两种失败都不改结算、非 plan 不镜像），本机实跑 18/18 绿；红证＝把
-`mirrorPlanUsage(row)` 摘掉后同份套件 3 红 15 绿，复原后回绿。
+`mirrorPlanUsage(row)` 摘掉后同份套件 3 红 15 绿，复原后回绿。客户端那一跳另有一臂
+（`test-wanxing-facade.mjs`：五个键逐字、`x-api-key`、duplicate 可读），73/73 绿，
+红证＝把 `user_id` 改名后该臂当场 ✗。
+
+**上游 SQL 已在生产库验过（2026-11-17，事务内 ROLLBACK）**：同构 DDL 实跑给出
+「首次插入 1 行 / 同键第二次 0 行 / 读回首次那行 / 行数恰 1 / 唯一索引在 / 回滚后无残留」。
+这一步补的是 Go 单测用替身证不了的地方——`ON CONFLICT … RETURNING` 在冲突时到底返回
+什么，以及「读回的是首次那行」是否成立。
+
+**仍未验的**：真机端到端（上游未合入未上产）、以及 sub2api 那侧 Go 单测的**执行**
+（账号 GitHub Actions 被计费拦住，作业 `steps: []` 即失败；本机按硬规则不跑 Go 测试，
+只到 `go vet` 编译过）。
 
