@@ -223,6 +223,26 @@ export function askSummaryText(questions, outcome = {}) {
 // A turn's conversation context: the marked prefix the agent sees for host
 // page facts (data, NOT an instruction). Wording is unchanged from the embed
 // lane's shipped form — the tests and the agent's prompt both key on it.
+/**
+ * 把宿主推来的 `wx-copilot-context` 消息规整成 `{line,page,entity,intent}`。
+ *
+ * 两种形状都收：loader（copilot.js 的 sendContext）把宿主 context() 的返回值包在
+ * `context` 字段里发，而协议注释写的是顶层字段。曾经只读顶层，于是环绕上下文全是
+ * undefined、contextPrefix() 永远返回空串——宿主页面上下文从未真正送达 agent
+ * （2026-11-16 真机：agent 答「我读不到你的页面状态」）。
+ */
+export function normalizeHostContext(d) {
+  const src = d && typeof d.context === "object" && d.context !== null ? d.context : d;
+  if (!src || typeof src !== "object") return {};
+  const cut = (v, n) => (typeof v === "string" ? v.slice(0, n) : undefined);
+  return {
+    line: cut(src.line, 120),
+    page: cut(src.page, 300),
+    entity: cut(src.entity, 300),
+    intent: cut(src.intent, 300),
+  };
+}
+
 export function contextPrefix(ctx) {
   const lines = [];
   if (ctx?.line) lines.push(`产品线：${ctx.line}`);

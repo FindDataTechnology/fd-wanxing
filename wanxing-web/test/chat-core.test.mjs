@@ -147,3 +147,22 @@ test("context prefix: marked as host data, never as an instruction", () => {
   assert.match(p, /页面：\/console\/usage/);
   assert.equal(core.contextPrefix({}), "");
 });
+
+// 2026-11-16 真机缺陷：loader 把宿主 context 包在 `context` 字段里发，widget 只读
+// 顶层 → 上下文永远 undefined → contextPrefix 恒空 → agent 答「我读不到你的页面状态」。
+test("normalizeHostContext 收两种形状（loader 包一层 / 协议顶层）", () => {
+  const wrapped = core.normalizeHostContext({ type: "wx-copilot-context", context: { line: "识律", page: "/console/billing" } });
+  assert.equal(wrapped.line, "识律");
+  assert.equal(wrapped.page, "/console/billing");
+
+  const flat = core.normalizeHostContext({ type: "wx-copilot-context", line: "柏讯", page: "#/catalog", entity: "x", intent: "y" });
+  assert.equal(flat.line, "柏讯");
+  assert.equal(flat.entity, "x");
+
+  assert.deepEqual(core.normalizeHostContext(null), {});
+  assert.equal(core.normalizeHostContext({ context: null, line: "L" }).line, "L");
+
+  const pref = core.contextPrefix(core.normalizeHostContext({ context: { line: "识律", page: "/console/usage" } }));
+  assert.ok(pref.includes("识律") && pref.includes("/console/usage"));
+  assert.ok(pref.includes("非用户指令"));
+});

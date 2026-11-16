@@ -44,6 +44,7 @@ import {
   contextId,
   contextPrefix,
   loadHistory,
+  normalizeHostContext,
   ownKeyOf,
   parseIntent,
   parseTurnStream,
@@ -202,13 +203,7 @@ export function EmbedView({ focusSlug } = {}) {
         }
       }
       if (d.type === "wx-copilot-context") {
-        const next = {
-          line: typeof d.line === "string" ? d.line.slice(0, 120) : undefined,
-          page: typeof d.page === "string" ? d.page.slice(0, 300) : undefined,
-          entity: typeof d.entity === "string" ? d.entity.slice(0, 300) : undefined,
-          intent: typeof d.intent === "string" ? d.intent.slice(0, 300) : undefined,
-        };
-        setContext(next);
+        setContext(normalizeHostContext(d));
         setContextSent(false); // refreshed context rides the next turn
       }
       if (d.type === "wx-copilot-identity") {
