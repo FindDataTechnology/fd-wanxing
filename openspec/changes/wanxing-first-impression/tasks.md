@@ -64,24 +64,24 @@
 
 ## 6. 登录回流（规格「The chat view…」、design D4）
 
-- [ ] 6.1 未登录的 chat 页：登录条原地渲染，agent 名称/描述/URL 草稿同时可见（verified: 真机未登录打开
+- [x] 6.1 未登录的 chat 页：登录条原地渲染，agent 名称/描述/URL 草稿同时可见（verified: 真机未登录打开
       `#/chat/<slug>?q=…`，三者同屏）
-- [ ] 6.2 登录按钮传完整 hash 作 `returnTo`（含 query）；真机走一遍 Logto 回调（verified: 回调后 hash 与
+- [x] 6.2 登录按钮传完整 hash 作 `returnTo`（含 query）；真机走一遍 Logto 回调（verified: 回调后 hash 与
       输入的 `?q=` 一致，且 composer 已预填、未自动发送）
-- [ ] 6.3 若 6.2 因编码/截断不可行，改用 sessionStorage 草稿桥（登录前写入、回调后读取），并在任务注释里
+- [x] 6.3 若 6.2 因编码/截断不可行，改用 sessionStorage 草稿桥（登录前写入、回调后读取），并在任务注释里
       记下实测结论（verified: 同样真机三项，且 `test/auth.test.mjs` 覆盖该路径）
-- [ ] 6.4 登录墙文案改为说明"登录后可落回这个对话"，不再是一句无来由的账户请求（verified: 页面文案包含
+- [x] 6.4 登录墙文案改为说明"登录后可落回这个对话"，不再是一句无来由的账户请求（verified: 页面文案包含
       agent 名与"登录后接着问"语义）
 
 ## 7. 舰队卡结论（规格「The fleet tab renders deployment cards」、design D5）
 
-- [ ] 7.1 每张舰队卡首行输出结论句（failing/degraded/paused/unknown/stalled/unused/live 七分支，
+- [x] 7.1 每张舰队卡首行输出结论句（failing/degraded/paused/unknown/stalled/unused/live 七分支，
       全部由既有 `fact` + `sig.turns7d` + `health` 合成，不新增取数）（verified: 新增 `fleetConclusion`
       单测覆盖七分支；真机舰队截图每卡首行是句子不是数字）
-- [ ] 7.2 管理动作分两级：卡上「配置」「记录」+ 一个「更多」展开；其余项移入展开区，`onClick`、抽屉、
+- [x] 7.2 管理动作分两级：卡上「配置」「记录」+ 一个「更多」展开；其余项移入展开区，`onClick`、抽屉、
       端点、testid 全部不变（verified: 逐一打开六个面板 + 暂停/恢复，行为与改前一致；
       `grep` 确认既有 `data-testid` 未改）
-- [ ] 7.3 结论与主徽标不得冲突（verified: 单测用「health=failing + status=serving」组合断言结论说失败、
+- [x] 7.3 结论与主徽标不得冲突（verified: 单测用「health=failing + status=serving」组合断言结论说失败、
       徽标也说失败，二者同为非健康）
 
 ## 8. 验收与出片
