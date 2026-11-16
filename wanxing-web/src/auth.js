@@ -32,12 +32,36 @@ const emit = () => {
   for (const fn of listeners) fn(authState());
 };
 
-export const authState = () => ({
-  token: localStorage.getItem(TOKEN_KEY) || "",
-  refresh: localStorage.getItem(REFRESH_KEY) || "",
-  email: localStorage.getItem(EMAIL_KEY) || "",
-  notice,
-});
+const tokenExpMs = (token) => {
+  try {
+    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const exp = Number(JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).exp) * 1000;
+    return Number.isFinite(exp) ? exp : 0;
+  } catch {
+    return 0; // unreadable token: not ours to schedule (opaque ops token)
+  }
+};
+
+// `signedIn` is the header's truth, and it is NOT "a token string exists"
+// (2026-11-16). It used to be exactly that, which is how a session whose
+// id_token expired 32 days earlier still painted 邮箱 · 退出 over a dead
+// credential — the page claimed an identity it could no longer use. An
+// expired id_token with a refresh grant is still recoverable, so it stays
+// stored (renewal needs it); it just must not read as signed in.
+// An opaque token (the ops service-token channel) has no exp claim and is
+// treated as signed in — it never expires by design.
+export const authState = () => {
+  const token = localStorage.getItem(TOKEN_KEY) || "";
+  const exp = token ? tokenExpMs(token) : 0;
+  return {
+    token,
+    refresh: localStorage.getItem(REFRESH_KEY) || "",
+    email: localStorage.getItem(EMAIL_KEY) || "",
+    signedIn: Boolean(token) && (!exp || exp > Date.now()),
+    tokenExpired: Boolean(token) && Boolean(exp) && exp <= Date.now(),
+    notice,
+  };
+};
 
 // React seam: one subscription per component.
 export function useAuth() {
@@ -267,15 +291,6 @@ let timer = null;
 //     first paint and the first gated call see a fresh credential.
 // An id_token without a refresh grant (the ops service-token channel) is left
 // alone: nothing can renew it and it never expires.
-const tokenExpMs = (token) => {
-  try {
-    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const exp = Number(JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).exp) * 1000;
-    return Number.isFinite(exp) ? exp : 0;
-  } catch {
-    return 0; // unreadable token: not ours to schedule (opaque ops token)
-  }
-};
 
 async function armRenewalOnBoot() {
   const token = localStorage.getItem(TOKEN_KEY);

@@ -135,6 +135,13 @@ export function registerConsoleRoutes(app, {
   // is re-verified — a refresh grant never lowers the door). Rotation-aware
   // response: whichever refresh_token the tenant issued is the one returned;
   // absent means the tenant did not rotate and the client keeps its current.
+  //
+  // Failures are LOGGED (2026-11-16). They were completely silent before: a
+  // dead refresh token produced a 502, the SPA fell back to "sign in again",
+  // and the operator had nothing to grep — this is why "every upgrade needs a
+  // re-login" read as a UI quirk for weeks. One line per failure, carrying the
+  // tenant's own error string, is the difference between a support report and
+  // a five-minute diagnosis. The token itself is NEVER logged.
   app.post("/api/wanxing/v1/console/auth/refresh", express.json({ limit: "4kb" }), async (req, res) => {
     if (needIdentity(res)) return;
     const { refresh_token: refreshToken } = req.body ?? {};
@@ -145,7 +152,9 @@ export function registerConsoleRoutes(app, {
       if (!ident) throw Object.assign(new Error("identity refused (allowlist or verification)"), { status: 403 });
       res.json({ id_token: doc.id_token, refresh_token: doc.refresh_token ?? refreshToken, email: ident.email });
     } catch (e) {
-      res.status(Number.isInteger(e?.status) ? e.status : 502).json({ error: String(e?.message || e) });
+      const status = Number.isInteger(e?.status) ? e.status : 502;
+      console.warn(`[wanxing:console] auth/refresh FAILED status=${status} reason=${String(e?.message || e)}`);
+      res.status(status).json({ error: String(e?.message || e), code: "refresh_failed" });
     }
   });
   // Logout hygiene (RFC 7009): revocation is cleanup, never a gate — an

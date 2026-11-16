@@ -188,7 +188,7 @@ export function App() {
             {tab("#/", "介绍")}
             {tab("#/catalog", "目录")}
             {tab("#/docs", "文档")}
-            {auth.token ? (
+            {auth.signedIn ? (
               tab("#/console", "控制台")
             ) : (
               <button
@@ -198,7 +198,7 @@ export function App() {
                 登录
               </button>
             )}
-            {auth.token && (
+            {auth.signedIn && (
               <span className="ml-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                 {auth.email && <span className="hidden sm:inline">{auth.email}</span>}
                 <button

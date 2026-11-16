@@ -18,7 +18,7 @@ const jwtWithExp = (expSec) => {
 beforeEach(() => resetStorages());
 
 test("authState reads credentials from storage; empty store is all-empty", () => {
-  assert.deepEqual(authState(), { token: "", refresh: "", email: "", notice: "" });
+  assert.deepEqual(authState(), { token: "", refresh: "", email: "", signedIn: false, tokenExpired: false, notice: "" });
   localStorage.setItem("wanxing-console-token", "t1");
   localStorage.setItem("wanxing-console-email", "a@b.c");
   const s = authState();
@@ -79,7 +79,7 @@ test("teardownSession: clears credentials, best-effort revoke, expired notice", 
   let revokeBody = null;
   globalThis.fetch = async (_url, opts) => { revokeBody = JSON.parse(opts.body); return { ok: true, json: async () => ({}) }; };
   await teardownSession({ expired: true });
-  assert.deepEqual(authState(), { token: "", refresh: "", email: "", notice: "登录已过期，请重新登录" });
+  assert.deepEqual(authState(), { token: "", refresh: "", email: "", signedIn: false, tokenExpired: false, notice: "登录已过期，请重新登录" });
   assert.equal(revokeBody.token, "r");
   // Best-effort: a throwing revoke still tears down.
   localStorage.setItem("wanxing-console-token", "t2");
@@ -206,4 +206,35 @@ test("boot arming: a failed refresh does not tear the session down", async () =>
   await armRenewalOnBoot();
   assert.equal(localStorage.getItem("wanxing-console-token") !== null, true, "session survives a transient failure");
   assert.equal(authState().notice, "", "and is not marked expired");
+});
+
+// ── signedIn: the header's truth (2026-11-16) ───────────────────────────────
+//
+// The header rendered 邮箱·退出 off `Boolean(token)` alone, so a session whose
+// id_token had been dead for 32 days still looked signed in. That is the
+// visible half of the same bug the boot arming fixes.
+
+test("signedIn: a live id_token reads as signed in", () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) + 3600));
+  localStorage.setItem("wanxing-console-email", "a@b.c");
+  const s = authState();
+  assert.equal(s.signedIn, true);
+  assert.equal(s.tokenExpired, false);
+});
+
+test("signedIn: an expired id_token does NOT read as signed in, but the grant survives", () => {
+  localStorage.setItem("wanxing-console-token", jwtWithExp(Math.floor(Date.now() / 1000) - 60));
+  localStorage.setItem("wanxing-console-refresh", "r");
+  localStorage.setItem("wanxing-console-email", "a@b.c");
+  const s = authState();
+  assert.equal(s.signedIn, false, "the header must not claim an identity it cannot use");
+  assert.equal(s.tokenExpired, true);
+  assert.equal(s.refresh, "r", "the refresh grant stays stored — renewal needs it");
+});
+
+test("signedIn: an opaque ops token has no exp and reads as signed in", () => {
+  localStorage.setItem("wanxing-console-token", "ops-service-token");
+  const s = authState();
+  assert.equal(s.signedIn, true, "a token with no exp never expires by design");
+  assert.equal(s.tokenExpired, false);
 });
