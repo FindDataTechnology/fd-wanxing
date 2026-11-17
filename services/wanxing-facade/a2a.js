@@ -321,6 +321,24 @@ export function createA2aFace({
     return rest;
   }
 
+  // Pillar facts on the public catalog (openspec unify-pillar-surfaces 3.2).
+  // Contract-level only: the declared memory axes and the narrowed tool names.
+  // Prose never rides here — `memory.guidance` (the charter text), persona,
+  // skill and guide bodies stay on the faces that ask for identity. Absent
+  // metadata => absent keys: this face must never invent a default
+  // ("unknown != zero", the same rule the derivation itself is held to).
+  function publicPillarFacts(entry) {
+    const md = entry?.metadata;
+    if (!md || typeof md !== "object") return {};
+    const facts = {};
+    if (md.mcpTools && typeof md.mcpTools === "object") facts.toolFace = md.mcpTools;
+    if (md.memory && typeof md.memory === "object") {
+      const { guidance: _prose, ...axes } = md.memory;
+      if (Object.keys(axes).length > 0) facts.memory = axes;
+    }
+    return facts;
+  }
+
   function publicCard(slug, entry, req) {
     return {
       name: entry.name,
@@ -575,6 +593,11 @@ export function createA2aFace({
           capabilities: entry.capabilities ?? { streaming: true },
           skills: entry.skills ?? [],
           ...(Array.isArray(entry.examples) && entry.examples.length > 0 ? { examples: entry.examples } : {}),
+          // Three pillars (openspec unify-pillar-surfaces 3.2): the catalog is
+          // a machine face, so it carries the declaration's contract facts and
+          // none of its prose. Only the /agents entry — the per-agent A2A card
+          // is a different face and is left to its own task.
+          ...publicPillarFacts(entry),
           // Facade identification (paas add-principal-facade), same rule as
           // the card: ride the registry metadata, absent = ordinary agent.
           ...(entry?.metadata?.facade ? { facade: true, facade_stance: entry.metadata.facade.stance ?? "hosted" } : {}),

@@ -220,6 +220,14 @@
         "status_as_of": {
           "type": "string",
           "description": "The snapshot instant the status was derived from — lets a consumer tell a fresh 'idle' from a frozen 'unknown'."
+        },
+        "toolFace": {
+          "type": "object",
+          "description": "Per-role narrowed tool names, projected from the registry entry metadata.mcpTools (openspec unify-pillar-surfaces 3.2). Absent when the entry declares none. Contract facts only — never prose."
+        },
+        "memory": {
+          "type": "object",
+          "description": "Declared memory axes (store/read/write/process), projected from registry entry metadata.memory. Absent when undeclared; the `guidance` charter text is deliberately stripped — this face is anonymous."
         }
       }
     },
