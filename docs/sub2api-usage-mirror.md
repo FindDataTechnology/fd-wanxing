@@ -23,6 +23,11 @@
 ```
 
 - 响应：`{ ok: true, usage_id: <n>, duplicate: false }`；校验失败 400；未知用户 404。
+  **两种 400 各有各的码，别混**：请求体解析不了（含 `minutes` 写成小数——该列是整数）
+  回 `USAGE_MIRROR_BODY_INVALID` 并把解析原因原样带上；解析成功但字段空/越界回
+  `USAGE_MIRROR_EXTERNAL_ID_REQUIRED` / `…_EXTERNAL_ID_INVALID` / `…_MINUTES_INVALID` /
+  `…_NOTE_TOO_LONG`。分别指向「改报文形状」与「改字段值」两件不同的事。
+
 - 语义：纯记账展示行（不移动余额、不触发配额窗口）——金额/配额语义归 sub2api
   既有机制，镜像只解决"面板上看得到"。
 
