@@ -37,8 +37,10 @@ function stubSub2api({ userId = 7, email = "caller@finddata.tech", others = [] }
     adjustCalls: [],
     mirrorCalls: [],
     // mirrorBehaviour decides how the D6 mirror answers: "ok" (default) |
-    // "reject" | "throw". The settlement outcome must not depend on it.
+    // "reject" | "throw". mirrorStatus rides the rejected error the way the
+    // real client does (Object.assign(new Error(...), { status })).
     mirrorBehaviour: "ok",
+    mirrorStatus: undefined,
     degraded: () => false,
     async probeKeyLiveness() {
       return { ok: true };
@@ -57,7 +59,9 @@ function stubSub2api({ userId = 7, email = "caller@finddata.tech", others = [] }
     async mirrorUsage(args) {
       this.mirrorCalls.push(args);
       if (this.mirrorBehaviour === "throw") throw new Error("mirror exploded synchronously");
-      if (this.mirrorBehaviour === "reject") return Promise.reject(new Error("mirror rejected"));
+      if (this.mirrorBehaviour === "reject") {
+        return Promise.reject(Object.assign(new Error("mirror rejected"), { status: this.mirrorStatus }));
+      }
       return { ok: true, usage_id: 1, duplicate: false };
     },
   };
@@ -233,6 +237,29 @@ test("D6 mirror minutes are integers (the sub2api field is a Go int)", async () 
   assert.equal(sub.mirrorCalls.length, 1);
   assert.equal(sub.mirrorCalls[0].minutes, 2);
   assert.ok(Number.isInteger(sub.mirrorCalls[0].minutes), "minutes must be an integer: " + sub.mirrorCalls[0].minutes);
+});
+
+test("D6 a failed mirror logs the HTTP status so 404/400/transport differ", async () => {
+  const sub = stubSub2api();
+  sub.mirrorBehaviour = "reject";
+  sub.mirrorStatus = 404; // endpoint not shipped yet — the one case worth telling apart
+  const { core, store, caller } = coreHarness({ sub });
+  store.planSet(caller.userId, 60, "ops");
+  const row = core.recordUsage({ caller, slug: "a", startedAt: 0, endedAt: 30_000, outcome: "ok" });
+
+  const lines = [];
+  const original = console.warn;
+  console.warn = (m) => lines.push(String(m));
+  try {
+    assert.equal(await core.trySettle(row), true);
+    await new Promise((r) => setTimeout(r, 0));
+  } finally {
+    console.warn = original;
+  }
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /status 404/, `warn must name the status: ${lines[0]}`);
+  assert.ok(lines[0].includes(row.id), `warn must name the row: ${lines[0]}`);
 });
 
 for (const behaviour of ["reject", "throw"]) {

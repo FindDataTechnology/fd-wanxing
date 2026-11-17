@@ -431,7 +431,13 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     if (!(minutes > 0)) return; // waived / zero-duration rows have nothing to mirror
     const planRef = row.planRef ?? row.plan_ref ?? "(unknown)";
     const agent = row.agentSlug ?? row.agent_slug ?? "-";
-    const warn = (e) => console.warn(`[wanxing:mirror] usage mirror failed for ${row.id}: ${e?.message || e}`);
+    // status 必须进日志：客户端把 HTTP 码挂在 error 上（sub2api-admin 的 call()），
+    // 而只打 message 时 404（端点没上产）、400（载荷/校验）、401（凭据）、502/无
+    // status（传输）在日志里完全同形 —— 上产后排障只能靠猜。
+    const warn = (e) =>
+      console.warn(
+        `[wanxing:mirror] usage mirror failed for ${row.id} (status ${e?.status ?? "n/a"}): ${e?.message || e}`,
+      );
     try {
       // Promise.resolve wraps both shapes: a client that rejects and one that
       // throws synchronously (older stub / broken build) must both end here.

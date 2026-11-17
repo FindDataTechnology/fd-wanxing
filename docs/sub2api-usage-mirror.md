@@ -78,6 +78,11 @@ fire-and-forget 镜像写入，失败仅记日志不重试不阻塞——账本�
   `ShouldBindJSON` 直接回 400，而镜像失败只打一行 warn（看着像网络抖动、其实每次都失败）。
   上游今天由 `Math.ceil` 产生、恒为整数，facade 仍在发送前 `Math.round`：展示面以分钟
   为单位，取整不动结算（结算照原 `minutesBilled` 扣 plan）。
+- **失败日志带 HTTP 状态**：`[wanxing:mirror] usage mirror failed for <wu_id> (status <code>): <message>`。
+  客户端把状态码挂在 error 上（`lib/sub2api-admin.js` 的 `Object.assign(new Error(...), { status })`），
+  而只打 message 时 `404`（端点未上产）、`400`（载荷/校验）、`401`（凭据）、`502`/`n/a`（传输）
+  在日志里完全同形。上产后排障就看这一个字段，不用改代码猜。
+
 
 单测在 `scripts/test-wanxing-plans.mjs` 的 `D6 …` 四臂（一条镜像一次、reject /
 throw 两种失败都不改结算、非 plan 不镜像），本机实跑 18/18 绿；红证＝把
