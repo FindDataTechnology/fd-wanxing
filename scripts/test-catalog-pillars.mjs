@@ -89,6 +89,10 @@ test("declared pillars ride the catalog entry — axes and tool names, no prose"
     metadata: {
       mcpTools: { "invest-ops-mcp": ["fleet_list", "fleet_spec_read"] },
       memory: { ...AXES, guidance: CHARTER },
+      console: {
+        headline: "decisions.open",
+        blocks: [{ block: "team" }, { block: "kpi", params: { window: "PARAMLEAK-CANARY" }, surfaces: ["surface-leak-canary"] }],
+      },
     },
   });
   const { srv, base } = await harness({ deployments: one("alpha"), entries: { alpha: entry } });
@@ -98,6 +102,13 @@ test("declared pillars ride the catalog entry — axes and tool names, no prose"
     assert.deepEqual(e.toolFace, { "invest-ops-mcp": ["fleet_list", "fleet_spec_read"] },
       "toolFace must ride the entry verbatim");
     assert.deepEqual(e.memory, AXES, "memory must carry the four axes and nothing else");
+    // D8: the console DECLARATION rides as headline + block ids only.
+    assert.deepEqual(e.console, { headline: "decisions.open", blocks: ["team", "kpi"] },
+      "console must be headline + block ids (no params/surfaces)");
+    for (const canary of ["PARAMLEAK-CANARY", "surface-leak-canary"]) {
+      assert.equal(JSON.stringify(body).includes(canary), false,
+        `block params/surfaces must not leak to the machine face (${canary})`);
+    }
     assert.equal("guidance" in e.memory, false, "charter prose must not ride an anonymous face");
     assert.equal(JSON.stringify(body).includes(CHARTER), false,
       "the anonymous catalog body must not contain the charter text at all");
@@ -124,6 +135,7 @@ test("undeclared pillars are ABSENT, not empty shells", async () => {
     for (const [name, e] of [["beta", beta], ["gamma", gamma]]) {
       assert.equal("toolFace" in e, false, `${name}: no declared tools => no toolFace key`);
       assert.equal("memory" in e, false, `${name}: no declared axes => no memory key`);
+      assert.equal("console" in e, false, `${name}: no declared console => no console key`);
       assert.deepEqual(contract.coverage("catalogEntry", e), [], `${name}: undeclared fields`);
     }
   } finally {

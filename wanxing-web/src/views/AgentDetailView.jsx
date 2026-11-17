@@ -56,6 +56,28 @@ export function pillarSectionsOf(agent) {
     }
   }
 
+  // Dashboard (design D8). A single-agent deployment has no team runtime, so
+  // this section NEVER renders runtime values — it states whether the pack
+  // declares a team console and what to do about it. Two texts, both true in
+  // every case:
+  //   · declared  -> the console belongs to the team face; stand the pack up as
+  //                  a fleet to use it (link to the template instantiation path)
+  //   · absent    -> say plainly that no team console is declared, and that a
+  //                  single-agent face will not fake one. (Sharper wording —
+  //                  "本包不含团队编制" — needs the pack's `fleet` flag, which
+  //                  the descriptor does not carry yet; see the task note.)
+  const consoleDecl = agent?.console && typeof agent.console === "object" ? agent.console : null;
+  const consoleBlocks = Array.isArray(consoleDecl?.blocks) ? consoleDecl.blocks.map(String) : [];
+  const dashboard = {
+    key: "dashboard",
+    title: "看板",
+    state: consoleDecl ? "team" : "undeclared",
+    headline: typeof consoleDecl?.headline === "string" ? consoleDecl.headline : null,
+    blocks: consoleBlocks,
+    teamText: "该看板属团队面：以这个包建队后，在团队控制台按声明的块查看。",
+    undeclaredText: "本包未声明团队看板。单 agent 部署不伪造看板——若该包含团队编制，需以该 pack 建队后在团队控制台查看。",
+  };
+
   return [
     {
       key: "toolkit",
@@ -73,6 +95,7 @@ export function pillarSectionsOf(agent) {
       // 不发空壳）——这里必须说清「未声明轴」不等于「没有记忆」。
       undeclaredText: "本包未声明记忆四轴——沿用平台默认（章程原文只在需要身份的面可见）。",
     },
+    dashboard,
   ];
 }
 
@@ -231,7 +254,7 @@ export function AgentDetailView({ focusSlug }) {
                   </div>
                 ))}
               </div>
-            ) : (
+            ) : sec.key === "memory" ? (
               <dl className="flex flex-wrap gap-x-4 gap-y-1">
                 {sec.axes.map((a) => (
                   <div key={a.key} className="flex items-baseline gap-1">
@@ -240,6 +263,25 @@ export function AgentDetailView({ focusSlug }) {
                   </div>
                 ))}
               </dl>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-xs text-slate-600 dark:text-slate-400" data-testid="detail-dashboard-team">{sec.teamText}</p>
+                {sec.headline && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    标题块 <code className="font-mono">{sec.headline}</code>
+                  </p>
+                )}
+                {sec.blocks.length > 0 && (
+                  <div className="flex flex-wrap gap-1" data-testid="detail-dashboard-blocks">
+                    {sec.blocks.map((b) => (
+                      <span key={b} className="text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono">{b}</span>
+                    ))}
+                  </div>
+                )}
+                <a className="text-xs underline text-accent" href={`#/catalog?fromPack=${encodeURIComponent(agent.slug)}`} data-testid="detail-dashboard-standup">
+                  以这个包建队 →
+                </a>
+              </div>
             )}
           </div>
         ))}

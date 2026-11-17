@@ -228,6 +228,21 @@
         "memory": {
           "type": "object",
           "description": "Declared memory axes (store/read/write/process), projected from registry entry metadata.memory. Absent when undeclared; the `guidance` charter text is deliberately stripped — this face is anonymous."
+        },
+        "console": {
+          "type": "object",
+          "description": "Team console DECLARATION projected from registry entry metadata.console: {headline, blocks:[blockId]} (design D8 — a single-agent face says whether the pack declares a team console; it never renders runtime values). Absent when the pack declares none. Block params/surfaces and any prose are deliberately not projected.",
+          "properties": {
+            "headline": {
+              "type": "string"
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },

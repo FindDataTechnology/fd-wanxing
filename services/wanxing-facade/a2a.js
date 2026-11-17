@@ -336,6 +336,21 @@ export function createA2aFace({
       const { guidance: _prose, ...axes } = md.memory;
       if (Object.keys(axes).length > 0) facts.memory = axes;
     }
+    // Dashboard (design D8): a single-agent face may not fake a console, it may
+    // only say whether the PACK declares a team one. Contract level = headline
+    // + block ids; `params` / `surfaces` are author choices, not facts a
+    // machine face needs (and they are the part most likely to leak intent).
+    if (md.console && typeof md.console === "object") {
+      const blocks = Array.isArray(md.console.blocks)
+        ? md.console.blocks
+            .map((b) => (b && typeof b === "object" ? b.block : b))
+            .filter((x) => typeof x === "string" && x.length > 0)
+        : [];
+      const headline = typeof md.console.headline === "string" ? md.console.headline : null;
+      if (blocks.length > 0 || headline) {
+        facts.console = { ...(headline ? { headline } : {}), blocks };
+      }
+    }
     return facts;
   }
 

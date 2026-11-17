@@ -427,6 +427,7 @@ test("4.1 the detail source carries the three sections and per-agent call sample
   // unify-pillar-surfaces 4.3：两支柱各自一段，id 由 sec.key 拼出（toolkit / memory）
   assert.ok(src.includes("detail-${sec.key}"), "工具面/记忆段必须有各自稳定 testid");
   assert.ok(src.includes("detail-${sec.key}-undeclared"), "未声明态要有独立 testid（三态不许合并）");
+  assert.ok(src.includes("detail-dashboard-standup"), "D8：声明了看板要给建队入口（4.4）");
   assert.ok(!src.includes("data-agent="), "嵌入脚本不得写 loader 不认的属性（loader 按 data-line 解析）");
   assert.ok(src.includes("/#/embed/${slug}"), "嵌入示例用可按 slug 直连的 iframe 路由");
 });
@@ -466,6 +467,33 @@ test("4.3 三支柱：有声明 -> present 且逐项可读；无声明 -> 显式
   const smuggled = pillarSectionsOf({ memory: { guidance: "记：只记读数", store: { home: "member" } } });
   const mem4 = smuggled.find((x) => x.key === "memory");
   assert.equal(JSON.stringify(mem4).includes("只记读数"), false, "章程原文不得进入渲染数据");
+});
+
+// ── unify-pillar-surfaces 4.4 / design D8: 单 agent 的看板段 ─────────────────
+test("4.4 看板段：声明了 team console -> 引导建队；未声明 -> 明说无团队看板（都不伪造运行态）", async () => {
+  const { pillarSectionsOf } = await import("../src/views/AgentDetailView.jsx");
+
+  const team = pillarSectionsOf({
+    slug: "s1",
+    console: { headline: "decisions.open", blocks: ["team", "kpi", "stream"] },
+  }).find((x) => x.key === "dashboard");
+  assert.equal(team.state, "team");
+  assert.equal(team.headline, "decisions.open");
+  assert.deepEqual(team.blocks, ["team", "kpi", "stream"]);
+  assert.ok(team.teamText.includes("建队"), "声明了看板就要给出建队指引");
+  // D8：单 agent 面不得伪造看板——段里只有声明事实与指引，没有运行态读数
+  assert.equal(JSON.stringify(team).includes("turns7d"), false, "看板段不得混入运行态读数");
+
+  const none = pillarSectionsOf({ slug: "s2" }).find((x) => x.key === "dashboard");
+  assert.equal(none.state, "undeclared");
+  assert.ok(none.undeclaredText.includes("团队控制台"), "未声明时要说明去哪儿看真看板");
+  assert.deepEqual(none.blocks, []);
+  assert.equal(none.headline, null);
+
+  // 只给 headline 不给 blocks（老作者的写法）也要算「声明了」
+  const headOnly = pillarSectionsOf({ console: { headline: "decisions.open" } }).find((x) => x.key === "dashboard");
+  assert.equal(headOnly.state, "team");
+  assert.deepEqual(headOnly.blocks, []);
 });
 
 // ── wanxing-first-impression 5.x: 首屏活读数 + 真卡片 ────────────────────────
