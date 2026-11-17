@@ -420,11 +420,52 @@ test("4.1/4.2/4.3 详情页三段结构、可见性成句、无示例不编造",
 test("4.1 the detail source carries the three sections and per-agent call samples", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/views/AgentDetailView.jsx", import.meta.url), "utf8");
-  for (const id of ["detail-now", "detail-how", "detail-visibility", "detail-copy-curl", "detail-copy-embed"]) {
+  for (const id of ["detail-now", "detail-how", "detail-visibility", "detail-copy-curl", "detail-copy-embed",
+                    "detail-pillars"]) {
     assert.ok(src.includes(`"${id}"`), `${id} 必须存在于详情页`);
   }
+  // unify-pillar-surfaces 4.3：两支柱各自一段，id 由 sec.key 拼出（toolkit / memory）
+  assert.ok(src.includes("detail-${sec.key}"), "工具面/记忆段必须有各自稳定 testid");
+  assert.ok(src.includes("detail-${sec.key}-undeclared"), "未声明态要有独立 testid（三态不许合并）");
   assert.ok(!src.includes("data-agent="), "嵌入脚本不得写 loader 不认的属性（loader 按 data-line 解析）");
   assert.ok(src.includes("/#/embed/${slug}"), "嵌入示例用可按 slug 直连的 iframe 路由");
+});
+
+// ── unify-pillar-surfaces 4.3: 详情页渲染三支柱（契约事实，不含散文） ────────
+test("4.3 三支柱：有声明 -> present 且逐项可读；无声明 -> 显式「未声明」，不是空壳", async () => {
+  const { pillarSectionsOf } = await import("../src/views/AgentDetailView.jsx");
+
+  const declared = pillarSectionsOf({
+    slug: "s1",
+    toolFace: { "invest-ops-mcp": ["fleet_list", "fleet_spec_read"], "facet-market-mcp": [] },
+    memory: { store: { home: "member" }, read: { scope: "own+shared" }, write: { authority: "private" }, process: { distill: "on" } },
+  });
+  const [toolkit, memory] = declared;
+  assert.equal(toolkit.state, "present");
+  assert.deepEqual(toolkit.groups.map((g) => g.server), ["invest-ops-mcp", "facet-market-mcp"]);
+  assert.deepEqual(toolkit.groups[0].tools, ["fleet_list", "fleet_spec_read"]);
+  assert.equal(memory.state, "present");
+  assert.deepEqual(memory.axes.map((a) => a.key),
+    ["store.home", "read.scope", "write.authority", "process.distill"]);
+  assert.deepEqual(memory.axes.map((a) => a.value), ["member", "own+shared", "private", "on"]);
+
+  // 未声明：两段都必须给出显式文案（渲染成「未声明」而非空串）
+  const bare = pillarSectionsOf({ slug: "s2" });
+  for (const sec of bare) {
+    assert.equal(sec.state, "undeclared", `${sec.key} 未声明必须是 undeclared`);
+    assert.ok(sec.undeclaredText && sec.undeclaredText.length > 5, `${sec.key} 要有成句的未声明文案`);
+  }
+
+  // 只声明章程（机器面不带 axes）⇒ 仍是 undeclared，且文案要说清「不等于没有记忆」
+  const charterOnly = pillarSectionsOf({ slug: "s3", memory: {} });
+  const mem3 = charterOnly.find((x) => x.key === "memory");
+  assert.equal(mem3.state, "undeclared");
+  assert.ok(mem3.undeclaredText.includes("平台默认"), "要点明沿用平台默认");
+
+  // 散文绝不上这些面：payload 里塞了 guidance 也不许出现在渲染数据里
+  const smuggled = pillarSectionsOf({ memory: { guidance: "记：只记读数", store: { home: "member" } } });
+  const mem4 = smuggled.find((x) => x.key === "memory");
+  assert.equal(JSON.stringify(mem4).includes("只记读数"), false, "章程原文不得进入渲染数据");
 });
 
 // ── wanxing-first-impression 5.x: 首屏活读数 + 真卡片 ────────────────────────

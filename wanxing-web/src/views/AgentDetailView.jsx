@@ -17,6 +17,65 @@ const DETAIL_PAGE_SIZE = 200;
 // One copy-pasteable call for THIS agent: the shared sample writes
 // <agentSlug>, which leaves the reader editing before it runs. Here the slug is
 // already in the route (wanxing-first-impression 4.1).
+// ── 三支柱（openspec unify-pillar-surfaces 4.3） ────────────────────────────
+// The machine face already carries the contract facts: the catalog entry grew
+// `toolFace` (per-role narrowed tool names) and `memory` (declared axes) in the
+// same change, and both ride `entry.metadata` server-side. This page renders
+// them — and nothing else. Two rules that are not cosmetic:
+//
+//   · Absent key reads as an explicit 「未声明」, never as a silently empty box.
+//     The spec pins three states (有值 / 未声明 / 已声明未实例化); collapsing
+//     "not declared" into "declared but empty" is the drift this change exists
+//     to stop.
+//   · No prose here. The charter text (`memory.guidance`) is deliberately not
+//     part of the catalog payload, so there is nothing to render even if we
+//     wanted to — keep it that way (anonymous face).
+const AXIS_TITLES = { store: "存放", read: "读取", write: "写入", process: "加工" };
+
+export function pillarSectionsOf(agent) {
+  const face = agent?.toolFace && typeof agent.toolFace === "object" ? agent.toolFace : null;
+  const mem = agent?.memory && typeof agent.memory === "object" ? agent.memory : null;
+
+  const groups = face
+    ? Object.entries(face).map(([server, tools]) => ({
+        server,
+        tools: Array.isArray(tools) ? tools.map(String) : [],
+      }))
+    : [];
+
+  // 四轴白名单，不是「遍历所有键」：机器面已经剥过一次 guidance，但这一层
+  // 不该依赖上游剥得对——任何未知键（章程原文、未来新增的散文字段）一律不渲染。
+  const axes = [];
+  for (const axis of ["store", "read", "write", "process"]) {
+    const value = mem?.[axis];
+    if (value === undefined) continue;
+    if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) axes.push({ axis, key: `${axis}.${k}`, value: String(v) });
+    } else {
+      axes.push({ axis, key: axis, value: String(value) });
+    }
+  }
+
+  return [
+    {
+      key: "toolkit",
+      title: "工具面",
+      state: groups.length > 0 ? "present" : "undeclared",
+      groups,
+      undeclaredText: "本包未声明岗位级工具收窄——工具面按包级 allowTools 生效。",
+    },
+    {
+      key: "memory",
+      title: "记忆",
+      state: axes.length > 0 ? "present" : "undeclared",
+      axes,
+      // 只声明了章程、四轴全跟平台默认的包，机器面刻意不带 axes（无散文、
+      // 不发空壳）——这里必须说清「未声明轴」不等于「没有记忆」。
+      undeclaredText: "本包未声明记忆四轴——沿用平台默认（章程原文只在需要身份的面可见）。",
+    },
+  ];
+}
+
 function curlFor(slug) {
   return `curl -X POST "${WANXING_BASE}/api/wanxing/v1/a2a/${slug}" \\
   -H "Authorization: Bearer sk-xxxx" \\
@@ -95,6 +154,7 @@ export function AgentDetailView({ focusSlug }) {
   }
 
   const fact = badgeFor(factOf({ status: agent.status, health: agent.health }));
+  const pillars = pillarSectionsOf(agent);
   const paused = fact.fact === "paused";
   const chatEntry = agent.chatable === true && !paused;
   const examples = agent.examples ?? [];
@@ -147,6 +207,42 @@ export function AgentDetailView({ focusSlug }) {
             </ul>
           </div>
         )}
+      </section>
+
+      {/* ── 1.5 三支柱（unify-pillar-surfaces 4.3） ─────────────────── */}
+      <section className="space-y-3" data-testid="detail-pillars">
+        <h2 className="text-xs font-medium text-slate-500 dark:text-slate-400">团队能力面</h2>
+        {pillars.map((sec) => (
+          <div key={sec.key} className="space-y-1.5" data-testid={`detail-${sec.key}`}>
+            <h3 className="text-xs font-medium text-slate-500 dark:text-slate-400">{sec.title}</h3>
+            {sec.state === "undeclared" ? (
+              <p className="text-xs text-slate-400" data-testid={`detail-${sec.key}-undeclared`}>{sec.undeclaredText}</p>
+            ) : sec.key === "toolkit" ? (
+              <div className="space-y-1">
+                {sec.groups.map((g) => (
+                  <div key={g.server} className="flex flex-wrap items-baseline gap-2">
+                    <code className="text-xs font-mono text-slate-600 dark:text-slate-300">{g.server}</code>
+                    <span className="text-xs text-slate-400">{g.tools.length} 个工具</span>
+                    <span className="flex flex-wrap gap-1">
+                      {g.tools.map((t) => (
+                        <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono">{t}</span>
+                      ))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <dl className="flex flex-wrap gap-x-4 gap-y-1">
+                {sec.axes.map((a) => (
+                  <div key={a.key} className="flex items-baseline gap-1">
+                    <dt className="text-xs text-slate-400">{AXIS_TITLES[a.axis] ?? a.axis}</dt>
+                    <dd className="text-xs text-slate-600 dark:text-slate-300 font-mono">{a.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
+        ))}
       </section>
 
       {/* ── 2. 现在怎样 ─────────────────────────────────────────────── */}
