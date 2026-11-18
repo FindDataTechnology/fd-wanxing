@@ -2022,3 +2022,95 @@ test("turn budget: a budget hit is -32041 on every path, never the generic -3203
   assert.equal(turnErrorCode({ code: -32003 }), -32003, "upstream code passes through");
   assert.equal(turnErrorCode(undefined), -32032, "no error object still yields a code");
 });
+
+// ── A2A non-text parts (openspec: add-caas-delivery-contract) ────────────────
+//
+// Pins the one leg of agent↔agent communication that had no route at all: an
+// agent handing a produced asset to another agent. The contract:
+//   - `artifact_ref` rides to the target unchanged (it is the point)
+//   - an unknown part kind is REFUSED by name, not silently dropped
+//   - a text-only message is byte-identical to before (no caller breaks)
+//   - an artifact-only message (no text) is accepted — text is not mandatory
+
+test("caas: artifact_ref part rides through to the upstream unchanged", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply() });
+  const body = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "message/send",
+    params: {
+      message: {
+        role: "user",
+        parts: [
+          { kind: "text", text: "这是上一岗做好的报告" },
+          { kind: "artifact_ref", assetId: "asset_42", mime: "application/pdf", sha256: "abc123", size: 1024 },
+        ],
+      },
+    },
+  };
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST",
+    headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(h.upstreamCalls.length, 1, "the turn reached the target");
+  const forwarded = JSON.parse(h.upstreamCalls[0].init.body);
+  const parts = forwarded.params.message.parts;
+  assert.ok(
+    parts.some((p) => p.kind === "artifact_ref" && p.assetId === "asset_42" && p.mime === "application/pdf"),
+    "the artifact reference reached the target — this is the whole capability",
+  );
+  await h.close();
+});
+
+test("caas: an unknown part kind is refused by name", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply() });
+  const body = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "message/send",
+    params: { message: { role: "user", parts: [{ kind: "text", text: "hi" }, { kind: "hologram" }] } },
+  };
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST",
+    headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.error.code, -32602);
+  assert.match(r.body.error.message, /hologram/, "the refused kind is named");
+  assert.equal(h.upstreamCalls.length, 0, "nothing was forwarded");
+  await h.close();
+});
+
+test("caas: artifact-only message is accepted (text is not mandatory)", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply() });
+  const body = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "message/send",
+    params: { message: { role: "user", parts: [{ kind: "artifact_ref", assetId: "asset_7" }] } },
+  };
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST",
+    headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(h.upstreamCalls.length, 1, "an artifact-only turn is a real turn");
+  await h.close();
+});
+
+test("caas: a text-only message forwards exactly one text part (no regression)", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply() });
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST",
+    headers: { authorization: "Bearer sk-caller", "content-type": "application/json" },
+    body: JSON.stringify(sendBody("普通文本回合")),
+  });
+  assert.equal(r.status, 200);
+  const parts = JSON.parse(h.upstreamCalls[0].init.body).params.message.parts;
+  assert.deepEqual(parts, [{ kind: "text", text: "普通文本回合" }], "text-only forwarding is unchanged");
+  await h.close();
+});

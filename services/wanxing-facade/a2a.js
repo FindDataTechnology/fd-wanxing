@@ -22,6 +22,67 @@ const textOf = (message) => {
   return text || null;
 };
 
+// ── Non-text parts (openspec: add-caas-delivery-contract) ───────────────────
+//
+// A2A used to flatten `parts` to text and drop everything else, so an agent
+// could not hand a file, a chart or an asset reference to another agent — the
+// one leg of agent↔agent communication with no route at all.
+//
+// `artifact_ref` is the form that carries an ASSET LEDGER reference (never
+// inline bytes; caas-forms.json: asset.inline_bytes === false):
+//
+//   { kind: "artifact_ref", assetId, mime, downloadUrl?, sha256?, size? }
+//
+// Unknown kinds are REFUSED with their names, not silently dropped — a message
+// that arrives missing the one thing it was sent to deliver is worse than an
+// error. Text parts keep flowing exactly as before (byte-identical for callers
+// that only send text).
+const ARTIFACT_PART = "artifact_ref";
+const KNOWN_TEXT_KINDS = new Set(["text"]);
+
+export function artifactPartsOf(message) {
+  const parts = Array.isArray(message?.parts) ? message.parts : [];
+  return parts.filter((p) => p && p.kind === ARTIFACT_PART);
+}
+
+/** Validate + normalise incoming parts. Returns {text, artifacts, unknown}. */
+export function readParts(message) {
+  const parts = Array.isArray(message?.parts) ? message.parts : [];
+  const artifacts = [];
+  const unknown = [];
+  for (const p of parts) {
+    if (!p || typeof p !== "object") continue;
+    const kind = p.kind ?? (typeof p.text === "string" ? "text" : "");
+    if (KNOWN_TEXT_KINDS.has(kind) || p.type === "text") continue;
+    if (kind === ARTIFACT_PART) {
+      const assetId = String(p.assetId ?? p.asset_id ?? "").trim();
+      if (!assetId) {
+        unknown.push({ kind, reason: "artifact_ref requires assetId" });
+        continue;
+      }
+      artifacts.push({
+        kind: ARTIFACT_PART,
+        assetId,
+        mime: String(p.mime ?? "").trim() || "application/octet-stream",
+        ...(p.downloadUrl ? { downloadUrl: String(p.downloadUrl) } : {}),
+        ...(p.sha256 ? { sha256: String(p.sha256) } : {}),
+        ...(Number.isFinite(p.size) ? { size: Number(p.size) } : {}),
+      });
+      continue;
+    }
+    unknown.push({ kind: String(kind || "<none>") });
+  }
+  return { text: textOf(message), artifacts, unknown };
+}
+
+/** Compose an A2A result message carrying text plus any artifact refs. */
+export function composeParts({ text, artifacts = [] }) {
+  const parts = [];
+  if (text) parts.push({ kind: "text", text });
+  for (const a of artifacts) parts.push({ kind: ARTIFACT_PART, ...a });
+  return { role: "agent", parts };
+}
+
 const jsonRpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
 // A turn that exhausted ITS OWN budget is -32041 ("timed out"), never the generic
@@ -420,12 +481,18 @@ export function createA2aFace({
   // outcome, and the finish/exit semantics by slot ownership. A flight error
   // is RETURNED as the JSON-RPC error response, never thrown — the route and
   // the cluster face render it identically either way.
-  const runSendFlight = async ({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId = null, holdsSlot, clusterTurnId = null, exec = null, timeoutMs = null }) => {
+  const runSendFlight = async ({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId = null, holdsSlot, clusterTurnId = null, exec = null, timeoutMs = null, artifacts = [] }) => {
     const body = JSON.stringify({
       jsonrpc: "2.0",
       id: rpcId,
       method: "message/send",
-      params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
+      params: {
+        message: {
+          role: "user",
+          parts: [{ kind: "text", text }, ...artifacts].filter((p) => p.kind !== "text" || p.text),
+          context_id: contextId,
+        },
+      },
     });
     const forward = async () => {
       const url = config.agentUrlFor(state.agentPath);
@@ -738,8 +805,18 @@ export function createA2aFace({
         return res.status(200).json(jsonRpcError(id, -32601, `Method not found: ${method}`));
       }
       const message = params?.message ?? params;
-      const text = textOf(message);
-      if (!text) return res.status(200).json(jsonRpcError(id, -32604, "empty message"));
+      const { text, artifacts, unknown } = readParts(message);
+      // Unknown part kinds are REFUSED by name: a message that arrives missing
+      // the thing it was sent to deliver is worse than an error (caas-delivery).
+      if (unknown.length) {
+        return res.status(200).json(
+          jsonRpcError(id, -32602, `unsupported part kind(s): ${unknown.map((u) => u.kind).join(", ")}`),
+        );
+      }
+      // A message may carry ONLY artifacts — text is no longer mandatory.
+      if (!text && artifacts.length === 0) {
+        return res.status(200).json(jsonRpcError(id, -32604, "empty message"));
+      }
 
       const slug = req.params.agentSlug;
       let state;
@@ -779,7 +856,7 @@ export function createA2aFace({
       // inputs, so the fingerprint and the flight body can never disagree.
       const contextId = contextIdFor(message, idemKey, getReapWindow ? getReapWindow(caller, slug) : null);
       const requestHash = idemKey
-        ? sha256(JSON.stringify({ method, params: { message: { role: "user", parts: [{ kind: "text", text }] }, context_id: contextId } }))
+        ? sha256(JSON.stringify({ method, params: { message: { role: "user", parts: [{ kind: "text", text }, ...artifacts].filter((p) => p.kind !== "text" || p.text) }, context_id: contextId } }))
         : null;
       // Idempotency triage BEFORE the slot (send only — streams never replay):
       // a finished request replays from the ledger (a read), a running flight
@@ -813,7 +890,16 @@ export function createA2aFace({
         jsonrpc: "2.0",
         id,
         method: m,
-        params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: contextId } },
+        // Artifact refs ride through to the target unchanged — that is the
+        // whole point (add-caas-delivery-contract): an agent-to-agent message
+        // can now deliver a produced asset, not just prose about it.
+        params: {
+          message: {
+            role: "user",
+            parts: [{ kind: "text", text }, ...artifacts].filter((p) => p.kind !== "text" || p.text),
+            context_id: contextId,
+          },
+        },
       });
 
       // Desktop-seat targets (add-desktop-fleet-runner ④): the turn is
@@ -889,7 +975,7 @@ export function createA2aFace({
             }
           : null;
         const out = await runSendFlight({
-          caller, slug, state, text, contextId, idemKey, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec,
+          caller, slug, state, text, contextId, idemKey, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec, artifacts,
           // The public/pack send path used to pass NO budget at all, so the
           // turn died on undici's 300 s default and was reported as -32032.
           // The budget is the turn's own (WANXING_TURN_TIMEOUT_MS).
