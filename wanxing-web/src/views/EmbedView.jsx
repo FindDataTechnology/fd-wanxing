@@ -670,6 +670,16 @@ export function EmbedView({ focusSlug } = {}) {
             <button type="button" onClick={applyOwnKey} className="rounded px-2 py-1 text-white" style={{ background: accent }}>启用</button>
           </div>
           {ownKey && <p className={`mt-1 ${subtle}`}>已启用自带键（{ownKey.slice(0, 6)}…）。</p>}
+          {/* First-touch honesty: an agent nobody has visited yet has no warm
+              process — the runner spawns one on demand (~24s measured
+              2026-11-18; later turns ~7s). Saying so beats a silent spinner:
+              without it the panel just looks frozen. Only shown while a turn
+              is in flight AND nothing has come back yet. */}
+          {sending && messages.length <= 1 && (
+            <p data-testid="wx-embed-coldstart-hint" className={`mt-1 text-[11px] ${subtle}`}>
+              首次对话需要准备，约 20 秒；之后会快很多。
+            </p>
+          )}
         </details>
       )}
 

@@ -193,6 +193,49 @@
     document.body.appendChild(frame);
   }
 
+
+  // Silent warm-up: mint an anonymous visitor token, then send one throwaway
+  // turn. Both calls are best-effort — this never surfaces an error, and it
+  // never blocks mounting.
+  function warmOnLoad(slug) {
+    if (!slug) return;
+    var base = ORIGIN + "/api/wanxing/v1/chat/" + encodeURIComponent(slug);
+    var headers = { "content-type": "application/json" };
+    // Origin travels automatically; the facade mints an anonymous credential
+    // only for origins on the agent's allowlist, so an unlisted host simply
+    // gets a 403 here and nothing happens.
+    fetch(base + "/visitor-token", { method: "POST", mode: "cors", credentials: "omit", headers: { "content-type": "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (tok) {
+        if (!tok || !tok.token) return;
+        return fetch(base, {
+          method: "POST",
+          mode: "cors",
+          credentials: "omit",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer " + tok.token,
+            // A fixed key: a reload must not warm twice (the facade dedupes on
+            // it too, but keeping it stable also makes the intent obvious).
+            "idempotency-key": "wx-warm:" + slug,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 0,
+            method: "message/send",
+            params: {
+              message: {
+                role: "user",
+                parts: [{ kind: "text", text: "hi" }],
+                context_id: "wx-warm:" + slug,
+              },
+            },
+          }),
+        });
+      })
+      .catch(function () { /* warming is never a failure mode */ });
+  }
+
   if (!LINE) return warn("missing data-line");
 
   // Resolve the binding BEFORE mounting: the loader must not inject a surface
@@ -209,6 +252,19 @@
       }
       var theme = (doc.theme && doc.theme.accent) || "";
       mount(doc.agent.slug, theme);
+      // Warm the agent while the visitor is still reading the page.
+      //
+      // Measured 2026-11-18: the FIRST turn on an unvisited agent costs ~24s
+      // (the runner spawns the dsh child on demand — there is no "start on
+      // deploy", and AGENT_RUNNER_MAX_CHILDREN=8 means only the recently-used
+      // ones stay hot). The second turn is ~7s. A visitor takes longer than
+      // that to click the bubble and type, so firing one silent turn NOW
+      // usually erases the wait entirely.
+      //
+      // Fire-and-forget on purpose: any failure (anon closed, quota, cold-start
+      // error) is ignored — this is an optimisation, never a gate. The visitor's
+      // real turn is unaffected either way.
+      warmOnLoad(doc.agent.slug);
     })
     .catch(function () { warn("resolution request failed (network or CORS)"); });
 })();
