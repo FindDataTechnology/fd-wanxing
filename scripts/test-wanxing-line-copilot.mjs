@@ -61,7 +61,7 @@ test("1.1 store: line bindings roundtrip, upsert in place, delete is idempotent"
 
 // ── Harness: a2a + chat faces + console face over one store ─────────────────
 
-function harness({ store = freshStore(), paused = false, visibility = "public" } = {}) {
+function harness({ store = freshStore(), paused = false, visibility = "public", env = {} } = {}) {
   const sub = {
     userId: 7,
     degraded: () => false,
@@ -118,6 +118,7 @@ function harness({ store = freshStore(), paused = false, visibility = "public" }
     sub2api: sub,
     registryFetch,
     resolveLineState: (line) => chatFace.lineState(line),
+    env,
     log: () => {},
   });
 
@@ -310,7 +311,7 @@ test("1.4 intent/effect: both gates open resolves anonymous open", async () => {
 });
 
 // Variant harness: identical wiring with the platform anonymous switch ON.
-function harnessWithAnonOpen(store) {
+function harnessWithAnonOpen(store, env = {}) {
   const sub = {
     userId: 7,
     degraded: () => false,
@@ -358,6 +359,7 @@ function harnessWithAnonOpen(store) {
     sub2api: sub,
     registryFetch,
     resolveLineState: (line) => chatFace.lineState(line),
+    env,
     log: () => {},
   });
   const server = http.createServer(app).listen(0);
@@ -369,3 +371,62 @@ function harnessWithAnonOpen(store) {
     close: () => new Promise((r) => server.close(r)),
   };
 }
+
+// ── Line roster: 未绑定是显式缺口，孵化态是不同的判词 ────────────────────────
+// 运营面此前只列**已有绑定**的行：未绑定的对外线根本不出现，于是「这条线还没有
+// 副驾」和「这条线不需要副驾」在界面上是同一种沉默。名册把两类分开。
+
+test("line roster: an unbound outward line is a visible gap; an incubating one is not", async () => {
+  const h = harness({
+    env: {
+      WANXING_COPILOT_LINES: "lex,wire",
+      WANXING_COPILOT_INCUBATING_LINES: "shilun,zhesi",
+    },
+  });
+  try {
+    const before = await h.call("/api/wanxing/v1/console/line-copilots", h.ops("/api/wanxing/v1/console/line-copilots"));
+    assert.equal(before.status, 200, JSON.stringify(before.body));
+    const rows = new Map(before.body.bindings.map((b) => [b.line, b]));
+
+    // 名册里的对外线：没绑定 = 可见缺口
+    for (const line of ["lex", "wire"]) {
+      const row = rows.get(line);
+      assert.ok(row, `${line} must appear as a gap, not vanish`);
+      assert.equal(row.missing, true);
+      assert.equal(row.notApplicable, false);
+      assert.equal(row.state, "unbound");
+    }
+    // 孵化态：同样是 unbound，但判词不同
+    for (const line of ["shilun", "zhesi"]) {
+      const row = rows.get(line);
+      assert.ok(row, `${line} must be listed so the operator can tell why it has no copilot`);
+      assert.equal(row.notApplicable, true);
+      assert.equal(row.missing, false);
+    }
+
+    // 绑上之后该行从缺口变成正常行
+    await h.call("/api/wanxing/v1/console/line-copilots/lex", h.ops("/api/wanxing/v1/console/line-copilots/lex", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentSlug: SLUG }),
+    }));
+    const after = await h.call("/api/wanxing/v1/console/line-copilots", h.ops("/api/wanxing/v1/console/line-copilots"));
+    const lexRows = after.body.bindings.filter((b) => b.line === "lex");
+    assert.equal(lexRows.length, 1, "a bound line must not be duplicated by the roster");
+    assert.equal(lexRows[0].state, "ready");
+    assert.notEqual(lexRows[0].missing, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test("line roster: absent roster env changes nothing (byte-identical legacy shape)", async () => {
+  const h = harness();
+  try {
+    const r = await h.call("/api/wanxing/v1/console/line-copilots", h.ops("/api/wanxing/v1/console/line-copilots"));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.bindings, []);
+  } finally {
+    await h.close();
+  }
+});

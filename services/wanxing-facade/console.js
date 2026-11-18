@@ -24,6 +24,7 @@ export function registerConsoleRoutes(app, {
   packsInternalFetch = null, // (path, init) → Response against the packs surface (config proxy)
   observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
   memoryFetch = null, // (path, init) → Response against fd-memory (platform seam inside); null = lane unconfigured
+  env = process.env, // deployment config (line roster lives here, not in code)
   log = null,
   // Line copilot bindings (unify-cross-line-copilot 1.2): late-bound resolver
   // from the chat face — the console shows intent vs EFFECT, and the effect
@@ -518,6 +519,20 @@ export function registerConsoleRoutes(app, {
   const LINE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
   const ACCENT_RE = /^#[0-9a-fA-F]{6}$/;
 
+  // ── Line roster (line-reception-copilot「未绑定是显式缺口」) ──────────────
+  // 未绑定的对外线在绑定列表里根本不出现，运营面因此看不见缺口。名册把「该有副驾
+  // 的线」声明出来：已绑定的照旧列；没有绑定但属于对外线的判 `missing`；孵化态
+  // （无商业面）的判 `not_applicable`——两者必须是不同的判词，不能合并成一种沉默。
+  // 名册是**部署配置**（各部署的对外线不同），不是硬编码的产品事实。
+  const LINE_ROSTER = String(env.WANXING_COPILOT_LINES || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => LINE_RE.test(s));
+  const INCUBATING = String(env.WANXING_COPILOT_INCUBATING_LINES || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => LINE_RE.test(s));
+
   app.get("/api/wanxing/v1/console/line-copilots", async (req, res) => {
     if (!opsOnly(req, res)) return;
     const out = [];
@@ -535,6 +550,44 @@ export function registerConsoleRoutes(app, {
         // intent says anonymous should be open, effect says a visitor without
         // host identity will be asked to log in (or is refused outright)
         gap: b.anonymousIntent === true && state.state === "ready" && state.anonymous !== "open",
+      });
+    }
+    // Roster rows that have no binding: visible gaps, never silent omissions.
+    const bound = new Set(store.lineCopilotList().map((b) => b.line));
+    for (const line of LINE_ROSTER) {
+      if (bound.has(line)) continue;
+      out.push({
+        line,
+        agentSlug: null,
+        accent: null,
+        anonymousIntent: null,
+        updatedBy: null,
+        updatedAt: null,
+        state: "unbound",
+        reason: null,
+        agentName: null,
+        effective: "closed",
+        gap: false,
+        missing: true,
+        notApplicable: false,
+      });
+    }
+    for (const line of INCUBATING) {
+      if (bound.has(line)) continue;
+      out.push({
+        line,
+        agentSlug: null,
+        accent: null,
+        anonymousIntent: null,
+        updatedBy: null,
+        updatedAt: null,
+        state: "unbound",
+        reason: null,
+        agentName: null,
+        effective: "closed",
+        gap: false,
+        missing: false,
+        notApplicable: true,
       });
     }
     return ok(res, { bindings: out });

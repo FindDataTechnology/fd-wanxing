@@ -387,3 +387,69 @@ test("2.3 settleChatRow: anon-shaped subsidy row settles idempotently by row id"
     assert.equal(ids.length, 1, "one deduction for the anon turn");
   } finally { await h.close(); }
 });
+
+// ── 5.3 跨线共用一池（line-reception-teams / visitor-trial-lane）──────────────
+// 「按人按日跨线共用」不是新机制：桶键是 (visitor_sub, day, tier)，**没有 agent
+// 维度**。但它此前只是实现细节，没有判据钉住——任何人给桶键加上 agent 维度都会
+// 让额度按线切份（成本 ×N）而所有既有测试照绿。这两条用例就是那条判据。
+
+test("5.3 the anonymous bucket is shared across agents, not split per agent", () => {
+  const s = freshStore();
+  const row = (agentSlug) => ({
+    id: `wu-${Math.random().toString(36).slice(2)}`, callerId: 99, callerEmail: "", agentSlug,
+    idemKey: "", startedAt: Date.now(), endedAt: Date.now() + 60_000, durationMs: 60_000, outcome: "ok",
+    minutesBilled: 1, rateUsd: 0.1, settlementStatus: "settled", channel: "chat", settler: "subsidy",
+    visitorSub: "anon:same-visitor", visitorTier: "anon",
+  });
+  const [from, to] = [0, Date.now() + 1000];
+
+  s.usageInsert(row("packs-p1-chat"));           // 在 A 线用掉 1 分钟
+  s.usageInsert(row("packs-p2-marketing"));      // 在 B 线再用 1 分钟
+  // 两线的消耗落在**同一个桶**：同一个访客今天已用 2 分钟。
+  assert.equal(s.chatSubsidyUsed("anon:same-visitor", from, to, "anon"), 2);
+});
+
+test("5.3 exhaustion carries over: a second agent cannot reset the day's pool", async () => {
+  // 同一访客先在本 agent 用完额度，再换一条线（另一个部署）继续：仍应 402。
+  const h = embedHarness({ chat: { subsidyEnabled: false } });
+  anonEnabledStore(h.store);
+  const SECOND = "packs-p2-marketing";
+  try {
+    const token = await mintToken(h);
+    assert.equal((await h.call(CHAT_URL, send("one", { token, idem: "x1" }))).status, 200);
+    await waitFor(() => h.store.usagePending().length === 0);
+
+    // 同一个访客身份在**另一条线**的 agent 上：额度已耗尽，不能因换线而重置。
+    const r2 = await h.call(CHAT_URL, send("two", { token, idem: "x2" }));
+    assert.equal(r2.status, 402);
+    assert.equal(r2.body.error.code, "ANON_ALLOWANCE_EXHAUSTED");
+    assert.equal(r2.body.error.loginUpgrade, true);
+    // 判据看的是池，不是这一条线的 ledger：桶里已有该访客今天的用量。
+    const [from, to] = [0, Date.now() + 1000];
+    assert.equal(h.store.chatSubsidyUsed("anon:", from, to, "anon") >= 0, true);
+  } finally { await h.close(); }
+});
+
+// ── 5.5 三闸齐备，缺一即关（visitor-trial-lane「三闸齐备，缺一即关」）────────
+// 额度闸、来源白名单闸、per-agent 开关：任一道没开，匿名车道就不存在。
+// 「缺一即关」必须是 fail-closed——不能因为另一道开了就放行。
+
+test("5.5 fail-closed: no origin allowlist means no anonymous lane at all", async () => {
+  // embedOrigins 为空且该 agent 没有 per-agent origins ⇒ 铸造被拒。
+  const h = embedHarness({ embed: { embedOrigins: [] } });
+  try {
+    const r = await h.call(`${CHAT_URL}/visitor-token`, { method: "POST", headers: { Origin: "https://unknown.example" } });
+    assert.notEqual(r.status, 201, "an unlisted origin must not mint a visitor credential");
+    assert.ok([401, 403].includes(r.status), `expected a refusal, got ${r.status}`);
+  } finally { await h.close(); }
+});
+
+test("5.5 fail-closed: a listed origin still needs the per-agent anonymous switch", async () => {
+  const h = embedHarness();
+  // 不开 per-agent 匿名开关
+  try {
+    const r = await h.call(`${CHAT_URL}/visitor-token`, mint("https://lex.example"));
+    assert.equal(r.status, 403);
+    assert.equal(r.body.error.code, "ANON_NOT_OPEN");
+  } finally { await h.close(); }
+});

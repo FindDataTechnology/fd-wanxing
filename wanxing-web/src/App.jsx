@@ -11,6 +11,7 @@ import { IntroView } from "./views/IntroView.jsx";
 import { CatalogView } from "./views/CatalogView.jsx";
 import { DocsView } from "./views/DocsView.jsx";
 import { EmbedView } from "./views/EmbedView.jsx";
+import { SiteCopilot } from "./components/SiteCopilot.jsx";
 import { LineLadder } from "./components/LineLadder.jsx";
 import { SiteMark } from "./components/SiteMark.jsx";
 import { StatusStrip } from "./components/StatusStrip.jsx";
@@ -218,6 +219,8 @@ export function App() {
         </Suspense>
       </main>
       {viewKey === "#/console" ? <ComplianceLine /> : <FamilyFooter />}
+      {/* 站点接待副驾（line-reception-teams 2.3）：内容视图挂，控制台/嵌入件不挂。 */}
+      {viewKey !== "#/console" && viewKey !== "#/embed" && <SiteCopilot viewKey={viewKey} />}
     </div>
   );
 }
