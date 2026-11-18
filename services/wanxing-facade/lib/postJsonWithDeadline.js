@@ -21,6 +21,21 @@
 // Contract mirrors the subset of `fetch` the turn path uses (ok/status/headers
 // get/text/json), so the injected `upstreamFetch` test seam keeps working: the
 // tests keep supplying their own `Response`, production takes this path.
+//
+// "Mirrors fetch" includes the PART THAT IS EASY TO GET WRONG: `text()` and
+// `json()` return Promises. The turn path reads its answer as
+// `await upstream.json().catch(() => null)` — straight fetch idiom — so a
+// synchronous `json()` makes that call a TypeError on **every turn that gets
+// far enough to have a body**, i.e. on exactly the successful ones. Measured
+// live 2026-11-16: four spider-heal tickets came back as
+// `{"code":-32032,"message":"upstream.json(...).catch is not a function"}`
+// while the same route answered 200, and the retry budget burned out on the
+// TypeError rather than on anything upstream did. The unit tests could not see
+// it: they inject `upstreamFetch` (a real `Response`, Promise-returning) and
+// asserted `r.json().result` — the seam asserted the shape the caller never
+// uses. `r.json()` yields `null` on unparseable text instead of rejecting, so
+// the caller's `.catch(() => null)` and its `?? unreadable-response` fallback
+// keep their existing meaning.
 import http from "node:http";
 import https from "node:https";
 
@@ -31,7 +46,7 @@ import https from "node:https";
  * @param {Record<string,string>} headers
  * @param {string} body
  * @param {number} timeoutMs total budget for connect + headers + body
- * @returns {Promise<{ok:boolean,status:number,headers:{get(n:string):string|null},text():string,json():any}>}
+ * @returns {Promise<{ok:boolean,status:number,headers:{get(n:string):string|null},text():Promise<string>,json():Promise<any>}>}
  */
 export function postJsonWithDeadline(url, headers, body, timeoutMs) {
   const budget = Number(timeoutMs);
@@ -80,14 +95,18 @@ export function postJsonWithDeadline(url, headers, body, timeoutMs) {
             ok: res.statusCode >= 200 && res.statusCode < 300,
             status: res.statusCode,
             headers: { get: (n) => (res.headers[String(n).toLowerCase()] ?? null) },
-            text: () => text,
-            json: () => {
-              try {
-                return JSON.parse(text);
-              } catch {
-                return null;
-              }
-            },
+            // Promise-returning, like fetch — the caller does
+            // `await upstream.json().catch(() => null)`, and a bare value here
+            // turns every successful turn into a TypeError (see the header).
+            text: () => Promise.resolve(text),
+            json: () =>
+              Promise.resolve().then(() => {
+                try {
+                  return JSON.parse(text);
+                } catch {
+                  return null;
+                }
+              }),
           });
         });
         res.on("error", (e) => finish(e));

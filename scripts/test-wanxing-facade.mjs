@@ -1929,7 +1929,7 @@ test("turn budget: the long forward returns the body well inside its deadline", 
     const took = Date.now() - t0;
     assert.equal(r.ok, true);
     assert.equal(r.status, 200);
-    assert.equal(r.json().result.echoed, "ok");
+    assert.equal((await r.json()).result.echoed, "ok");
     assert.ok(took >= 550 && took < 3000, `waited for the turn (${took}ms)`);
   } finally {
     srv.closeAllConnections();
@@ -1971,7 +1971,47 @@ test("turn budget: a refused turn still resolves so the caller maps -32033", asy
     const r = await postJsonWithDeadline(`http://127.0.0.1:${srv.address().port}/x`, {}, "{}", 5000);
     assert.equal(r.ok, false, "a refusal is an ANSWER, not a timeout");
     assert.equal(r.status, 503);
-    assert.equal(r.json().error, "upstream down");
+    assert.equal((await r.json()).error, "upstream down");
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});
+
+test("turn budget: the body readers are fetch-shaped, so the caller's .catch works", async () => {
+  // The send path reads a turn's answer as `await upstream.json().catch(() => null)`
+  // — plain fetch idiom. A SYNCHRONOUS json() turns that into
+  // `TypeError: upstream.json(...).catch is not a function` on every turn that
+  // got far enough to have a body, i.e. on exactly the successful ones: measured
+  // live 2026-11-16 on four spider-heal tickets whose route answered HTTP 200
+  // (-32032 "upstream.json(...).catch is not a function"), burning the retry
+  // budget on our own transport. The older arms above could not see it: they
+  // inject `upstreamFetch` (a real Response) and asserted `r.json().result` —
+  // they pinned the shape the production caller never uses. Assert the CONTRACT
+  // instead: thenable, callable .catch, and null on an unparseable body so the
+  // caller's `?? unreadable-response` fallback keeps its meaning.
+  const { postJsonWithDeadline } = await import("../services/wanxing-facade/lib/postJsonWithDeadline.js");
+  const srv = http.createServer((req, res) => {
+    const garbage = String(req.url || "").includes("garbage");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(garbage ? "not json at all" : '{"result":{"ok":true}}');
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const r = await postJsonWithDeadline(`${base}/x`, {}, "{}", 5000);
+
+    const doc = r.json();
+    assert.ok(doc instanceof Promise, "json() must return a Promise (fetch contract)");
+    assert.equal(typeof doc.catch, "function", ".catch must be callable — the caller's idiom");
+    assert.equal((await doc).result.ok, true);
+
+    const txt = r.text();
+    assert.ok(txt instanceof Promise, "text() must return a Promise (fetch contract)");
+    assert.match(await txt, /"ok":true/);
+
+    const bad = await postJsonWithDeadline(`${base}/garbage`, {}, "{}", 5000);
+    assert.equal(await bad.json().catch(() => "threw"), null, "unparseable body resolves null, not a rejection");
   } finally {
     srv.closeAllConnections();
     srv.close();
