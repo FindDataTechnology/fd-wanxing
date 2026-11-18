@@ -2,7 +2,7 @@
 
 ## Why
 
-公网发现面（agent card）正在外发内部运行时地址。生产实证（2026-11-05，从外接 windows-admin 机探测）：`wanxing.finddatatech.cloud` 的几乎全部公开卡片携带 `"provider":{"url":"http://100.64.0.8"}`——tailnet 内网 runner 地址。`publicCard()` 对顶层 `url` 已有"points callers at the facade, never at the internal runtime"纪律，但 `provider: entry.provider ?? …` 把 registry 条目里的 provider 对象原样透传，构成又一处 fail-open 内部面泄漏（与已归档的 registry 内网 mcp_endpoint→桥→plaza 泄漏同模式）。
+公网发现面（agent card）正在外发内部运行时地址。生产实证（2026-11-05，从外接 windows-admin 机探测）：`wanxing.finddatatech.cloud` 的几乎全部公开卡片携带 `"provider":{"url":"http://10.0.0.10"}`——tailnet 内网 runner 地址。`publicCard()` 对顶层 `url` 已有"points callers at the facade, never at the internal runtime"纪律，但 `provider: entry.provider ?? …` 把 registry 条目里的 provider 对象原样透传，构成又一处 fail-open 内部面泄漏（与已归档的 registry 内网 mcp_endpoint→桥→plaza 泄漏同模式）。
 
 ## What Changes
 

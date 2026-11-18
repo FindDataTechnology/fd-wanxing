@@ -20,7 +20,7 @@
 
 ## 清单去 IP 字面量
 
-三处：agent-runner-serving.yaml:150（→observer）、facet.yaml:107（→facade）、platform.yaml:104（→facet）。同集群内换 Service DNS（`http://wanxing-facade:3080` 等）；runner→observer 的跨节点 NodePort `100.64.0.8:31881` 属 mesh 面——换 `cheap-ts` 集群内可达的 DNS 不可行（runner 是 platform 镜像宿主网络外?）——**核实后处理**：若 runner pod 在集群内则换 Service 名，若确实走 tailnet 则保留 IP 但加 justification 注释（spec 允许带注释例外）。platform.yaml 的 facet ClusterIP（10.43.71.119）同类核实（platform hostNetwork 无 cluster DNS 的老坑——若无法用 DNS，走记录在案的例外+注释）。
+三处：agent-runner-serving.yaml:150（→observer）、facet.yaml:107（→facade）、platform.yaml:104（→facet）。同集群内换 Service DNS（`http://wanxing-facade:3080` 等）；runner→observer 的跨节点 NodePort `10.0.0.10:31881` 属 mesh 面——换 `cheap-ts` 集群内可达的 DNS 不可行（runner 是 platform 镜像宿主网络外?）——**核实后处理**：若 runner pod 在集群内则换 Service 名，若确实走 tailnet 则保留 IP 但加 justification 注释（spec 允许带注释例外）。platform.yaml 的 facet ClusterIP（10.0.0.20）同类核实（platform hostNetwork 无 cluster DNS 的老坑——若无法用 DNS，走记录在案的例外+注释）。
 
 ## Non-goal 重申
 
@@ -33,5 +33,5 @@
 - **facet / platform**（均 `dnsPolicy: Default`，刻意为之——OIDC fail-fast 走节点 DNS、绕开
   CoreDNS 陈旧外部记录）：Service DNS 解析 ✗（facet pod 实测 FAIL）→ 保留 ClusterIP/tailnet
   字面量 + justification 注释（spec 允许的例外）。
-- 旧通道 `100.64.0.8:31881`（cheap-8 NodePort 经 tailscale）双向仍通：保留给 **cheap-1 宿主级
+- 旧通道 `10.0.0.10:31881`（cheap-8 NodePort 经 tailscale）双向仍通：保留给 **cheap-1 宿主级
   runner 容器**（集群外）直投 /ingest 用，NodePort Service 不动。

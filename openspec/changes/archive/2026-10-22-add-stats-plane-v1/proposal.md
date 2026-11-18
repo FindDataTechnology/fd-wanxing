@@ -8,7 +8,7 @@
 - **统计 API**：`/api/fleet/v1/stats/*`——总览（时间窗内 tokens/回合数/活跃 agent）、按 agent/pack/model 下钻、每日序列；口径字段 `source: fleet|sub2api|local`、`basis: billed|estimated` 分开标注。
 - **sub2api 聚合读通道**：observer 侧定时（小时级）经 sub2api admin API 拉用量聚合并落 stats.db（`source=sub2api, basis=billed`）——**只读 API、不读库**（防双真源），凭据走部署 secret。
 - **萬星 console 运营段扩展**：机群板邻座新增「消耗」视图——时间窗选择器 + 总览卡 + agent/pack/model 下钻表 + 每日趋势；billing 与 attribution 两个口径并排展示、永不混算。
-- **本地采集器（headless collector，新 `services/stats-collector/`）**：解析本机 harness 日志（v1 解析器：Claude Code `~/.claude/projects/**/*.jsonl` 的 usage 字段 + 解析器注册表可扩展 ZCode 等），按小时批投 fleet-observer ingest 的 local 通道（tailnet 直连 `100.64.0.8:31881`，collector 令牌鉴权，`source=local, basis=estimated`）。
+- **本地采集器（headless collector，新 `services/stats-collector/`）**：解析本机 harness 日志（v1 解析器：Claude Code `~/.claude/projects/**/*.jsonl` 的 usage 字段 + 解析器注册表可扩展 ZCode 等），按小时批投 fleet-observer ingest 的 local 通道（tailnet 直连 `10.0.0.10:31881`，collector 令牌鉴权，`source=local, basis=estimated`）。
 - **非目标**：不动 sub2api 本体；不做壹座个人消耗页（产品化阶段）；不做实时流（小时级聚合够用）；不做成本换算定价表（S5 只做 billed/estimated 口径分离，金额显示仅 sub2api 口径）。
 
 ## Capabilities

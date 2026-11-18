@@ -941,7 +941,7 @@ The lane SHALL be controlled by a single switch (`WANXING_FACADE_MEMORY_DIGEST=0
 
 The facade SHALL serialize `provider` in public agent cards through a
 redactor: when `provider.url` denotes a non-publicly-routable address
-(RFC1918 private ranges, CGNAT 100.64.0.0/10, loopback, link-local,
+(RFC1918 private ranges, CGNAT 10.0.0.0/10, loopback, link-local,
 `0.0.0.0`, single-label hostnames, or cluster-internal suffixes `.svc`,
 `.cluster.local`, `.local`, `.internal`) or cannot be parsed as a URL, the
 card MUST omit the `url` key from `provider`. Publicly-routable provider
@@ -952,7 +952,7 @@ deploy entry / registry snapshot MUST NOT be rewritten by this path.
 
 #### Scenario: internal runner address is stripped from the public card
 
-WHEN a deployed agent's entry carries `provider.url` pointing at a tailnet or other private address (e.g. `http://100.64.0.8`)
+WHEN a deployed agent's entry carries `provider.url` pointing at a tailnet or other private address (e.g. `http://10.0.0.10`)
 THEN `GET /.well-known/agent-card.json` returns a provider object without a `url` key, `organization` and other fields intact
 
 #### Scenario: public provider URL passes through verbatim

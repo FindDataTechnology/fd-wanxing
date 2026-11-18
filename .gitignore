@@ -7,3 +7,6 @@ dist/
 
 # macOS Finder 元数据（不是源码，会污染工作区）
 .DS_Store
+
+# Agent 调试残留（Playwright CLI 的页面快照，含会话内容与个人标识，不进仓）
+gui-test-screenshots/.playwright-cli/

@@ -37,7 +37,7 @@
 - **registry 反代**：`/agent/<path>/ask-answer` 子路径 + X-Authorization/Authorization 双头透传全通（旧镜像 404 Express 形状 → 新镜像 `{accepted:false,reason:"no live runtime"}`）。
 - **deadline 自取消**：无人答题 → runner 到期 cancel（agent 复述 `Error: the ask window closed before the user answered`）→ 回合正常收尾 message+done。
 - **port-forward 全链终证**（facade pod 直打，绕公网前置）：prompt 后 **11.5s** 收 `ask`（`intent:navigate:/console/usage` 信封由模型自行组成，无需 pack 技能）；**11.8s** facade `ask-answer` → `{"accepted":true}`（匿名访客归属绑定+代理）；**26.5s** agent 最终回复**准确复述「你选择了执行」**——答案真实回到模型。
-- **SSE 缓冲三段定罪**：① runner 源头即时（pod 内 8.5s）；② registry 应用面 `100.64.0.15:18080` 即时（facade pod 内 node 直读分块到）；③ facade 全链即时（port-forward）。**唯一攒包层 = 公网前置 SafeLine/WAF**（mcp:443 与 wanxing 两 vhost 同病；wanxing 公网数数回合 delta#1..#8+done 全在 5.7s 同刻）。E1 起纯聊天「整回合末出字」即此因（功能可用）；**对问询交互不可用**（ask 迟到→deadline 先到）。处置：facade `registry_url` 已切 `http://100.64.0.15:18080` 直连（secret 一改即滚，已上产；回滚=改回 https://mcp…）；**公网入口缓冲待用户决策**（SafeLine 流式配置 / wanxing 换入口 / 短轮询兜底），ego 真机四线（5.2）与切 slug（5.3）因此暂缓。
+- **SSE 缓冲三段定罪**：① runner 源头即时（pod 内 8.5s）；② registry 应用面 `10.0.0.15:18080` 即时（facade pod 内 node 直读分块到）；③ facade 全链即时（port-forward）。**唯一攒包层 = 公网前置 SafeLine/WAF**（mcp:443 与 wanxing 两 vhost 同病；wanxing 公网数数回合 delta#1..#8+done 全在 5.7s 同刻）。E1 起纯聊天「整回合末出字」即此因（功能可用）；**对问询交互不可用**（ask 迟到→deadline 先到）。处置：facade `registry_url` 已切 `http://10.0.0.15:18080` 直连（secret 一改即滚，已上产；回滚=改回 https://mcp…）；**公网入口缓冲待用户决策**（SafeLine 流式配置 / wanxing 换入口 / 短轮询兜底），ego 真机四线（5.2）与切 slug（5.3）因此暂缓。
 
 ## 顺手修复
 

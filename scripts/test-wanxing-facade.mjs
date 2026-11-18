@@ -444,7 +444,7 @@ test("3.2c curated public status serves three aggregates with staleness bits (wa
 
 test("3.2b public card redacts non-public provider.url (redact-agent-card-private-endpoints)", async () => {
   // internal runner address → url key dropped, rest of provider intact
-  const h1 = faceHarness({ entry: { visibility: "public", provider: { organization: "paas-pack", url: "http://100.64.0.8" } } });
+  const h1 = faceHarness({ entry: { visibility: "public", provider: { organization: "paas-pack", url: "http://10.0.0.10" } } });
   const c1 = await h1.call("/api/wanxing/v1/a2a/packs-p1-heal/.well-known/agent-card.json");
   assert.equal(c1.status, 200);
   assert.equal(c1.body.provider.url, undefined);

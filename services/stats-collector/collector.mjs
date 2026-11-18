@@ -5,7 +5,7 @@
 // (parser registry under parsers/), batches hourly, posts to the fleet
 // observer's /ingest/local endpoint over tailnet with an fsc_ collector token.
 //
-//   OBSERVER_URL=http://100.64.0.8:31881 FSC_TOKEN=fsc_… node collector.mjs --once
+//   OBSERVER_URL=http://10.0.0.10:31881 FSC_TOKEN=fsc_… node collector.mjs --once
 //   node collector.mjs --interval 3600   # hourly loop
 //
 // State: ~/.stats-collector/state.json (per-file byte offsets). Skipping a
