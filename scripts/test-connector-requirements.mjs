@@ -53,7 +53,7 @@ const mkEntry = (over = {}) => ({
  * @param details     packId → packs-detail body (or "throws")
  * @param counters    mutable object recording how many detail reads happened
  */
-async function harness({ deployments, entries, details = {}, counters = { detailReads: 0 }, browseCounts = {} }) {
+async function harness({ deployments, entries, details = {}, counters = { detailReads: 0 }, browseCounts = {}, includeInBrowse = true }) {
   const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "s-")), "wanxing.db") });
   const sub2api = {
     userId: 7,
@@ -93,7 +93,7 @@ async function harness({ deployments, entries, details = {}, counters = { detail
     // The gate reads the BROWSE row's connectorBindingCount: a pack that
     // declares bindings but minted none is precisely the case this projection
     // exists to show, so the gate cannot come from the deployed wiring.
-    packsBrowseFetch: async () => deployments.map((d) => ({ id: d.packId, agentCount: 1, connectorBindingCount: browseCounts[d.packId] ?? 0 })),
+    packsBrowseFetch: async () => (includeInBrowse ? deployments.map((d) => ({ id: d.packId, agentCount: 1, connectorBindingCount: browseCounts[d.packId] ?? 0 })) : []),
     packsDetailFetch: async (id) => {
       counters.detailReads += 1;
       const detail = details[id];
@@ -184,6 +184,53 @@ test("an all-optional pack is wired=0 with every gap marked optional", async () 
       e.external_systems.missing.map((m) => m.optional),
       [true, true],
     );
+  } finally {
+    srv.close();
+  }
+});
+
+test("a pack MISSING from the browse listing still gets its detail read", async () => {
+  // Found on production 2026-11-20: the shelf had 156 packs, the browse call
+  // returns 100, and the probe pack sat on page 2 — so the gate never saw it and
+  // the catalog silently said "undeclared". Absence from the listing is not
+  // evidence of absence: only a LISTED row with a zero count may skip the read.
+  const counters = { detailReads: 0 };
+  const { srv, base } = await harness({
+    deployments: [{ slug: "unlisted", agentPath: "/agents/unlisted", packId: "p20" }],
+    entries: { unlisted: mkEntry({ metadata: { connector_bindings: [{ key: "erp" }] } }) },
+    details: { p20: detailWith([{ key: "erp" }, { key: "wms" }]) },
+    // The pack is NOT in the browse listing at all (page cap / private).
+    browseCounts: {},
+    includeInBrowse: false,
+    counters,
+  });
+  try {
+    const e = await catalogEntry(base, "unlisted");
+    assert.ok(counters.detailReads >= 1, "an unlisted pack must still be detailed");
+    assert.deepEqual(e.external_systems, {
+      declared: 2,
+      required: 2,
+      wired: 1,
+      missing: [{ key: "wms", optional: false }],
+    });
+  } finally {
+    srv.close();
+  }
+});
+
+test("a LISTED pack with zero bindings skips the read (the cheap gate still works)", async () => {
+  const counters = { detailReads: 0 };
+  const { srv, base } = await harness({
+    deployments: [{ slug: "plain", agentPath: "/agents/plain", packId: "p21" }],
+    entries: { plain: mkEntry() },
+    details: { p21: detailWith([{ key: "erp" }]) },
+    browseCounts: { p21: 0 },
+    counters,
+  });
+  try {
+    const e = await catalogEntry(base, "plain");
+    assert.equal("external_systems" in e, false);
+    assert.equal(counters.detailReads, 0, "a listed zero-count pack must not cost a detail read");
   } finally {
     srv.close();
   }

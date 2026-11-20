@@ -295,16 +295,23 @@ export function createA2aFace({
     } catch {
       return declarationCache.map;
     }
-    const declaresBindings = new Set(
-      (Array.isArray(browse) ? browse : [])
-        .filter((row) => Number(row?.connectorBindingCount) > 0)
-        .map((row) => row.id)
-        .filter(Boolean),
+    // A pack the listing does NOT mention is NOT "declares nothing": it can be
+    // private, or past the listing's page cap (measured 2026-11-20 on prod — 156
+    // packs on the shelf, 100 on page 1, and a probe pack on page 2 was silently
+    // reported as undeclared). So an absent row falls through to the detail read;
+    // only a row that IS listed with a zero count is a positive "declares none".
+    const listed = new Map(
+      (Array.isArray(browse) ? browse : []).map((row) => [row?.id, Number(row?.connectorBindingCount) > 0]),
     );
     const next = new Map(declarationCache.map);
     let read = false;
     for (const dep of deps) {
-      if (dep.packId == null || next.has(dep.packId) || !declaresBindings.has(dep.packId)) continue;
+      if (dep.packId == null || next.has(dep.packId)) continue;
+      if (listed.get(dep.packId) === false) {
+        next.set(dep.packId, null);
+        read = true;
+        continue;
+      }
       try {
         const detail = await packsDetailFetch(dep.packId);
         const declared = detail?.manifest?.connector_bindings ?? detail?.connector_bindings;
