@@ -189,7 +189,7 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   // Concurrent duplicates join the single in-process flight. The ledger row
   // is written before execution, so a crash mid-turn still leaves `running` —
   // treated as absent after the window, never replayed half-done.
-  async function idempotentSend({ callerId, slug, idemKey, requestHash = null, exec }) {
+  async function idempotentSend({ callerId, slug, idemKey, requestHash = null, taskId = null, exec }) {
     if (!idemKey) return { replayed: false, ...(await exec()) };
     const existing = store.requestGet(callerId, slug, idemKey);
     const inWindow = existing && Date.now() - existing.created_at < cfg.idemWindowMs;
@@ -213,7 +213,7 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
       const row = store.requestGet(callerId, slug, idemKey);
       return { replayed: true, response: row?.response ? JSON.parse(row.response) : null };
     }
-    if (!store.requestStart(callerId, slug, idemKey, requestHash)) {
+    if (!store.requestStart(callerId, slug, idemKey, requestHash, taskId)) {
       // Lost an insert race (only possible across processes; keep symmetric).
       await Promise.resolve();
     }
@@ -491,6 +491,53 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     return { ok: true, plan: { planRef: st.plan.planRef, remainingMinutes: st.remaining } };
   }
 
+  // ── Task handle (harden-agent-runtime-spine, a2a-task-handle) ────────────
+  //
+  // The caller-facing address of one logical call. It is a thin layer over the
+  // idempotency ledger on purpose — a second table would let the two disagree
+  // about whether a task is still running.
+
+  /**
+   * Bind a minted id to an EXISTING ledger row (write-once; a replay keeps the
+   * first). The fresh path passes the id straight to `requestStart` instead —
+   * a bind before the row exists updates zero rows.
+   */
+  function taskBind({ callerId, slug, idemKey, taskId }) {
+    return store.taskBind(callerId, slug, idemKey, taskId);
+  }
+
+  /** Scope check happens HERE: a caller may only address their own tasks. */
+  function taskLookup({ callerId, slug, taskId }) {
+    const row = store.requestByTask(taskId);
+    if (!row) return null;
+    if (Number(row.caller_id) !== Number(callerId) || row.agent_slug !== slug) return null;
+    return { ...row, task_id: row.task_id };
+  }
+
+  /**
+   * Ask the executing runner to stop, then settle the ledger — but ONLY when
+   * the runner confirms a stop. Reporting `cancelled` after a failed relay is
+   * how a caller ends up believing a turn stopped while it kept burning tokens.
+   *
+   * The relay is passed IN (the protocol face owns the forward transport and
+   * its credentials); core only owns the ledger rule.
+   */
+  async function taskCancel({ taskId, row, relay }) {
+    let stopped = "unknown";
+    try {
+      stopped = await relay({ taskId, row });
+    } catch (e) {
+      console.warn(`[wanxing:cancel] relay failed for ${taskId}: ${e?.message || e}`);
+      stopped = "error";
+    }
+    if (stopped === "unsupported") return { stopped: "unsupported", row };
+    if (stopped !== "cancelled" && stopped !== "not-running") {
+      return { stopped: stopped === "error" ? "error" : "unknown", row };
+    }
+    store.taskCancel(taskId);
+    return { stopped, row: store.requestByTask(taskId) };
+  }
+
   return {
     config: cfg,
     authenticate,
@@ -500,6 +547,9 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     admit,
     idempotentSend,
     idempotencyState,
+    taskBind,
+    taskLookup,
+    taskCancel,
     recordUsage,
     trySettle,
     settlePending,

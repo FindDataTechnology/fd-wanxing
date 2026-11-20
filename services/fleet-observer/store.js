@@ -52,6 +52,14 @@ export const EVENT_KINDS = [
   // which is why the facade's source scan now fails the build instead of
   // letting the spool grow.
   "connector_identity_unregistered",
+  // Task handle lifecycle (harden-agent-runtime-spine, a2a-task-handle): the
+  // A2A face reports a caller-initiated stop. Not `turn_ended` — that event
+  // says how the turn CONCLUDED, this one says a caller intervened, and the
+  // two are read by different questions ("how are turns doing" vs "who is
+  // cancelling what"). Added together with the emitter, which is the rule this
+  // list exists to enforce — an emitted-but-unaccepted kind rejects the whole
+  // ingest batch.
+  "cancel",
   // Mission lifecycle (add-mission-board): the facade's dispatch face emits
   // these on every state-machine transition — enumerated, not prefix-wild,
   // so the reject surface stays enumerable.

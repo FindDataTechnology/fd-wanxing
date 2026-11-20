@@ -14,6 +14,36 @@ import { statusFor } from "./core.js";
 import { postJsonWithDeadline } from "./lib/postJsonWithDeadline.js";
 
 const sha256 = (v) => createHash("sha256").update(String(v)).digest("hex");
+
+/**
+ * Attach `task_id` to a JSON-RPC answer WITHOUT rewriting the answer's shape.
+ * A result may be a Message object directly (the runner's send shape) or an
+ * object carrying `message`; both tolerate an extra top-level key, and an
+ * error answer gets it too (a caller whose call failed still needs the id to
+ * ask what happened). Anything that is not an object passes through untouched.
+ */
+function withTaskId(response, taskId) {
+  if (!response || typeof response !== "object") return response;
+  const r = response.result;
+  if (r && typeof r === "object" && !Array.isArray(r)) {
+    // An answer that ALREADY carries a task id keeps it: the mailbox branch
+    // mints the id the result will actually be filed under, and overwriting it
+    // with ours would leave the caller holding an address nothing answers to.
+    if (r.task_id) return response;
+    return taskId ? { ...response, result: { ...r, task_id: taskId } } : response;
+  }
+  // No result (an error answer): put the id beside the error so the caller can
+  // still address the attempt that failed.
+  return taskId ? { ...response, task_id: taskId } : response;
+}
+
+function safeParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
 const EXTERNAL_CONTEXT_PREFIX = "wx:"; // the runner's reap pass keys on this (design D10)
 
 const textOf = (message) => {
@@ -412,6 +442,11 @@ export function createA2aFace({
         facts.console = { ...(headline ? { headline } : {}), blocks };
       }
     }
+    // Fleet formation flag (pillar-surfaces D8): a boolean, never the roster.
+    // The D8 copy reads three ways — declared console / team-capable pack with
+    // no console / pack that is one agent and nothing else — and the third can
+    // only be said if the face knows the pack carries no formation.
+    if (md.fleet === true) facts.fleet = true;
     return facts;
   }
 
@@ -481,7 +516,7 @@ export function createA2aFace({
   // outcome, and the finish/exit semantics by slot ownership. A flight error
   // is RETURNED as the JSON-RPC error response, never thrown — the route and
   // the cluster face render it identically either way.
-  const runSendFlight = async ({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId = null, holdsSlot, clusterTurnId = null, exec = null, timeoutMs = null, artifacts = [] }) => {
+  const runSendFlight = async ({ caller, slug, state, text, contextId, idemKey, taskId = null, startedAt, rpcId = null, holdsSlot, clusterTurnId = null, exec = null, timeoutMs = null, artifacts = [] }) => {
     const body = JSON.stringify({
       jsonrpc: "2.0",
       id: rpcId,
@@ -496,7 +531,10 @@ export function createA2aFace({
     });
     const forward = async () => {
       const url = config.agentUrlFor(state.agentPath);
-      const headers = { ...forwardHeaders(), "Content-Type": "application/json" };
+      // Carry the task address across the process boundary (a2a-task-handle
+      // 4.7): the runner adopts this id instead of minting its own, so one
+      // call has ONE address on both sides of the hop.
+      const headers = { ...forwardHeaders(), "Content-Type": "application/json", ...(taskId ? { "x-task-id": taskId } : {}) };
       // A turn's answer lands only when the turn ENDS, so this call is
       // minutes long. `fetch` cannot express that: undici's `headersTimeout`
       // default (300 s) fires first and surfaces as a bare
@@ -527,6 +565,7 @@ export function createA2aFace({
         callerId: caller.userId,
         slug,
         idemKey,
+        taskId,
         exec: exec ?? forward,
       });
       // message/send: replay/join land here without a slot of their own —
@@ -564,7 +603,7 @@ export function createA2aFace({
       return { status: "skipped", reason: "TURN_IN_FLIGHT" };
     }
     const startedAt = Date.now();
-    const out = await runSendFlight({ caller, slug, state, text, contextId, idemKey, startedAt, rpcId, holdsSlot: true, clusterTurnId, timeoutMs });
+    const out = await runSendFlight({ caller, slug, state, text, contextId, idemKey, taskId, startedAt, rpcId, holdsSlot: true, clusterTurnId, timeoutMs });
     const err = out.response?.error;
     // The runner answers message/send with the Message AS the result
     // ({result:{role,parts,…}}); the A2A spec also allows {result:{message:…}}
@@ -796,13 +835,94 @@ export function createA2aFace({
         return res.status(auth.status).json({ error: { code: auth.code, message: auth.message } });
       }
       const caller = auth.caller;
+      // Hoisted above the method dispatch: the tasks/* verbs need the agent
+      // slug before the message-shape parsing that the send/stream branch does.
+      const slug = req.params.agentSlug;
 
       const { id, method, params } = req.body ?? {};
       if (req.body?.jsonrpc !== "2.0" || typeof method !== "string") {
         return res.status(200).json(jsonRpcError(id, -32600, "Invalid Request"));
       }
-      if (method !== "message/send" && method !== "message/stream") {
+      if (method !== "message/send" && method !== "message/stream" && method !== "tasks/get" && method !== "tasks/cancel" && method !== "tasks/resubscribe") {
         return res.status(200).json(jsonRpcError(id, -32601, `Method not found: ${method}`));
+      }
+      // ── tasks/* (a2a-task-handle): the three verbs on a task address ─────
+      //
+      // The ledger row IS the address: bound write-once at accept, kept after
+      // the idempotency window closes (a call from last month still needs an
+      // answer). `unknown` is its own state — a task id this facade never
+      // issued is not "failed" and not "yours but gone".
+      if (method === "tasks/get" || method === "tasks/cancel" || method === "tasks/resubscribe") {
+        const taskId = params?.task_id ?? params?.taskId ?? params?.id ?? null;
+        if (!taskId) return res.status(200).json(jsonRpcError(id, -32602, "task_id required"));
+        const row = core.taskLookup({ callerId: caller.userId, slug, taskId });
+        if (!row) {
+          return res.status(200).json({
+            jsonrpc: "2.0",
+            id: id ?? null,
+            result: { task_id: taskId, state: "unknown", note: "this caller has no task with that id for this agent" },
+          });
+        }
+        const describe = (r) => ({
+          task_id: r.task_id,
+          state: r.state === "done" ? "done" : r.state === "error" ? "error" : r.state === "cancelled" ? "cancelled" : "running",
+          opened_at: r.created_at,
+          closed_at: r.closed_at ?? null,
+          ...(r.state === "done" && r.response ? { result: safeParse(r.response) } : {}),
+        });
+        if (method === "tasks/get") {
+          return res.status(200).json({ jsonrpc: "2.0", id: id ?? null, result: describe(row) });
+        }
+        if (method === "tasks/cancel") {
+          if (row.state !== "running") {
+            // Already over: return WHAT it is. Overwriting a terminal state
+            // would erase why it ended.
+            return res.status(200).json({ jsonrpc: "2.0", id: id ?? null, result: describe(row) });
+          }
+          // Relay the cancel to the runner that is executing it, then settle
+          // the ledger. A relay failure is NOT reported as "cancelled" — the
+          // caller is told the cancel did not reach execution.
+          const out = await core.taskCancel({
+            taskId,
+            row,
+            relay: async ({ taskId: tid }) => {
+              // The forward transport and credentials live on this face; the
+              // ledger rule lives in core. A refusal (no cancel lane) comes
+              // back as `unsupported` and is NOT reported as cancelled.
+              const url = config.agentUrlFor(state.agentPath);
+              const body = JSON.stringify({ jsonrpc: "2.0", id: null, method: "tasks/cancel", params: { task_id: tid } });
+              const res = await postJsonWithDeadline(url, { ...forwardHeaders(), "Content-Type": "application/json" }, body, 15_000);
+              const doc = await res.json().catch(() => null);
+              if (doc?.error?.code === -32013) return "unsupported";
+              const st = doc?.result?.state ?? null;
+              if (st === "cancelled") return "cancelled";
+              if (st === "done" || st === "error") return "not-running";
+              return "unknown";
+            },
+          });
+          if (out?.stopped === "unsupported") {
+            note("refused", slug, { stage: "cancel", code: "CANCEL_UNSUPPORTED", caller: caller.email || caller.userId, task_id: taskId });
+            return res.status(200).json(jsonRpcError(id, -32013, "the executing agent reports no cancel lane; the turn was not stopped"));
+          }
+          note("cancel", slug, { task_id: taskId, stopped: out?.stopped ?? null, caller: caller.email || caller.userId });
+          return res.status(200).json({ jsonrpc: "2.0", id: id ?? null, result: describe(core.taskLookup({ callerId: caller.userId, slug, taskId }) ?? row) });
+        }
+        // tasks/resubscribe: no per-task delta buffer is kept on this face (the
+        // runner's buffer is bounded and dies with it — see agent-runner/
+        // tasks.js). The honest answer is the terminal/current state plus a
+        // note on why there is no delta replay. For a disclosure-gated lane
+        // this is not a limitation but a rule: a partial verdict cannot be
+        // released, so only the whole message ever leaves.
+        const described = describe(row);
+        return res.status(200).json({
+          jsonrpc: "2.0",
+          id: id ?? null,
+          result: {
+            ...described,
+            replay: "terminal-only",
+            note: "incremental replay is not provided; the settled result is delivered in full",
+          },
+        });
       }
       const message = params?.message ?? params;
       const { text, artifacts, unknown } = readParts(message);
@@ -818,7 +938,6 @@ export function createA2aFace({
         return res.status(200).json(jsonRpcError(id, -32604, "empty message"));
       }
 
-      const slug = req.params.agentSlug;
       let state;
       try {
         state = await agentState(slug);
@@ -855,6 +974,14 @@ export function createA2aFace({
       // carries no request identity. contextId is derived below from the same
       // inputs, so the fingerprint and the flight body can never disagree.
       const contextId = contextIdFor(message, idemKey, getReapWindow ? getReapWindow(caller, slug) : null);
+      // Task handle (a2a-task-handle 4.2/4.3): the address exists at ACCEPT.
+      // Derived from the idempotency key when there is one (so a replay keeps
+      // it) and minted otherwise. Bound write-once to the ledger row BEFORE the
+      // flight so a `tasks/get` arriving mid-turn finds a real address.
+      const taskId = idemKey ? `t-${sha256(`task|${caller.userId}|${slug}|${idemKey}`).slice(0, 24)}` : `t-${sha256(`anon|${caller.userId}|${slug}|${Date.now()}|${Math.random()}`).slice(0, 24)}`;
+      // The id is bound by the flight's own `requestStart` (row creation).
+      // Binding before that updates zero rows — a silent drop that made a
+      // cancel look up a task nobody had recorded.
       const requestHash = idemKey
         ? sha256(JSON.stringify({ method, params: { message: { role: "user", parts: [{ kind: "text", text }, ...artifacts].filter((p) => p.kind !== "text" || p.text) }, context_id: contextId } }))
         : null;
@@ -975,7 +1102,7 @@ export function createA2aFace({
             }
           : null;
         const out = await runSendFlight({
-          caller, slug, state, text, contextId, idemKey, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec, artifacts,
+          caller, slug, state, text, contextId, idemKey, taskId, requestHash, startedAt, rpcId: id, holdsSlot, exec: mailboxExec, artifacts,
           // The public/pack send path used to pass NO budget at all, so the
           // turn died on undici's 300 s default and was reported as -32032.
           // The budget is the turn's own (WANXING_TURN_TIMEOUT_MS).
@@ -983,7 +1110,10 @@ export function createA2aFace({
         });
         // A replay/join leaves without recording anything of its own.
         if (out.replayed) exitReadonly();
-        res.status(200).json(out.response);
+        // The address rides the answer on BOTH the fresh and the replayed
+        // paths — a caller must never have to guess the id of the call they
+        // just made, and a replay must address the SAME task (spec 4.3).
+        res.status(200).json(withTaskId(out.response, taskId));
       } catch (e) {
         // Key reuse is an admission refusal, not a turn outcome (paas
         // fix-agent-serving-stability D2): HTTP 409 like TURN_IN_FLIGHT, no

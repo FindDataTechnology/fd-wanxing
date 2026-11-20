@@ -8,19 +8,40 @@
 
 | 项 | 值 |
 |---|---|
-| 协议 | A2A 原生（JSON-RPC 2.0 over HTTP，`message/send` 同步 / `message/stream` SSE） |
+| 协议 | A2A 原生（JSON-RPC 2.0 over HTTP，`message/send` 同步 / `message/stream` SSE / `tasks/get·cancel·resubscribe`） |
 | 鉴权 | `Authorization: Bearer <你的 sub2api key>`（sk-…，面板自铸） |
-| 幂等 | `Idempotency-Key` 请求头（仅 `message/send`；24h 重放窗） |
+| 幂等 | `Idempotency-Key` 请求头（仅 `message/send`；24h 重放窗）。**注意**：24h 是「能不能重放」的窗口，不是任务句柄的有效期——见下节 |
 | 计费 | 按时长，分钟向上取整 × 档位单价；回合结束即时结算到你的 key |
 | 限流 | 每（调用者, agent）并发回合=1（超发返回 409+`Retry-After`）；调用者级 RPM |
 | 会话 | 不带 `context_id` 时每请求独立（外部会话 24h 空闲回收）；跨请求状态请走 agent 自有文件（工单 inbox 约定） |
+
+## 任务句柄（`task_id`）
+
+每次受理的调用都会返回一个 `task_id`（形如 `t-<24 hex>`），它是这次调用**唯一**的地址：
+
+- 同一 `Idempotency-Key` 的重放返回**同一个** `task_id`（不会为一次逻辑调用产生两个句柄）；
+- 被拒绝的调用（准入/配额/暂停）**不返回**伪句柄——拒绝就是拒绝；
+- 句柄永不过期：24 小时重放窗关闭后，`tasks/get` 仍能回答这个任务最后怎么结束的。
+  这是「能不能重放」与「那次跑得怎么样」两件不同的事，句柄只服务后者。
+
+| 方法 | 作用 | 关键返回 |
+|---|---|---|
+| `tasks/get` | 查当前状态与结果 | `state`：`running` / `done` / `error` / `cancelled` / **`unknown`** |
+| `tasks/cancel` | 请求停止 | 停止**真到达执行侧**才报 `cancelled`；已结束的任务返回其原终态，不覆盖 |
+| `tasks/resubscribe` | 续看 | `replay: "terminal-only"` + 说明；终态结果整句返回 |
+
+三种必须知道的边界：
+
+1. **`unknown` 是一个真实答案。** 它表示「这个调用者名下没有这个 agent 的这个任务」，与「失败」「被取消」都不同。别人家的任务 id 也回答 `unknown`，不泄露存在性。
+2. **`resubscribe` 不做增量重放。** 执行侧的缓冲有界、随进程消失；对外裁决车道（整句判定）本来也不允许碎片离开。所以这里只给终态整句，并在 `note` 里说明为什么没有 delta——不会返回一个空流让人以为「没有进展」。
+3. **异步受理不是并发。** 句柄让人可以断开等待，但每个（调用者, agent）仍然是并发 1（超发 409）。排队时以结构化拒绝呈现，**不会**给一个永远没有进展的句柄。
 
 ## 路由
 
 ```
 GET  {BASE}/api/wanxing/v1/agents                                  # 公开目录（仅 public agent）
 GET  {BASE}/api/wanxing/v1/a2a/{agentSlug}/.well-known/agent-card.json   # 公开 AgentCard
-POST {BASE}/api/wanxing/v1/a2a/{agentSlug}                          # A2A 回合（需鉴权）
+POST {BASE}/api/wanxing/v1/a2a/{agentSlug}                          # A2A 回合 + tasks/*（需鉴权，同一个端点）
 ```
 
 `{BASE}` = `https://wanxing.finddatatech.cloud`（萬星域；此前 platform 域同名路由随摘挂退役，见页首注）。`agentSlug` 见目录返回（形如 `packs-<packId>-<agentId>`，全小写）。

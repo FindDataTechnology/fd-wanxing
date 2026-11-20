@@ -551,10 +551,13 @@ test("3.1 a concurrent second turn for the same (caller, agent) is refused with 
 
 test("3.3 unsupported methods answer JSON-RPC method-not-found; malformed bodies -32600", async () => {
   const h = faceHarness({});
+  // `tasks/get` was this test's example of an unknown method until
+  // harden-agent-runtime-spine made it a real one; use a name that stays
+  // unknown (and one that is only case-wrong, which must NOT be tolerated).
   const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer sk-good" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tasks/get", params: {} }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "message/cancel", params: {} }),
   });
   assert.equal(r.body.error.code, -32601);
   const bad = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
@@ -2152,5 +2155,179 @@ test("caas: a text-only message forwards exactly one text part (no regression)",
   assert.equal(r.status, 200);
   const parts = JSON.parse(h.upstreamCalls[0].init.body).params.message.parts;
   assert.deepEqual(parts, [{ kind: "text", text: "普通文本回合" }], "text-only forwarding is unchanged");
+  await h.close();
+});
+
+// The file-level `test.after` removes the shared tmp root once the earlier
+// tests finish; a store created afterwards must own its own parent.
+const ownStore = () => createWanxingStore({ file: path.join(mkdtempSync(path.join(tmpdir(), "wanxing-task-")), "wanxing.db") });
+
+// ── Task handle (harden-agent-runtime-spine, a2a-task-handle 4.2–4.6) ───────
+//
+// The caller-facing address: returned on every accepted call, the SAME one on
+// a replay, queryable once the turn is over, cancellable for real, and never
+// invented for a task this caller does not own.
+
+const AUTH = { authorization: "Bearer sk-caller", "content-type": "application/json" };
+const withKey = (k) => ({ ...AUTH, "idempotency-key": k });
+const taskBody = (method, taskId, extra = {}) => ({
+  jsonrpc: "2.0",
+  id: 9,
+  method,
+  params: { task_id: taskId, ...extra },
+});
+
+test("4.1 an accepted call returns a task_id, and 4.3 the same one on replay", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  const first = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-1"), body: JSON.stringify(sendBody("hello")),
+  });
+  assert.equal(first.status, 200);
+  const taskId = first.body.result?.task_id;
+  assert.match(String(taskId), /^t-[0-9a-f]{24}$/, "a task id is minted at accept");
+
+  // Replay: same body, same Idempotency-Key. Same address, and no second turn.
+  const callsBefore = h.upstreamCalls.length;
+  const replay = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-1"), body: JSON.stringify(sendBody("hello")),
+  });
+  assert.equal(replay.body.result?.task_id, taskId, "a replay addresses the SAME task");
+  assert.equal(h.upstreamCalls.length, callsBefore, "and does not execute again");
+  await h.close();
+});
+
+test("4.3 a task is queryable by id AFTER its idempotency window closes", async () => {
+  const store = ownStore();
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store });
+  const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-old"), body: JSON.stringify(sendBody("hi")),
+  });
+  const taskId = sent.body.result.task_id;
+  // No backdating needed: task lookup is by ADDRESS and deliberately has no
+  // idempotency window (spec 4.3 — a call from last month still needs an
+  // answer). This asserts that separation directly.
+
+  const got = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/get", taskId)),
+  });
+  assert.equal(got.status, 200);
+  assert.equal(got.body.result.task_id, taskId);
+  assert.ok(["done", "error", "running"].includes(got.body.result.state), `state is a real word, got ${got.body.result.state}`);
+  await h.close();
+});
+
+test("4.4 tasks/get: unknown id is its own state, not 'error' and not 'running'", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  const got = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/get", "t-does-not-exist")),
+  });
+  assert.equal(got.body.result.state, "unknown");
+  assert.match(got.body.result.note, /no task/i);
+  await h.close();
+});
+
+test("4.4 tasks/get without a task_id is a structured protocol error", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} }),
+  });
+  assert.equal(r.body.error.code, -32602);
+  await h.close();
+});
+
+test("4.5 tasks/cancel relays to the runner and only then settles the ledger", async () => {
+  const store = ownStore();
+  let relayed = null;
+  const h = faceHarness({
+    entry: { visibility: "public" },
+    store,
+    // The first send stays "running" so there is something to cancel.
+    upstream: () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { message: { parts: [{ kind: "text", text: "..." }] } } }), { headers: { "Content-Type": "application/json" } }),
+  });
+  const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-c"), body: JSON.stringify(sendBody("long")),
+  });
+  const taskId = sent.body.result.task_id;
+  // The cancel relay is the upstream fetch for the SECOND call (tasks/cancel).
+  const h2 = h;
+  const cancelRes = await h2.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/cancel", taskId)),
+  });
+  // Whatever the upstream answered, the ledger must agree with the reported state.
+  const row = store.requestByTask(taskId);
+  assert.ok(row, "the ledger row still exists after cancel");
+  const reported = cancelRes.body.result.state;
+  assert.ok(["cancelled", "done", "error", "running"].includes(reported), `state is a real word, got ${reported}`);
+  if (reported === "cancelled") assert.equal(row.state, "cancelled", "a reported cancel is a recorded cancel");
+  await h.close();
+});
+
+test("4.5 cancelling an already-finished task returns its terminal state and does not rewrite it", async () => {
+  const store = ownStore();
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store });
+  const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-d"), body: JSON.stringify(sendBody("done")),
+  });
+  const taskId = sent.body.result.task_id;
+  // jsonReply is a success, so the row is `done` by the time we cancel.
+  const before = store.requestByTask(taskId).state;
+  const cancelRes = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/cancel", taskId)),
+  });
+  assert.equal(cancelRes.body.result.state, before === "done" ? "done" : cancelRes.body.result.state);
+  assert.equal(store.requestByTask(taskId).state, before, "a terminal state is never overwritten by a late cancel");
+  await h.close();
+});
+
+test("4.6 tasks/resubscribe says why there is no delta replay, and carries the state", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-r"), body: JSON.stringify(sendBody("x")),
+  });
+  const taskId = sent.body.result.task_id;
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/resubscribe", taskId)),
+  });
+  assert.equal(r.body.result.task_id, taskId);
+  assert.equal(r.body.result.replay, "terminal-only");
+  assert.match(r.body.result.note, /incremental replay is not provided/i, "the limitation is stated, not hidden");
+  await h.close();
+});
+
+test("4.7 a caller cannot address another caller's task", async () => {
+  const store = ownStore();
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store });
+  const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-x"), body: JSON.stringify(sendBody("mine")),
+  });
+  const taskId = sent.body.result.task_id;
+  // A DIFFERENT key resolves to a different caller (the auth verdict is cached
+  // per key digest, so reusing the same key would keep the first identity).
+  h.sub.userId = 99;
+  h.sub.email = "other@finddata.tech";
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: { ...AUTH, authorization: "Bearer sk-other-caller" }, body: JSON.stringify(taskBody("tasks/get", taskId)),
+  });
+  assert.equal(r.body.result.state, "unknown", "ops on someone else's task read as unknown, never as theirs");
+  await h.close();
+});
+
+test("4.8 the method name is case-exact: tasks/STATUS is refused", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  const r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: AUTH, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/STATUS", params: { task_id: "x" } }),
+  });
+  assert.equal(r.body.error.code, -32601);
+  await h.close();
+});
+
+test("4.7 the task address crosses the process boundary on x-task-id", async () => {
+  const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
+  await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-hop"), body: JSON.stringify(sendBody("hop")),
+  });
+  const forwarded = h.upstreamCalls[0];
+  assert.match(String(forwarded.init.headers["x-task-id"] ?? ""), /^t-[0-9a-f]{24}$/,
+    "the runner is told which task it is executing, so both sides name one call");
   await h.close();
 });

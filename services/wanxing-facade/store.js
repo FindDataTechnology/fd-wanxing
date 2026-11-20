@@ -90,6 +90,18 @@ export function createWanxingStore({ file }) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('wanxing_requests') WHERE name = 'request_hash'`).get()) {
     db.exec(`ALTER TABLE wanxing_requests ADD COLUMN request_hash TEXT`);
   }
+  // Task handle (harden-agent-runtime-spine, a2a-task-handle): the caller-facing
+  // address for one logical call. Bound ONCE at accept (write-once, like the
+  // request hash) so a replay returns the same id, and kept AFTER the
+  // idempotency window closes — a caller may come back weeks later to ask how
+  // their task ended, which is a different question from "may I replay this".
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('wanxing_requests') WHERE name = 'task_id'`).get()) {
+    db.exec(`ALTER TABLE wanxing_requests ADD COLUMN task_id TEXT`);
+  }
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('wanxing_requests') WHERE name = 'closed_at'`).get()) {
+    db.exec(`ALTER TABLE wanxing_requests ADD COLUMN closed_at INTEGER`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_wanxing_requests_task ON wanxing_requests(task_id)`);
 
   // The external usage ledger — v1's authoritative record (spec:
   // platform-billing "external turns settle against the caller's key"). `id`
@@ -420,23 +432,58 @@ export function createWanxingStore({ file }) {
     requestGet(callerId, agentSlug, idemKey) {
       return db.prepare(`SELECT * FROM wanxing_requests WHERE caller_id = ? AND agent_slug = ? AND idem_key = ?`).get(callerId, agentSlug, idemKey) ?? null;
     },
-    requestStart(callerId, agentSlug, idemKey, requestHash = null) {
+    requestStart(callerId, agentSlug, idemKey, requestHash = null, taskId = null) {
       // Returns false when a row already exists (single-flight race loser).
       // A lost race still backfills the hash when the winner predates
       // fingerprinting (NULL = "first modern touch", treated as a match).
-      const res = db.prepare(`INSERT INTO wanxing_requests (caller_id, agent_slug, idem_key, state, created_at, request_hash) VALUES (?, ?, ?, 'running', ?, ?)
-        ON CONFLICT DO NOTHING`).run(callerId, agentSlug, idemKey, now(), requestHash);
+      //
+      // `taskId` lands ON the insert, not in a follow-up UPDATE: the row is
+      // the task's address, and a bind that runs before the row exists updates
+      // zero rows and silently drops the id (measured here: a cancel then
+      // looked up a task nobody had recorded).
+      const res = db.prepare(`INSERT INTO wanxing_requests (caller_id, agent_slug, idem_key, state, created_at, request_hash, task_id) VALUES (?, ?, ?, 'running', ?, ?, ?)
+        ON CONFLICT DO NOTHING`).run(callerId, agentSlug, idemKey, now(), requestHash, taskId);
       if (res.changes === 0 && requestHash) {
         db.prepare(`UPDATE wanxing_requests SET request_hash = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND request_hash IS NULL`)
           .run(requestHash, callerId, agentSlug, idemKey);
       }
+      if (res.changes === 0 && taskId) {
+        db.prepare(`UPDATE wanxing_requests SET task_id = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND task_id IS NULL`)
+          .run(String(taskId), callerId, agentSlug, idemKey);
+      }
       return res.changes === 1;
     },
     requestFinish(callerId, agentSlug, idemKey, state, response, requestHash = null) {
-      db.prepare(`UPDATE wanxing_requests SET state = ?, response = ?, request_hash = COALESCE(?, request_hash) WHERE caller_id = ? AND agent_slug = ? AND idem_key = ?`)
-        .run(state, response == null ? null : String(response).slice(0, 256 * 1024), requestHash, callerId, agentSlug, idemKey);
+      db.prepare(`UPDATE wanxing_requests SET state = ?, response = ?, request_hash = COALESCE(?, request_hash), closed_at = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ?`)
+        .run(state, response == null ? null : String(response).slice(0, 256 * 1024), requestHash, now(), callerId, agentSlug, idemKey);
     },
 
+    // ── Task handle (a2a-task-handle) ────────────────────────────────────────
+    //
+    // Write-once binding, same discipline as request_hash: a replay that
+    // arrives with an id already bound keeps the FIRST one (never move the
+    // address of a task that is already running).
+    taskBind(callerId, agentSlug, idemKey, taskId) {
+      if (!taskId) return null;
+      const res = db.prepare(`UPDATE wanxing_requests SET task_id = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND (task_id IS NULL OR task_id = ?)`)
+        .run(String(taskId), callerId, agentSlug, idemKey, String(taskId));
+      const row = db.prepare(`SELECT task_id FROM wanxing_requests WHERE caller_id = ? AND agent_slug = ? AND idem_key = ?`)
+        .get(callerId, agentSlug, idemKey);
+      return row?.task_id ?? null;
+    },
+    // The query is by TASK ID, not by idempotency key — that is the whole point
+    // of an address: a caller who has forgotten their key can still ask.
+    requestByTask(taskId) {
+      if (!taskId) return null;
+      return db.prepare(`SELECT * FROM wanxing_requests WHERE task_id = ? ORDER BY created_at DESC LIMIT 1`).get(String(taskId)) ?? null;
+    },
+    /** Cancel is a terminal state distinct from error; one write, first wins. */
+    taskCancel(taskId, { at = now() } = {}) {
+      if (!taskId) return null;
+      const res = db.prepare(`UPDATE wanxing_requests SET state = 'cancelled', closed_at = ? WHERE task_id = ? AND state = 'running'`)
+        .run(Number(at), String(taskId));
+      return { changed: res.changes, row: this.requestByTask(taskId) };
+    },
     // ── Usage ledger ────────────────────────────────────────────────────────
     usageInsert(row) {
       db.prepare(`INSERT INTO wanxing_usage (id, caller_id, caller_email, agent_slug, idem_key, started_at, ended_at, duration_ms, outcome, minutes_billed, rate_usd, settlement_status, channel, settler, visitor_sub, visitor_tier, plan_ref, mission_id, cluster_turn_id)
