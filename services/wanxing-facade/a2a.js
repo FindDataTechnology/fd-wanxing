@@ -990,8 +990,11 @@ export function createA2aFace({
               // ledger rule lives in core. A refusal (no cancel lane) comes
               // back as `unsupported` and is NOT reported as cancelled.
               const url = config.agentUrlFor(state.agentPath);
+              // Carry the address header too, same as the send path: a runner
+              // that keys its cancel by `x-task-id` finds the record even when
+              // the JSON body is all it looks at today.
               const body = JSON.stringify({ jsonrpc: "2.0", id: null, method: "tasks/cancel", params: { task_id: tid } });
-              const res = await postJsonWithDeadline(url, { ...forwardHeaders(), "Content-Type": "application/json" }, body, 15_000);
+              const res = await postJsonWithDeadline(url, { ...forwardHeaders(), "Content-Type": "application/json", "x-task-id": tid }, body, 15_000);
               const doc = await res.json().catch(() => null);
               if (doc?.error?.code === -32013) return "unsupported";
               const st = doc?.result?.state ?? null;
