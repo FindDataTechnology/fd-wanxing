@@ -486,9 +486,21 @@ test("4.4 看板段：声明了 team console -> 引导建队；未声明 -> 明�
 
   const none = pillarSectionsOf({ slug: "s2" }).find((x) => x.key === "dashboard");
   assert.equal(none.state, "undeclared");
-  assert.ok(none.undeclaredText.includes("团队控制台"), "未声明时要说明去哪儿看真看板");
+  assert.ok(none.undeclaredText.includes("团队控制台") || none.undeclaredText.includes("团队面"),
+    "未声明时要说明去哪儿看真看板");
   assert.deepEqual(none.blocks, []);
   assert.equal(none.headline, null);
+  assert.equal(none.hasFleet, false, "没有 fleet 标志即视为不含编制");
+
+  // D8 的第三句：有编制没看板 / 连编制都没有——两种「未声明」是不同的事实，
+  // 文案必须分开（这台机器上找不到的区分，读者只能靠猜）。
+  const fleetNoConsole = pillarSectionsOf({ slug: "s3", fleet: true }).find((x) => x.key === "dashboard");
+  assert.equal(fleetNoConsole.hasFleet, true);
+  assert.ok(fleetNoConsole.undeclaredText.includes("含有团队编制"), fleetNoConsole.undeclaredText);
+  assert.notEqual(fleetNoConsole.undeclaredText, none.undeclaredText, "两句不得同文");
+
+  const noFleet = pillarSectionsOf({ slug: "s4" }).find((x) => x.key === "dashboard");
+  assert.ok(noFleet.undeclaredText.includes("不含团队编制"), noFleet.undeclaredText);
 
   // 只给 headline 不给 blocks（老作者的写法）也要算「声明了」
   const headOnly = pillarSectionsOf({ console: { headline: "decisions.open" } }).find((x) => x.key === "dashboard");
