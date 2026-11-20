@@ -50,7 +50,21 @@
       全量 `scripts/test-*.mjs` 实跑：364 tests / 356 pass / 8 fail；8 条全在
       `test-wanxing-clusters.mjs`，且用 stash 对照证明**改动前后同为 8 红**（既有失败，非本变更引入）。
       `wanxing-web` 自己的 `npm test` 128/128 绿。
-- [ ] 5.3 真机：找一个声明了非 optional 绑定且已部署的 agent（若产线仍为 0，先造一个带 agent +
-      facade + connector_bindings 的包，这是 `docs/served-agent-connector-access.md` 记的那条前提），
-      核对详情页数字与壹座绑定账本逐条一致。
-- [ ] 5.4 真机反证：把该包详情读失败（或包下架），断言页面显示「未声明」而**不是**「全接通」。
+- [ ] 5.3 真机：找一个声明了非 optional 绑定且已部署的 agent，核对详情页数字与壹座绑定账本逐条一致。
+      **2026-11-20 尝试后停在半路，如实记下卡在哪**：
+      · 已验到的**是投影本身，且用的是生产部署的那份代码**——在 fd-prod 的 facet pod 内驱动
+        `createA2aFace` 真实 HTTP 面（只桩 upstream 的 packs/registry），得到
+        `{"declared":2,"required":1,"wired":1,"missing":[{"key":"crossref-probe","optional":true}]}`：
+        `required` 只数必需、`wired` 只数铸成功的、`missing` 恰好是那条 optional 且带标记。
+      · **验不到的是「真页面显示这组数字」**：要它出现，需要一个在 facet 生产库
+        (`/data/facet/packs.db`) 里、声明了必需绑定、且部署者连接器凭据能在 facet 进程里结算的包。
+        facet 进程读 `/data/data/app.db` 而账号在 `/data/cells/<id>/data/data/app.db`（文档记的
+        拓扑断裂），要打通唯一的路是把部署者的连接器 token 复制进 facet 的库 —— **那是伪造生产凭据，
+        即使事后删除也不该做，所以停手了**。
+      · 正确解法（下次一条命令即可收官）：由持 `creators` 组的账号在壹座上真实发布并部署一个
+        声明必需绑定的包，然后打开 `#/agent/<slug>` 截图比对。**建议把这个包钉进供给侧**：
+        三个已上架的 connector-pack 都没有 `agents`，这才是这条能力「通电但没接负载」的根因。
+- [x] 5.4 真机反证（2026-11-20）：万星详情页 `#/agent/<slug>`（生产，`sha-a5cf196`）对未声明包
+      渲染「外部系统 · 未声明：这个包没有声明连接器绑定。」——不是「需求 0」、不是「全接通」。
+      读取失败臂由 `test-connector-requirements.mjs` 的「a failed declaration read is absent —
+      NOT an empty gap list」钉住（红证成立）。
