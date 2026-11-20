@@ -32,6 +32,84 @@ const DETAIL_PAGE_SIZE = 200;
 //     wanted to — keep it that way (anonymous face).
 const AXIS_TITLES = { store: "存放", read: "读取", write: "写入", process: "加工" };
 
+/**
+ * The deployment's external-system requirements (surface-connector-requirements
+ * -in-wanxing). Three facts, three different sentences, and none may impersonate
+ * another:
+ *
+ *   absent facts      → 未声明（the pack declares no connector bindings AT ALL）
+ *   all wired         → 需求 N · 已接通 N, no gap rows
+ *   gaps              → the rows, with 必需/可选 spelled out
+ *
+ * The flagship trap is `optional`: paas never mints an optional binding by
+ * design, so an all-optional gap can never be closed. Reporting it in the same
+ * voice as a required gap would send a deployer to fix something that cannot
+ * change.
+ */
+export function ExternalSystemsSection({ facts, fixUrl = null }) {
+  const declared = facts && typeof facts === "object" && Number.isFinite(Number(facts.declared));
+  const missing = declared && Array.isArray(facts.missing) ? facts.missing : [];
+  const requiredGaps = missing.filter((row) => !row?.optional).length;
+
+  return (
+    <section className="space-y-1.5" data-testid="detail-external-systems">
+      <h2 className="text-xs font-medium text-slate-500 dark:text-slate-400">外部系统</h2>
+      {!declared ? (
+        <p className="text-xs text-slate-400" data-testid="detail-external-systems-undeclared">
+          未声明：这个包没有声明连接器绑定。
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-xs text-slate-600 dark:text-slate-400" data-testid="detail-external-systems-count">
+              需求 {facts.required} · 已接通 {facts.wired}
+            </span>
+            {missing.length > 0 && (
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded ${
+                  requiredGaps > 0
+                    ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                    : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                }`}
+                data-testid="detail-external-systems-gaps"
+                data-required-gaps={requiredGaps}
+              >
+                {requiredGaps > 0 ? `缺 ${requiredGaps} 条必需` : "只缺可选项"}
+              </span>
+            )}
+          </div>
+          {missing.length > 0 && (
+            <ul className="space-y-1" data-testid="detail-external-systems-missing">
+              {missing.map((row) => (
+                <li
+                  key={row?.key}
+                  className="flex items-center gap-2 text-xs"
+                  data-testid="detail-external-systems-gap"
+                  data-key={row?.key}
+                  data-optional={row?.optional ? "1" : "0"}
+                >
+                  <code className="font-mono text-slate-600 dark:text-slate-300">{row?.key}</code>
+                  <span className="text-slate-400">{row?.optional ? "可选" : "必需"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {missing.length > 0 && fixUrl && (
+            <a className="text-xs underline text-accent" href={fixUrl} data-testid="detail-external-systems-fix">
+              去凭据修复面 →
+            </a>
+          )}
+          {missing.some((row) => row?.optional) && (
+            <p className="text-xs text-slate-400" data-testid="detail-external-systems-optional-hint">
+              可选绑定不会在部署时铸造，修不修都不影响部署能否跑。
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function pillarSectionsOf(agent) {
   const face = agent?.toolFace && typeof agent.toolFace === "object" ? agent.toolFace : null;
   const mem = agent?.memory && typeof agent.memory === "object" ? agent.memory : null;
@@ -58,24 +136,32 @@ export function pillarSectionsOf(agent) {
 
   // Dashboard (design D8). A single-agent deployment has no team runtime, so
   // this section NEVER renders runtime values — it states whether the pack
-  // declares a team console and what to do about it. Two texts, both true in
-  // every case:
-  //   · declared  -> the console belongs to the team face; stand the pack up as
-  //                  a fleet to use it (link to the template instantiation path)
-  //   · absent    -> say plainly that no team console is declared, and that a
-  //                  single-agent face will not fake one. (Sharper wording —
-  //                  "本包不含团队编制" — needs the pack's `fleet` flag, which
-  //                  the descriptor does not carry yet; see the task note.)
+  // declares a team console and what to do about it:
+  //   · declared            -> the console belongs to the team face; stand the
+  //                            pack up as a fleet to use it (link to the
+  //                            template instantiation path)
+  //   · absent + has a fleet -> the pack carries team formation but declares no
+  //                            console: build the team and the board can be
+  //                            declared on a later version
+  //   · absent + no fleet    -> the pack carries no team formation at all, so
+  //                            there is no team board to point at. This is the
+  //                            SHARP wording, and it needs the `fleet` flag
+  //                            (pillar-surfaces D8): a hedge that is true in
+  //                            both cases teaches the reader nothing.
   const consoleDecl = agent?.console && typeof agent.console === "object" ? agent.console : null;
   const consoleBlocks = Array.isArray(consoleDecl?.blocks) ? consoleDecl.blocks.map(String) : [];
+  const hasFleet = agent?.fleet === true;
   const dashboard = {
     key: "dashboard",
     title: "看板",
     state: consoleDecl ? "team" : "undeclared",
+    hasFleet,
     headline: typeof consoleDecl?.headline === "string" ? consoleDecl.headline : null,
     blocks: consoleBlocks,
     teamText: "该看板属团队面：以这个包建队后，在团队控制台按声明的块查看。",
-    undeclaredText: "本包未声明团队看板。单 agent 部署不伪造看板——若该包含团队编制，需以该 pack 建队后在团队控制台查看。",
+    undeclaredText: hasFleet
+      ? "本包含有团队编制，但未声明团队看板。单 agent 部署不伪造看板——建队后可在此查看团队自己的控制台。"
+      : "本包不含团队编制，也没有团队看板——它只交付这一个 agent。看板属团队面，单 agent 部署不伪造。",
   };
 
   return [
@@ -286,6 +372,16 @@ export function AgentDetailView({ focusSlug }) {
           </div>
         ))}
       </section>
+
+      {/* ── 1.6 外部系统（surface-connector-requirements-in-wanxing） ─────
+          这不是运行健康，是部署配置：agent 要碰的外部系统接通了没有。故意
+          不并进上面的状态徽标——健康态由回合结果派生，接不通外部系统会让
+          回合失败、从而已经落进 failing/degraded，两个完全不同的根因不该撞
+          成同一个红点。 */}
+      <ExternalSystemsSection
+        facts={agent.external_systems}
+        fixUrl="https://platform.finddatatech.cloud/settings/connections?panel=connector"
+      />
 
       {/* ── 2. 现在怎样 ─────────────────────────────────────────────── */}
       <section className="space-y-1.5" data-testid="detail-now">

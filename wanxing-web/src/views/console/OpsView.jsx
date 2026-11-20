@@ -25,6 +25,38 @@ export const RUNNER_STATE_LABEL = {
   unknown: "未知",
 };
 
+// A few lifecycle kinds carry an OPERATOR decision the raw JSON hides. Only
+// those get a sentence; everything else keeps its original rendering on
+// purpose — an unknown kind must stay visible as itself, never be swallowed by
+// a label table that does not know it.
+//
+// `connector_identity_unregistered` (paas add-served-agent-connector-access):
+// the facade records it when a turn's visitor→actor registration failed, which
+// means that turn's connector call is refused (fail-closed — the platform does
+// not silently fall back to the deployer). The code tells apart "our link is
+// broken" from "this visitor has not signed in", and those two get fixed by
+// different people.
+export const EVENT_LINE = {
+  connector_identity_unregistered: (payload) => {
+    const parts = ["访客身份登记未完成——本回合的连接器调用会被拒绝（不回落部署者）"];
+    if (payload?.code) parts.push(`code=${payload.code}`);
+    if (payload?.tier) parts.push(`tier=${payload.tier}`);
+    if (payload?.status != null) parts.push(`HTTP ${payload.status}`);
+    return parts.join(" · ");
+  },
+};
+
+export function eventLine(event) {
+  const render = EVENT_LINE[event?.kind];
+  if (!render) return JSON.stringify(event?.payload ?? {});
+  try {
+    return render(event.payload ?? {});
+  } catch {
+    // A payload shaped differently than expected must not blank the row.
+    return JSON.stringify(event.payload ?? {});
+  }
+}
+
 export function OpsView() {
   const [board, setBoard] = useState(null);
   const [boardErr, setBoardErr] = useState(null);
@@ -513,7 +545,9 @@ export function OpsView() {
               <div key={e.id} className="px-4 py-2 flex items-center gap-3 text-xs">
                 <span className="text-slate-400 w-36 shrink-0 font-mono">{new Date(Number(e.ts)).toLocaleString("zh-CN", { hour12: false })}</span>
                 <span className="font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800">{e.kind}</span>
-                <span className="text-slate-500 truncate">{JSON.stringify(e.payload ?? {})}</span>
+                <span className="text-slate-500 truncate" data-testid={`timeline-payload-${e.kind}`}>
+                  {eventLine(e)}
+                </span>
                 {e.trace_id && <span className="text-slate-300 font-mono ml-auto">↔ {e.trace_id.slice(0, 10)}</span>}
               </div>
             ))}

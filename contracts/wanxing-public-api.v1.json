@@ -243,6 +243,49 @@
               }
             }
           }
+        },
+        "external_systems": {
+          "type": "object",
+          "description": "External-system requirements (surface-connector-requirements-in-wanxing): the pack's `connector_bindings` declaration joined against what this deployment actually minted (registry entry metadata.connector_bindings). Absent when the pack declares none — an undeclared pack must not read as 'needs zero systems', and a failed declaration read is absent too, never an empty gap list. Carries binding keys and the optional flag only; never a token, secret name or connector URL.",
+          "required": [
+            "declared",
+            "required",
+            "wired",
+            "missing"
+          ],
+          "properties": {
+            "declared": {
+              "type": "number",
+              "description": "Bindings the pack version declares."
+            },
+            "required": {
+              "type": "number",
+              "description": "Declared bindings that are not optional. paas never mints an optional binding, so this is the number that can actually be closed."
+            },
+            "wired": {
+              "type": "number",
+              "description": "Declared bindings this deployment minted; counted against the declaration so it can never exceed it."
+            },
+            "missing": {
+              "type": "array",
+              "description": "Declared keys that were not minted. `optional` rides along because the repair differs: an optional gap closes by nothing.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "key",
+                  "optional"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "optional": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
