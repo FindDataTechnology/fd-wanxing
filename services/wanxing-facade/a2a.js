@@ -126,6 +126,23 @@ const jsonRpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, e
 // recorded as -32032 with an accurate message — right words, wrong code.
 // A DOMException's legacy `code` is a small integer (TimeoutError is 23), so the
 // name check must win over the passthrough.
+/**
+ * The wording for "a forward that produced no response body".
+ *
+ * It names the self-loop possibility because that is the failure this wording
+ * exists for (2026-11-21: a registry whose A2A backend points at the gateway
+ * turns every forward into a self-referential hop). It says *may*, not *is*:
+ * the facade cannot see the registry's backend table, so from here a normal
+ * backend timeout and a self-loop are the SAME observation. Claiming otherwise
+ * would hand an operator an unproven verdict to act on.
+ *
+ * Pure and exported so the wording is asserted directly, not through a
+ * multi-minute timeout.
+ */
+export function selfLoopHint() {
+  return "backend may point at this gateway (self-loop) — check the agent's proxy_pass_url in the registry";
+}
+
 export function turnErrorCode(err) {
   const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
   return timedOut ? -32041 : Number.isInteger(err?.code) ? err.code : -32032;
@@ -687,9 +704,30 @@ export function createA2aFace({
       // 23) — the timeout check must win over the "integer code passthrough"
       // branch or a timeout masquerades as a protocol error.
       const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
+      // Name the likely cause when a timeout carries NO response body at all.
+      //
+      // A registry whose A2A agent backend points at the gateway itself turns
+      // every forward into a self-referential hop: the request re-enters the
+      // gateway, never reaches the executor, and the caller sees only a bare
+      // timeout — which reads as "the gateway is slow" and sends an operator to
+      // the wrong layer. Measured 2026-11-21: `tasks/cancel` returned 200 with
+      // `state: running` while the runner logged the method ZERO times.
+      //
+      // This is diagnosis only: the code stays a timeout (we cannot see the
+      // registry's backend table from here), but the message says what to check.
+      const SELF_LOOP_HINT = selfLoopHint();
       return {
         replayed: false,
-        response: { jsonrpc: "2.0", id: rpcId ?? null, error: { code: turnErrorCode(e), message: timedOut ? `turn exceeded ${Math.round(timeoutMs / 1000)}s` : String(e?.message || e) } },
+        response: {
+          jsonrpc: "2.0",
+          id: rpcId ?? null,
+          error: {
+            code: turnErrorCode(e),
+            message: timedOut
+              ? `turn exceeded ${Math.round(timeoutMs / 1000)}s; ${SELF_LOOP_HINT}`
+              : String(e?.message || e),
+          },
+        },
         error: String(e?.message || e),
         timedOut,
         row,

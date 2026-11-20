@@ -2383,3 +2383,19 @@ test("4.9 tasks/cancel resolves the agent state it needs (the closure must not h
   await inFlight;
   await h.close();
 });
+
+test("4.1 the body-less-timeout hint names the self-loop POSSIBILITY, not a verdict", async () => {
+  // Prod 2026-11-21: a registry whose A2A backend points at the gateway turns
+  // every forward into a self-referential hop; the caller saw a bare timeout,
+  // which reads as "the gateway is slow" and sends an operator to the wrong
+  // layer. The facade cannot SEE the registry's backend table — a normal
+  // backend timeout and a self-loop are the SAME observation from here — so
+  // the wording must be a possibility. Asserted directly: the wording, not a
+  // multi-minute timeout.
+  const { selfLoopHint } = await import("../services/wanxing-facade/a2a.js");
+  const msg = selfLoopHint();
+  assert.match(msg, /may point at this gateway/, "must be a possibility, not an assertion");
+  assert.match(msg, /self-loop/);
+  assert.match(msg, /proxy_pass_url/, "must name the field an operator has to fix");
+  assert.doesNotMatch(msg, /\bis\b.*(?:wrong|the cause)/i, "must not assert it is the cause");
+});
