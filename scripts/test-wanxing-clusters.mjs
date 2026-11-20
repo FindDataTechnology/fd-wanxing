@@ -726,3 +726,23 @@ test("A/B urls: a forwarded https request composes https card, catalog and clust
     await h.close();
   }
 });
+
+// ── 回归：成员的 taskId 必须是 runMemberTurn 自己的参数（harden-agent-runtime-spine）
+//
+// 2026-11-20 实测：给 `runMemberTurn` 传 `taskId` 时它引用了一个**请求 handler 内的
+// 局部变量**，于是每次成员回合都抛 ReferenceError，被外层 catch 收成「应答缺
+// result」——集群面 8 条测试全红，而单 agent 面全绿。集群走的是同一条
+// `runMemberTurn`，所以缺的正是这条覆盖。
+test("member turns carry a task id through runMemberTurn (no free-variable ReferenceError)", async () => {
+  const h = clusterHarness();
+  try {
+    const r = await h.send("hi");
+    assert.equal(r.status, 200);
+    // The composite must actually have run its members — a ReferenceError in
+    // runMemberTurn would surface as a missing result, not as this shape.
+    assert.ok(r.body.result?.message?.metadata?.cluster?.members?.length > 0,
+      `member turns must produce a composite answer; got ${JSON.stringify(r.body).slice(0, 200)}`);
+  } finally {
+    await h.close();
+  }
+});
