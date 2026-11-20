@@ -265,6 +265,62 @@ export function createA2aFace({
     return curationCache.map;
   };
 
+  // ── External-system declarations (surface-connector-requirements-in-wanxing) ─
+  //
+  // The declaration half of the requirement projection. Cached per
+  // `${packId}@${version}` on the same cadence as the entry cache, and only
+  // read for packs whose deployment actually shows a connector trace — today
+  // no production deployment declares bindings, so this must cost nothing.
+  //
+  // Absent (null) means "could not ask", which the projection turns into an
+  // absent key: a failed detail read must never read as "declares nothing".
+  const declarationCache = { at: 0, map: new Map() }; // packId → array | null
+  const connectorDeclarations = async (deps) => {
+    if (!packsDetailFetch || !packsBrowseFetch) return declarationCache.map;
+    if (Date.now() - declarationCache.at < entryTtlMs) return declarationCache.map;
+    // ONLY packs the browse row says declare bindings get detailed. Two
+    // reasons, and both are load-bearing: the catalog must not turn one
+    // detail read per deployment into N (the cluster index already refuses
+    // to do that for single-agent packs), and the gate must come from the
+    // BROWSE face rather than from the deployed wiring — a pack that declares
+    // bindings but minted none is exactly the case this projection exists to
+    // show, and its registry entry has no connector trace at all.
+    let browse;
+    try {
+      browse = await browseRows();
+    } catch {
+      return declarationCache.map;
+    }
+    const declaresBindings = new Set(
+      (Array.isArray(browse) ? browse : [])
+        .filter((row) => Number(row?.connectorBindingCount) > 0)
+        .map((row) => row.id)
+        .filter(Boolean),
+    );
+    const next = new Map(declarationCache.map);
+    let read = false;
+    for (const dep of deps) {
+      if (dep.packId == null || next.has(dep.packId) || !declaresBindings.has(dep.packId)) continue;
+      try {
+        const detail = await packsDetailFetch(dep.packId);
+        const declared = detail?.manifest?.connector_bindings ?? detail?.connector_bindings;
+        next.set(dep.packId, Array.isArray(declared) ? declared : null);
+      } catch {
+        // Unreachable packs surface: leave the key absent for this round and
+        // retry next round rather than caching a false "nothing declared".
+        continue;
+      }
+      read = true;
+    }
+    if (read) {
+      declarationCache.map = next;
+      declarationCache.at = Date.now();
+    }
+    return next;
+  };
+  const declarationFor = async (dep) =>
+    dep?.packId == null ? null : ((await connectorDeclarations([dep])).get(dep.packId) ?? null);
+
   // Cluster index (add-cluster-catalog-grouping D1/D2): a pack groups only
   // when its manifest DECLARES `cluster` — the author's declaration is the
   // team signal (a multi-agent pack without one is a bag of roles), the same
@@ -380,6 +436,7 @@ export function createA2aFace({
       agentPath: dep.agentPath,
       packId: dep.packId ?? null,
       agentId: dep.agentId ?? null,
+      version: dep.version ?? null,
     };
   }
 
@@ -450,7 +507,50 @@ export function createA2aFace({
     return facts;
   }
 
-  function publicCard(slug, entry, req) {
+  // External-system requirements (surface-connector-requirements-in-wanxing).
+  //
+  // Two different facts, from two different places, and they must not be
+  // confused:
+  //   the DECLARATION is the pack version's `connector_bindings` (what the pack
+  //     asks for), read through the packs detail surface;
+  //   the WIRING is `entry.metadata.connector_bindings` — paas composes the
+  //     registry entry's metadata FROM THE DESCRIPTOR, and the descriptor only
+  //     carries bindings the deploy actually minted.
+  // So "missing" = declared keys the deployment never minted. Nothing here
+  // needs a new paas field, and `optional` must ride along: `mintableBindings()`
+  // filters `!row.optional`, so an optional binding is NEVER minted by design —
+  // reporting it as a gap without saying so would send someone to fix something
+  // that will not change.
+  function publicConnectorFacts(entry, declaration) {
+    const declared = Array.isArray(declaration) ? declaration : null;
+    if (!declared || declared.length === 0) return {};
+    const declaredKeys = declared
+      .map((row) => (row && typeof row === "object" && typeof row.key === "string" ? row.key : ""))
+      .filter(Boolean);
+    const wired = new Set(
+      (Array.isArray(entry?.metadata?.connector_bindings) ? entry.metadata.connector_bindings : [])
+        .map((row) => (row && typeof row.key === "string" ? row.key : ""))
+        .filter(Boolean),
+    );
+    const missing = declared
+      .map((row) => (row && typeof row === "object" ? row : {}))
+      .filter((row) => typeof row.key === "string" && row.key && !wired.has(row.key))
+      .map((row) => ({ key: row.key, optional: row.optional === true }));
+    return {
+      external_systems: {
+        declared: declared.length,
+        required: declared.filter((row) => !(row && row.optional === true)).length,
+        // Counted against the DECLARATION, not the raw minted set: a deployment
+        // can carry a binding this version no longer declares, and letting that
+        // push `wired` above `declared` would make the two numbers disagree on
+        // screen.
+        wired: declaredKeys.filter((key) => wired.has(key)).length,
+        missing,
+      },
+    };
+  }
+
+  function publicCard(slug, entry, req, declaration = null) {
     return {
       name: entry.name,
       description: entry.description,
@@ -469,6 +569,10 @@ export function createA2aFace({
       // facade block rides the registry entry's metadata — discovery faces
       // present the conversational front door and its billing stance.
       ...(entry?.metadata?.facade ? { facade: true, facade_stance: entry.metadata.facade.stance ?? "hosted" } : {}),
+      // External-system requirements: the pack's declaration joined against
+      // what this deployment actually minted. Absent when the pack declares
+      // nothing — an undeclared pack must not read as "needs zero systems".
+      ...publicConnectorFacts(entry, declaration),
       // The card points callers at the facade, never at the internal runtime.
       url: `${req.protocol}://${req.get("host")}/api/wanxing/v1/a2a/${slug}`,
     };
@@ -598,7 +702,7 @@ export function createA2aFace({
   // — the member's (caller, member) slot, the derived-key idempotency
   // (`<key>--<agentId>`), the forward under the member timeout, and the same
   // finishTurn a direct turn books. Skips surface as {status:"skipped"}.
-  const runMemberTurn = async ({ caller, slug, state, text, contextId, idemKey = null, clusterTurnId, timeoutMs = 300_000, rpcId = null }) => {
+  const runMemberTurn = async ({ caller, slug, state, text, contextId, idemKey = null, taskId = null, clusterTurnId, timeoutMs = 300_000, rpcId = null }) => {
     if (!core.acquireSlot(caller.userId, slug)) {
       return { status: "skipped", reason: "TURN_IN_FLIGHT" };
     }
@@ -681,6 +785,10 @@ export function createA2aFace({
         clusterUnits ? clusterUnits().catch(() => []) : [],
       ]);
       const listedUnits = new Map((listed ?? []).map((u) => [u.id, u]));
+      // One declaration read per distinct pack, hoisted out of the loop: the
+      // catalog faces every deployment, and the packs surface is the slowest
+      // dependency here.
+      const declarations = await connectorDeclarations(deps).catch(() => declarationCache.map);
       // One derivation of the snapshot instant for the whole response, and one
       // read of the hard-stale flag (close-wanxing-domain-linkage D2). Both are
       // per-response facts, not per-entry ones.
@@ -719,6 +827,7 @@ export function createA2aFace({
           // none of its prose. Only the /agents entry — the per-agent A2A card
           // is a different face and is left to its own task.
           ...publicPillarFacts(entry),
+          ...publicConnectorFacts(entry, dep.packId != null ? declarations.get(dep.packId) ?? null : null),
           // Facade identification (paas add-principal-facade), same rule as
           // the card: ride the registry metadata, absent = ordinary agent.
           ...(entry?.metadata?.facade ? { facade: true, facade_stance: entry.metadata.facade.stance ?? "hosted" } : {}),
@@ -813,7 +922,7 @@ export function createA2aFace({
       const marker = clusterMarkerFor(state, await clusterMap());
       const unit = marker && clusterUnits ? (await clusterUnits().catch(() => [])).find((u) => u.id === marker.id) ?? null : null;
       res.json({
-        ...publicCard(req.params.agentSlug, state.entry, req),
+        ...(publicCard(req.params.agentSlug, state.entry, req, await declarationFor(state))),
         ...(chatability?.(state) ? { chatable: true } : {}),
         ...(marker
           ? {
