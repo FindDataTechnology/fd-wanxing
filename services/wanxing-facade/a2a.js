@@ -598,7 +598,7 @@ export function createA2aFace({
   // — the member's (caller, member) slot, the derived-key idempotency
   // (`<key>--<agentId>`), the forward under the member timeout, and the same
   // finishTurn a direct turn books. Skips surface as {status:"skipped"}.
-  const runMemberTurn = async ({ caller, slug, state, text, contextId, idemKey = null, clusterTurnId, timeoutMs = 300_000, rpcId = null }) => {
+  const runMemberTurn = async ({ caller, slug, state, text, contextId, idemKey = null, taskId = null, clusterTurnId, timeoutMs = 300_000, rpcId = null }) => {
     if (!core.acquireSlot(caller.userId, slug)) {
       return { status: "skipped", reason: "TURN_IN_FLIGHT" };
     }
