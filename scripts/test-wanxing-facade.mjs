@@ -2331,3 +2331,55 @@ test("4.7 the task address crosses the process boundary on x-task-id", async () 
     "the runner is told which task it is executing, so both sides name one call");
   await h.close();
 });
+
+test("4.9 tasks/cancel resolves the agent state it needs (the closure must not hit a TDZ)", async () => {
+  // Prod 2026-11-20: the relay closure referenced `state`, declared far below
+  // for the send/stream path — every cancel threw `Cannot access 'state' before
+  // initialization`, logged as "relay failed", and the caller saw
+  // `state: running` while the turn kept going.
+  //
+  // The outbound hop rides `postJsonWithDeadline`, which does NOT go through the
+  // injected `upstreamFetch` — so this asserts on what the CALLER sees instead:
+  // with the closure fixed, a cancel whose target state resolves reaches the
+  // relay (and, unreachable here, returns a NON-`cancelled` outcome). Before the
+  // fix the same request threw inside the closure and the row was never settled.
+  let releaseSend;
+  const sendGate = new Promise((r) => { releaseSend = r; });
+  const store = ownStore();
+  const h = faceHarness({
+    entry: { visibility: "public" },
+    store,
+    upstream: async () => { await sendGate; return jsonReply(); },
+  });
+  const inFlight = h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+    method: "POST", headers: withKey("idem-relay4"), body: JSON.stringify(sendBody("hi")),
+  });
+  const { createHash } = await import("node:crypto");
+  const taskId = "t-" + createHash("sha256").update("task|7|packs-p1-heal|idem-relay4").digest("hex").slice(0, 24);
+  for (let i = 0; i < 100 && !store.requestByTask(taskId); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(store.requestByTask(taskId), "the accept mints and binds the address before the turn ends");
+
+  // Capture the warning channel: a TDZ inside the closure is logged as
+  // "relay failed" and is the ONLY observable that distinguishes the two builds
+  // here — the response shape is identical either way.
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  let r;
+  try {
+    r = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {
+      method: "POST", headers: AUTH, body: JSON.stringify(taskBody("tasks/cancel", taskId)),
+    });
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.ok(
+    !warnings.some((w) => /Cannot access 'state' before initialization/.test(w)),
+    `the relay closure must resolve its own agent state; saw: ${warnings.filter((w) => w.includes("relay failed")).join(" | ")}`,
+  );
+  assert.ok(r.body.result || r.body.error, "the cancel answered structurally instead of throwing inside the closure");
+  assert.notEqual(r.body.result?.state, "cancelled", "an unreachable relay must NOT be reported as cancelled");
+  releaseSend();
+  await inFlight;
+  await h.close();
+});

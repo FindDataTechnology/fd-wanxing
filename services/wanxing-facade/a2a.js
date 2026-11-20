@@ -960,6 +960,19 @@ export function createA2aFace({
       // answer). `unknown` is its own state — a task id this facade never
       // issued is not "failed" and not "yours but gone".
       if (method === "tasks/get" || method === "tasks/cancel" || method === "tasks/resubscribe") {
+      // The tasks verbs run BEFORE the message-shape parsing, so `state` (declared
+      // further down for the send/stream path) is still in its temporal dead zone
+      // here. Resolving it locally is the fix: a closure that captured the outer
+      // binding threw `Cannot access 'state' before initialization` on EVERY
+      // cancel — measured live 2026-11-20 (`[wanxing:cancel] relay failed …`),
+      // which the caller saw as a cancel that returned `running` and did nothing.
+      let taskState;
+      try {
+        taskState = await agentState(slug);
+      } catch (e) {
+        note("refused", slug, { stage: "source", code: "DEPLOYMENT_SOURCE_UNAVAILABLE" });
+        return sourceUnavailable(res, String(e?.message || e));
+      }
         const taskId = params?.task_id ?? params?.taskId ?? params?.id ?? null;
         if (!taskId) return res.status(200).json(jsonRpcError(id, -32602, "task_id required"));
         const row = core.taskLookup({ callerId: caller.userId, slug, taskId });
@@ -996,7 +1009,7 @@ export function createA2aFace({
               // The forward transport and credentials live on this face; the
               // ledger rule lives in core. A refusal (no cancel lane) comes
               // back as `unsupported` and is NOT reported as cancelled.
-              const url = config.agentUrlFor(state.agentPath);
+              const url = config.agentUrlFor(taskState.agentPath);
               // Carry the address header too, same as the send path: a runner
               // that keys its cancel by `x-task-id` finds the record even when
               // the JSON body is all it looks at today.
