@@ -399,6 +399,20 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   }
 
   async function trySettle(row) {
+    // A waived row has nothing to move. `recordUsage` bills only `outcome ===
+    // "ok"`, so an error/cancelled row carries minutes_billed 0 — and asking
+    // the billing plane to subtract 0 is an upstream refusal, not a settle.
+    // Those refusals walked the failure ladder to the suspension threshold:
+    // measured live 2026-11-21, a run of cancelled turns suspended the test
+    // caller (`CALLER_SUSPENDED: settlement failed 9× (internal error)`) for
+    // turns that were never going to be charged. The mark IS the settlement,
+    // exactly as it already is for plan and mission rows.
+    if (row.settlementStatus === "waived" || Number(row.minutesBilled) === 0) {
+      store.usageMarkSettled(row.id);
+      store.clearCaller(row.callerId);
+      await creditShare(row);
+      return true;
+    }
     // Plan-backed rows settle locally (add-serving-plans D2): the drawdown IS
     // the ledger row — remaining minutes derive from it, so settlement is just
     // the mark. No external call and no failure ladder; a repeated mark (inline

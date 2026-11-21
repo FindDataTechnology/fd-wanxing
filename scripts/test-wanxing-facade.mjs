@@ -275,6 +275,27 @@ test("2.4 errored turns are recorded but waived", () => {
   assert.equal(row.minutesBilled, 0);
 });
 
+test("2.4 a cancelled (waived) row never reaches the billing plane and never walks the failure ladder", async () => {
+  // Measured live 2026-11-21: a run of cancelled turns suspended the test
+  // caller — `CALLER_SUSPENDED: settlement failed 9× (internal error)` — for
+  // turns that were never going to be charged. `recordUsage` bills only
+  // `outcome === "ok"`, so a cancelled row carries minutes_billed 0, and
+  // asking the billing plane to subtract 0 is an upstream refusal, not a
+  // settlement. It must be marked settled locally, exactly like plan/mission.
+  const sub = stubSub2api();
+  const store = freshStore();
+  const core = createWanxingCore({ store, sub2api: sub, config: { suspendAfterFailures: 2 } });
+  for (let i = 0; i < 5; i++) {
+    const row = core.recordUsage({ caller: CALLER, slug: "a", idemKey: `c${i}`, startedAt: 0, endedAt: 60_000, outcome: "cancelled" });
+    assert.equal(row.minutesBilled, 0, "a stopped turn is never billed");
+    assert.equal(row.settlementStatus, "waived");
+    assert.equal(await core.trySettle(row), true, "a waived row settles by the mark alone");
+  }
+  assert.equal(sub.adjustCalls.length, 0, "the billing plane is never asked to move zero");
+  assert.equal(store.callerState(7)?.suspended_reason ?? null, null, "and the caller is never suspended for it");
+  assert.equal((await core.authenticate("sk-good")).ok, true);
+});
+
 test("2.4 repeated settlement failures suspend the caller; the gate re-admits after recovery", async () => {
   const sub = stubSub2api();
   sub.adjustOk = false;
