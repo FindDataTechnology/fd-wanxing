@@ -275,6 +275,21 @@ test("2.4 errored turns are recorded but waived", () => {
   assert.equal(row.minutesBilled, 0);
 });
 
+test("2.4 a cancelled turn records `cancelled` on the request row, not `done`", async () => {
+  // The two read faces drifted apart: the request row said `done` while the
+  // usage row (whose outcome the send path derives separately) said
+  // `cancelled` with 0 minutes — measured live 2026-11-21 through the public
+  // facade. The row must record how the turn ENDED.
+  const store = freshStore();
+  const core = createWanxingCore({ store, sub2api: stubSub2api(), config: { ratePerMin: 0.1 } });
+  const out = await core.idempotentSend({
+    callerId: 7, slug: "a", idemKey: "kc", taskId: "t-kc", requestHash: "fp",
+    exec: async () => ({ response: { jsonrpc: "2.0", id: 1, result: { state: "cancelled", parts: [{ kind: "text", text: "" }] } } }),
+  });
+  assert.equal(out.replayed, false);
+  assert.equal(store.requestGet(7, "a", "kc").state, "cancelled", "the ledger says the turn was stopped");
+});
+
 test("2.4 a cancelled (waived) row never reaches the billing plane and never walks the failure ladder", async () => {
   // Measured live 2026-11-21: a run of cancelled turns suspended the test
   // caller — `CALLER_SUSPENDED: settlement failed 9× (internal error)` — for

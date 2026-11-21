@@ -220,7 +220,13 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
     const flight = (async () => {
       try {
         const out = await exec();
-        store.requestFinish(callerId, slug, idemKey, "done", JSON.stringify(out.response ?? out), requestHash);
+        // The row records how the turn ENDED, and a caller-stopped turn is
+        // `cancelled`, not `done`. Booking it as `done` split the two read
+        // faces apart: the request row said done while the usage row (whose
+        // outcome the send path already derived correctly) said cancelled with
+        // 0 minutes — measured live 2026-11-21 through the public facade.
+        const endedAs = out?.response?.result?.state === "cancelled" ? "cancelled" : "done";
+        store.requestFinish(callerId, slug, idemKey, endedAs, JSON.stringify(out.response ?? out), requestHash);
         return { replayed: false, ...out };
       } catch (e) {
         store.requestFinish(callerId, slug, idemKey, "error", JSON.stringify({ error: { code: e.code ?? -32032, message: String(e?.message || e) } }), requestHash);
