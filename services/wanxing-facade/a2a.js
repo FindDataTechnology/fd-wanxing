@@ -148,6 +148,25 @@ export function turnErrorCode(err) {
   return timedOut ? -32041 : Number.isInteger(err?.code) ? err.code : -32032;
 }
 
+// What a runner's answer to `tasks/cancel` means for THIS facade's ledger.
+// Pure so the rule is testable without a transport (the relay rides
+// postJsonWithDeadline, which does not go through the injectable fetch).
+//
+// `running` is NOT "unknown": the runner answers from its live registry and the
+// abort settles the collector asynchronously, so a CONFIRMED stop can still
+// read back as `running` for a beat. Mapping that to `unknown` refused to
+// settle the ledger row, and the completing flight then recorded `done` —
+// measured live 2026-11-21 through the public facade (runner said cancelled,
+// facade said done). A `running` answer to a cancel this facade just issued is
+// a stop.
+export function cancelRelayOutcome(doc) {
+  if (doc?.error?.code === -32013) return "unsupported";
+  const st = doc?.result?.state ?? null;
+  if (st === "cancelled" || st === "running") return "cancelled";
+  if (st === "done" || st === "error") return "not-running";
+  return "unknown";
+}
+
 // Context derivation: caller-supplied context_id passes through untouched; a
 // send without one gets a fresh external context derived from the idempotency
 // key (stable across replays — a replayed request resumes the same context),
@@ -1061,11 +1080,7 @@ export function createA2aFace({
               const body = JSON.stringify({ jsonrpc: "2.0", id: null, method: "tasks/cancel", params: { task_id: tid } });
               const res = await postJsonWithDeadline(url, { ...forwardHeaders(), "Content-Type": "application/json", "x-task-id": tid }, body, 15_000);
               const doc = await res.json().catch(() => null);
-              if (doc?.error?.code === -32013) return "unsupported";
-              const st = doc?.result?.state ?? null;
-              if (st === "cancelled") return "cancelled";
-              if (st === "done" || st === "error") return "not-running";
-              return "unknown";
+              return cancelRelayOutcome(doc);
             },
           });
           if (out?.stopped === "unsupported") {

@@ -22,7 +22,7 @@ test.after(() => rmSync(tmp, { recursive: true, force: true }));
 
 const { createWanxingStore } = await import("../services/wanxing-facade/store.js");
 const { createWanxingCore, slugFor, maskKey } = await import("../services/wanxing-facade/core.js");
-const { createA2aFace, contextIdFor, turnErrorCode } = await import("../services/wanxing-facade/a2a.js");
+const { createA2aFace, contextIdFor, turnErrorCode, cancelRelayOutcome } = await import("../services/wanxing-facade/a2a.js");
 const { createChatFace } = await import("../services/wanxing-facade/chat.js");
 
 // A stub sub2api client with call counters — every behavior is programmable
@@ -2260,6 +2260,22 @@ test("4.5 tasks/cancel relays to the runner and only then settles the ledger", a
   assert.ok(["cancelled", "done", "error", "running"].includes(reported), `state is a real word, got ${reported}`);
   if (reported === "cancelled") assert.equal(row.state, "cancelled", "a reported cancel is a recorded cancel");
   await h.close();
+});
+
+test("4.5 a confirmed stop that reads back `running` maps to cancelled, not unknown", () => {
+  // The runner answers `tasks/cancel` from its live registry and the abort
+  // settles the collector asynchronously, so a CONFIRMED stop can come back as
+  // `state: running` for a beat. Mapping that to `unknown` refused to settle the
+  // ledger row and let the completing flight record `done` — measured live
+  // 2026-11-21 through the public facade (runner said cancelled, facade said
+  // done). The relay rides postJsonWithDeadline (not the injectable fetch), so
+  // the mapping is asserted directly.
+  assert.equal(cancelRelayOutcome({ result: { state: "running" } }), "cancelled", "a running read-back after an accepted cancel is a stop");
+  assert.equal(cancelRelayOutcome({ result: { state: "cancelled" } }), "cancelled");
+  assert.equal(cancelRelayOutcome({ result: { state: "done" } }), "not-running");
+  assert.equal(cancelRelayOutcome({ result: { state: "error" } }), "not-running");
+  assert.equal(cancelRelayOutcome({ error: { code: -32013 } }), "unsupported", "a harness without a cancel lane is not a stop");
+  assert.equal(cancelRelayOutcome({ result: { state: "unknown" } }), "unknown");
 });
 
 test("4.5 cancelling an already-finished task returns its terminal state and does not rewrite it", async () => {
