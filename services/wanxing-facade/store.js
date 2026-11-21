@@ -443,6 +443,17 @@ export function createWanxingStore({ file }) {
       // looked up a task nobody had recorded).
       const res = db.prepare(`INSERT INTO wanxing_requests (caller_id, agent_slug, idem_key, state, created_at, request_hash, task_id) VALUES (?, ?, ?, 'running', ?, ?, ?)
         ON CONFLICT DO NOTHING`).run(callerId, agentSlug, idemKey, now(), requestHash, taskId);
+      if (res.changes === 0) {
+        // A row left in `cancelled` is reopened by a NEW flight on the same
+        // key: the caller is retrying a call they stopped, and the ledger must
+        // follow the attempt that is actually running. Without this the
+        // finish-write guard (below) would keep the row cancelled while the
+        // retried turn answered — two sides disagreeing again, in reverse.
+        // The task address stays (one logical call, one address); only the
+        // attempt's state, body and window move.
+        db.prepare(`UPDATE wanxing_requests SET state = 'running', response = NULL, closed_at = NULL, created_at = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND state = 'cancelled'`)
+          .run(now(), callerId, agentSlug, idemKey);
+      }
       if (res.changes === 0 && requestHash) {
         db.prepare(`UPDATE wanxing_requests SET request_hash = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND request_hash IS NULL`)
           .run(requestHash, callerId, agentSlug, idemKey);
@@ -454,7 +465,15 @@ export function createWanxingStore({ file }) {
       return res.changes === 1;
     },
     requestFinish(callerId, agentSlug, idemKey, state, response, requestHash = null) {
-      db.prepare(`UPDATE wanxing_requests SET state = ?, response = ?, request_hash = COALESCE(?, request_hash), closed_at = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ?`)
+      // A cancelled row is already terminal and MUST NOT be rewritten by the
+      // turn's own completion: the cancel had to reach the executor to land
+      // here at all, so by the time the flight returns, "cancelled" is the
+      // answer the caller was given. Without this guard the state flipped back
+      // to `done`/`error` and `tasks/get` (query, resubscribe, billing) started
+      // disagreeing with the cancel that had just been confirmed — the spec's
+      // "两侧各报一种状态" (a2a-task-handle). The response body is still
+      // recorded so the row keeps whatever the turn produced.
+      db.prepare(`UPDATE wanxing_requests SET state = ?, response = ?, request_hash = COALESCE(?, request_hash), closed_at = ? WHERE caller_id = ? AND agent_slug = ? AND idem_key = ? AND state != 'cancelled'`)
         .run(state, response == null ? null : String(response).slice(0, 256 * 1024), requestHash, now(), callerId, agentSlug, idemKey);
     },
 

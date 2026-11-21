@@ -2279,6 +2279,33 @@ test("4.5 cancelling an already-finished task returns its terminal state and doe
   await h.close();
 });
 
+test("4.5 a cancelled row is never rewritten by the turn's own completion", () => {
+  // Live 2026-11-21: the cancel reached the runner, the runner stopped the
+  // turn, and the flight's `requestFinish` then wrote `done`/`error` over the
+  // row — so `tasks/get` reported one thing and the cancel another. A
+  // cancelled row is terminal; the completing flight must not move it.
+  const store = ownStore();
+  store.requestStart(1, "packs-p1-heal", "idem-guard", null, "t-guard");
+  store.taskCancel("t-guard");
+  assert.equal(store.requestByTask("t-guard").state, "cancelled");
+  // The flight's own completion write, replayed directly.
+  store.requestFinish(1, "packs-p1-heal", "idem-guard", "done", JSON.stringify({ ok: true }));
+  assert.equal(store.requestByTask("t-guard").state, "cancelled", "a completed write must not undo a confirmed cancel");
+});
+
+test("4.5 a retry on the same key after a cancel reopens the row (and can finish)", () => {
+  // The other direction: the caller retries a call they stopped. `requestStart`
+  // is ON CONFLICT DO NOTHING, so without an explicit reopen the new attempt's
+  // outcome could never be recorded — the row would stay cancelled forever.
+  const store = ownStore();
+  store.requestStart(1, "packs-p1-heal", "idem-retry", null, "t-retry");
+  store.taskCancel("t-retry");
+  store.requestStart(1, "packs-p1-heal", "idem-retry", null, null);
+  assert.equal(store.requestByTask("t-retry").state, "running", "the retried attempt owns the row");
+  store.requestFinish(1, "packs-p1-heal", "idem-retry", "done", JSON.stringify({ ok: true }));
+  assert.equal(store.requestByTask("t-retry").state, "done", "the retry's own completion lands");
+});
+
 test("4.6 tasks/resubscribe says why there is no delta replay, and carries the state", async () => {
   const h = faceHarness({ entry: { visibility: "public" }, upstream: () => jsonReply(), store: ownStore() });
   const sent = await h.call("/api/wanxing/v1/a2a/packs-p1-heal", {

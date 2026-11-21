@@ -696,7 +696,14 @@ export function createA2aFace({
       // error object, so "upstream.ok" says nothing about the turn —
       // billing those as "ok" charged callers for turns that returned
       // nothing (live incident 2026-10-13, fix-error-turn-billing).
-      const row = out.replayed ? null : finishTurn({ caller, slug, idemKey, startedAt, outcome: out.response?.error ? "error" : "ok", clusterTurnId });
+      //
+      // A caller-stopped turn is its own outcome, not "ok": the runner answers
+      // a cancelled turn with `result.state === "cancelled"`, and booking that
+      // as "ok" would bill the caller for a turn they stopped (recordUsage
+      // waives everything but "ok").
+      const answer = out.response?.result;
+      const outcome = out.response?.error ? "error" : answer?.state === "cancelled" ? "cancelled" : "ok";
+      const row = out.replayed ? null : finishTurn({ caller, slug, idemKey, startedAt, outcome, clusterTurnId });
       return { replayed: Boolean(out.replayed), response: out.response, error: out.response?.error?.message ?? null, row };
     } catch (e) {
       const row = holdsSlot ? finishTurn({ caller, slug, idemKey, startedAt, outcome: "error", clusterTurnId }) : null;
