@@ -40,7 +40,7 @@ function LandingAgents() {
   const [doc, setDoc] = useState(null); // null = loading/not attempted; false = failed
   useEffect(() => {
     let live = true;
-    fetch(`/api/wanxing/v1/agents?page_size=${LANDING_CARDS}`)
+    fetch(`/api/wanxing/v1/agents?page_size=${LANDING_CARDS}&sort=activity`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (live) setDoc(d); })
       .catch(() => { if (live) setDoc(false); });

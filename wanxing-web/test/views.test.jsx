@@ -583,3 +583,28 @@ test("7.3 a failing fact never yields a healthy-sounding conclusion", async () =
   assert.ok(sentence.startsWith("持续失败"), "结论与徽标同向");
   assert.ok(!sentence.includes("无健康告警"));
 });
+
+// ── sharpen-wanxing-first-impression 3.1/3.2/4.1 ────────────────────────────
+// 顺序在服务端、分页之前完成，所以两处取数必须带同一个参数；页面不自造第二
+// 套排序判断。这里锁住「两处都带」这一事实，以及导航里的集合入口。
+test("3.x 首屏与目录都请求活跃度顺序，且目录说明顺序口径", async () => {
+  const intro = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../src/views/IntroView.jsx", import.meta.url), "utf8"));
+  assert.ok(intro.includes("sort=activity"), "首屏取数必须带 sort=activity");
+  const catalog = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../src/views/CatalogView.jsx", import.meta.url), "utf8"));
+  assert.ok(catalog.includes('sort: "activity"'), "目录取数必须带 sort=activity");
+  assert.ok(catalog.includes("catalog-ordering"), "目录必须说明顺序口径");
+});
+
+test("4.1 集合入口在导航里，且不受登录态影响", async () => {
+  const src = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8"));
+  // ENTRIES（页脚）与顶栏 tab 两处都要有；顶栏那处必须在 signedIn 分支之外。
+  assert.ok((src.match(/#\/collections/g) ?? []).length >= 2, "页脚与顶栏都要有集合入口");
+  const navBlock = src.slice(src.indexOf('<nav className="ml-auto'), src.indexOf("</nav>"));
+  assert.ok(navBlock.includes("#/collections"), "顶栏导航必须含集合入口");
+  const signedInIdx = navBlock.indexOf("auth.signedIn");
+  const collectionsIdx = navBlock.indexOf("#/collections");
+  assert.ok(collectionsIdx > -1 && collectionsIdx < signedInIdx, "集合入口必须排在登录态分支之前");
+});

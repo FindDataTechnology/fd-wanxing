@@ -178,6 +178,9 @@ export function CatalogView() {
       page: String(page),
       page_size: String(PAGE_SIZE),
       facets: "1",
+      // 活跃度顺序（sharpen-wanxing-first-impression）：精选 → 在役 → 尚无调用。
+      // 排序在服务端、分页之前完成，所以翻页沿同一顺序。
+      sort: "activity",
       ...(q ? { q } : {}),
       ...(category ? { category } : {}),
       ...(featured ? { featured: "1" } : {}),
@@ -346,6 +349,10 @@ export function CatalogView() {
       <p className="text-xs text-slate-400 px-1 mb-2" data-testid="catalog-scope">
         这里列出<strong>当前已部署、对外服务</strong>的 agent（已部署实例视图）——不是功能集市场，
         未部署的包不会出现在这里。
+      </p>
+
+      <p className="text-xs text-slate-400 px-1 mb-2" data-testid="catalog-ordering">
+        按活跃度排序：精选 → 在役 → 尚无调用。
       </p>
 
       {allUnknown && (

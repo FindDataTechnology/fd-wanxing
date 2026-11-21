@@ -532,3 +532,62 @@ test("catalog 与 status 对同一事实给同一个数——并把「省略」�
     srv.close();
   }
 });
+
+// ── Activity ordering on the real route (sharpen-wanxing-first-impression 1.2/2.2) ──
+//
+// The pure rule is covered in test-catalog-ordering.mjs. Here the wiring: the
+// order must be applied BEFORE pagination (otherwise page 1 is still whatever
+// the registry said), and it must not disturb totals or the facets counts.
+test("contract: sort=activity orders before paging and leaves counts alone", async () => {
+  const dep = (n) => ({ slug: `packs-o-${n}`, agentPath: `/packs/o${n}/deployments/a`, packId: `o${n}` });
+  const deps = [dep(1), dep(2), dep(3), dep(4)];
+  const { srv, base } = await harness({
+    deployments: deps,
+    // Bare statuses so the derived status is serving vs idle (turn count drives it).
+    entries: Object.fromEntries(deps.map((d) => [d.slug, mkEntry({ name: `Agent ${d.slug.slice(-1)}` })])),
+    // Registry order is o1,o2,o3,o4. Put the turns on o3 so the activity
+    // order (o3 first) DIFFERS from registry order — otherwise this assertion
+    // would pass without any sorting at all.
+    turns: { [`${dep(3).slug}`]: 9 },
+  });
+  try {
+    const paged = await (await fetch(`${base}/api/wanxing/v1/agents?sort=activity&page=1&page_size=2&facets=1`)).json();
+    const plain = await (await fetch(`${base}/api/wanxing/v1/agents?page=1&page_size=2&facets=1`)).json();
+    assert.equal(paged.total, plain.total, "sorting must not change total");
+    assert.equal(paged.facets.total, plain.facets.total, "sorting must not change facets counts");
+    // Ordering before paging means page 1 legitimately holds DIFFERENT entries
+    // than the registry-ordered page 1 — that is the point. The agent with
+    // turns leads, and the registry page still starts with o1.
+    assert.equal(paged.agents[0].slug, dep(3).slug);
+    assert.equal(paged.agents[0].turns7d, 9);
+    assert.equal(plain.agents[0].slug, dep(1).slug, "the unsorted page keeps registry order");
+
+    // Unpaged activity ordering is a pure permutation of the full list.
+    const full = await (await fetch(`${base}/api/wanxing/v1/agents`)).json();
+    const sorted = await (await fetch(`${base}/api/wanxing/v1/agents?sort=activity`)).json();
+    assert.deepEqual(
+      new Set(sorted.agents.map((a) => a.slug)),
+      new Set(full.agents.map((a) => a.slug)),
+    );
+  } finally {
+    srv.close();
+  }
+});
+
+test("contract: an unknown sort value keeps the legacy registry order", async () => {
+  const dep = (n) => ({ slug: `packs-u-${n}`, agentPath: `/packs/u${n}/deployments/a`, packId: `u${n}` });
+  const deps = [dep(1), dep(2), dep(3)];
+  const { srv, base } = await harness({
+    deployments: deps,
+    entries: Object.fromEntries(deps.map((d) => [d.slug, mkEntry({ name: `Agent ${d.slug.slice(-1)}` })])),
+    turns: { [`${dep(3).slug}`]: 50 },
+  });
+  try {
+    const misspelled = await (await fetch(`${base}/api/wanxing/v1/agents?sort=recent`)).json();
+    const none = await (await fetch(`${base}/api/wanxing/v1/agents`)).json();
+    assert.deepEqual(misspelled.agents.map((a) => a.slug), none.agents.map((a) => a.slug));
+    assert.deepEqual(misspelled.agents.map((a) => a.slug), deps.map((d) => d.slug), "registry order is the default");
+  } finally {
+    srv.close();
+  }
+});

@@ -225,6 +225,37 @@ export function clusterEntryOf(pack, detail) {
   };
 }
 
+// ── Activity ordering (sharpen-wanxing-first-impression) ────────────────────
+//
+// The catalog has always been served in registry order, so a landing that
+// shows six cards shows whatever deployed first — today 20 of 27 public
+// agents have zero turns, so the first screen is mostly blank cards. Status
+// facts answer "what state is it in"; nothing answered "which one first".
+//
+// This is a PURE reorder: featured, then by instance status, then turns, then
+// name. It never filters, never adds or drops a field, and never touches the
+// facets counts — those stay over the unfiltered list. Only a caller asking
+// for `sort=activity` sees it; the default path is byte-identical to before.
+// `name` is the tie-breaker so the order is decisive: without it, equal-group
+// equal-turn rows would inherit the deployment snapshot's order, which can
+// change between refreshes.
+const ACTIVITY_RANK = { serving: 0, idle: 1, unknown: 2, paused: 3 };
+
+export function orderByActivity(entries) {
+  return entries.slice().sort((a, b) => {
+    const fa = a.featured === true ? 0 : 1;
+    const fb = b.featured === true ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    const ra = ACTIVITY_RANK[a.status] ?? ACTIVITY_RANK.unknown;
+    const rb = ACTIVITY_RANK[b.status] ?? ACTIVITY_RANK.unknown;
+    if (ra !== rb) return ra - rb;
+    const ta = Number(a.turns7d) || 0;
+    const tb = Number(b.turns7d) || 0;
+    if (ta !== tb) return tb - ta;
+    return String(a.name ?? a.slug ?? "").localeCompare(String(b.name ?? b.slug ?? ""));
+  });
+}
+
 export function createA2aFace({
   core,
   resolveDeployment, // async (slug) → { agentPath } | null
@@ -923,7 +954,11 @@ export function createA2aFace({
       const q = req.query ?? {};
       const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined || q.cluster !== undefined;
       const wantsFacets = q.facets === "1" || q.facets === "true";
-      if (q.page === undefined && q.page_size === undefined && !hasFilter && !wantsFacets) {
+      // `sort` is a presentation modifier, not a filter: only the documented
+      // value takes effect, anything else (including absent) keeps the
+      // registry order untouched.
+      const sortActivity = String(q.sort ?? "") === "activity";
+      if (q.page === undefined && q.page_size === undefined && !hasFilter && !wantsFacets && !sortActivity) {
         return res.json({ agents: out });
       }
       const needle = String(q.q ?? "").trim().toLowerCase();
@@ -936,6 +971,8 @@ export function createA2aFace({
           [a.name, a.description, a.slug, ...(a.tags ?? [])].join(" ").toLowerCase().includes(needle),
         );
       }
+      // Order BEFORE paging: the whole point is which entries land on page 1.
+      if (sortActivity) list = orderByActivity(list);
       const clamp = (v, def) => {
         const n = Number.parseInt(String(v), 10);
         return Number.isFinite(n) && n > 0 ? n : def;

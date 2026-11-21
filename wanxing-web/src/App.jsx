@@ -54,6 +54,7 @@ const ENTRIES = [
   { label: "介绍", href: "#/" },
   { label: "目录", href: "#/catalog" },
   { label: "文档", href: "#/docs" },
+  { label: "集合", href: "#/collections" },
   { label: "控制台", href: "#/console" },
 ];
 
@@ -189,6 +190,9 @@ export function App() {
             {tab("#/", "介绍")}
             {tab("#/catalog", "目录")}
             {tab("#/docs", "文档")}
+            {/* 集合入口（sharpen-wanxing-first-impression）：视图自带登录门，所以入口
+                不随登录态隐藏——只有点开部署向导才发现的功能等于不存在。 */}
+            {tab("#/collections", "集合")}
             {auth.signedIn ? (
               tab("#/console", "控制台")
             ) : (
