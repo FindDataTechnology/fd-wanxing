@@ -1256,11 +1256,16 @@ within the view's ordering.
 | 3 | 持续失败 | `health=failing` |
 | 4 | 部分失败 | `health=degraded` |
 | 5 | 该跑没跑 | `health=silent` 且 `health.stalled=true` |
-| 6 | 尚无调用 | `status=idle` 或 `health=silent` 且未 stalled |
-| 7 | 在役 | `status=serving` 且 `health=ok`（或无 health 条目但状态新鲜） |
+| 6 | 在役 | `status=serving` 或 `health=ok` |
+| 7 | 尚无调用 | `status=idle`，或 `health=silent` 且未 stalled |
 
 主徽标的判定 SHALL 按优先级取第一个命中项——**同一次渲染里同一 agent 的状态位置只 SHALL 出现一枚
 主徽标**，不得并列出现两枚语义冲突的状态徽标（例如「运行中」与「持续失败」并排）。
+
+**证据强度：台账压过观测推断。** `status=serving` 的读数是计费台账的「近 7 天有人调用」，
+`health=silent` 是观测采样得出的推断。两者冲突时「在役」SHALL 命中，MUST NOT 被改写成「尚无调用」——
+否则同一张舰队卡会出现「徽标：尚无调用 / 下一行：近 7 天回合 9」的自相矛盾。`health=silent`
+SHALL 仅在台账同样为零（`status=idle`）时决定主徽标。
 
 展示措辞 SHALL NOT 把「近 7 天有无调用」说成「进程运行中/空闲待命」——`serving` 的展示不得读作
 「服务在运行」，`idle` 的展示不得读作「空闲待命」。
@@ -1288,6 +1293,16 @@ within the view's ordering.
 
 - **WHEN** 某 agent 门面 status 为 `idle`（近 7 天零调用）
 - **THEN** 其徽标措辞表达「近 7 天无调用/尚无调用」之意，而不出现「空闲」这类会被读作「进程待命」的词
+
+#### Scenario: The ledger outranks a silent observation
+
+- **WHEN** 某 agent 门面 status 为 `serving`（计费台账显示近 7 天有回合），而观测面的 health 为 `silent`
+- **THEN** 主徽标是「在役」而不是「尚无调用」，且该卡上的回合数字与徽标不矛盾
+
+#### Scenario: Silence still speaks when the ledger agrees
+
+- **WHEN** 某 agent 门面 status 为 `idle` 且观测面 health 为 `silent`（台账与观测都说零）
+- **THEN** 主徽标是「尚无调用」
 
 ### Requirement: Absent signals never render as zeros
 
