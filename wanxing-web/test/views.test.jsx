@@ -243,7 +243,11 @@ test("CatalogView status markers: the cross-surface fact table decides, unknown 
   assert.ok(!statusBadgeFor({ status: "unknown" }).cls.includes("emerald"), "unknown must not use the healthy green");
 
   // The three zero-traffic meanings stay distinguishable.
-  assert.equal(statusBadgeFor({ status: "serving", health: { health: "silent" } }).label, "尚无调用");
+  // 2026-11-22 更正：serving 的定义就是「近 7 天有人调」（计费台账读数），
+  // 观测面的 silent 是采样推断。推断不得把台账改写成「尚无调用」——否则同一张
+  // 舰队卡会出现「徽标：尚无调用 / 下一行：近 7 天回合 9」。silent 只在台账也
+  // 说零（status=idle）时才说话，那一格仍由下一条断言守住。
+  assert.equal(statusBadgeFor({ status: "serving", health: { health: "silent" } }).label, "在役");
   assert.equal(statusBadgeFor({ status: "idle", health: { health: "silent", stalled: true } }).label, "该跑没跑");
   // And a failing agent gets exactly one badge — the failure, never a healthy-looking chip beside it.
   assert.equal(statusBadgeFor({ status: "serving", health: { health: "failing" } }).label, "持续失败");

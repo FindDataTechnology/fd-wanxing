@@ -51,11 +51,14 @@ export function factOf({ status, health, healthSectionUp = false } = {}) {
   // 5 该跑没跑：零回合，但声明了节奏——与「没人用」是两件事。
   if (h === "silent" && health.stalled === true) return "stalled";
 
-  // 6 尚无调用：零调用且无节奏声明。注意这是 status=idle 的真意。
-  if (status === "idle" || h === "silent") return "unused";
-
-  // 7 在役。
+  // 6 在役（台账优先）：facade 的 serving 是「近 7 天有人在调」，读数来自计费
+  //    台账；健康面的 silent 是观测采样得出的推断。两者冲突时硬数字赢——否则
+  //    同一张舰队卡会出现「徽标：尚无调用 / 下一行：近 7 天回合 9」的自相矛盾
+  //    （2026-11-22 实撞，「寻数分身」那张卡）。silent 只在台账也说零时才说话。
   if (status === "serving" || h === "ok") return "live";
+
+  // 7 尚无调用：零调用且无节奏声明。注意这是 status=idle 的真意。
+  if (status === "idle" || h === "silent") return "unused";
 
   // 什么证据都没有：只能是未知。
   return "unknown";

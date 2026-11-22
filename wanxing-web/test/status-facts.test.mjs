@@ -73,3 +73,20 @@ test("FACT_ORDER 是 D1 的七条链且无重复", () => {
   assert.equal(new Set(FACT_ORDER).size, 7);
   assert.deepEqual(FACT_ORDER, ["paused", "unknown", "failing", "degraded", "stalled", "unused", "live"]);
 });
+
+// 2026-11-22 实撞（控制台「寻数分身」卡）：同一张卡里徽标写「尚无调用」，
+// 下一行写「近 7 天回合 9」。根因是 factOf 的优先级链：观测面的 silent 压过
+// 了计费台账的 turns7d，而两者是同一个事实的两种来源。
+//
+// 判据：turns7d 是账读出来的硬数字，silent 是观测采样得出的推断。硬数字该赢。
+test("serving + silent 不能判成尚无调用——台账有回合就是有回合", () => {
+  assert.equal(
+    factOf({ status: "serving", health: { health: "silent" } }),
+    "live",
+    "有回合数(a serving)时，观测面静默不得把主徽标改写成「尚无调用」",
+  );
+});
+
+test("idle + silent 仍然是尚无调用——两边都说零", () => {
+  assert.equal(factOf({ status: "idle", health: { health: "silent" } }), "unused");
+});
