@@ -33,6 +33,12 @@ SHALL NOT render an expandable section whose only payload is its slug. The statu
 primary facts distinctly, including an explicit `unknown` state — a deployment whose status is unreported or
 whose snapshot is stale MUST NOT be rendered as if it were online, and MUST NOT be silently omitted.
 
+The page SHALL list agents in the catalog's **activity order** — featured first, then serving, then no-calls,
+with paused last — the same order the facade serves, so the page cannot invent a second judgement of its own.
+That order SHALL be decided server-side before pagination, so paging never promotes a less active agent onto an
+earlier page, and the page SHALL state the ordering in one line near its filters so a reader does not have to
+guess why a card leads.
+
 #### Scenario: anonymous browse
 
 - **WHEN** a visitor opens the catalog page
@@ -73,6 +79,21 @@ whose snapshot is stale MUST NOT be rendered as if it were online, and MUST NOT 
 - **WHEN** a visitor reads the catalog page heading or its explanatory copy
 - **THEN** it identifies the page as the deployed agents currently open for external use, distinct from the supply domain's marketplace
 
+#### Scenario: serving agents lead the first page
+
+- **WHEN** a visitor opens the catalog page with both serving and never-called agents in the catalog
+- **THEN** the first page shows serving (and featured) agents before never-called ones
+
+#### Scenario: paging follows the same order
+
+- **WHEN** a visitor moves to the second page
+- **THEN** that page continues the same activity order rather than reverting to registry order
+
+#### Scenario: the ordering is stated
+
+- **WHEN** a visitor reads the catalog page's filter area
+- **THEN** one line states the list ordering (featured → serving → no calls)
+
 ### Requirement: The docs face carries the integration one-pager
 
 The web face SHALL render the caller integration essentials (auth by caller key, idempotency header, per-minute billing, error-code table, message/send example) as an in-site page, so an external integrator can start without leaving the domain.
@@ -106,11 +127,18 @@ The console view SHALL offer Logto login as the primary gate — SPA PKCE via th
 The web face SHALL serve a public, credential-free intro view at the hash root `#/` as the default landing. The
 landing SHALL lead with live readouts of the serving plane — the count of agents currently in service and the
 7-day turn count, read from the same curated public status endpoint the footer strip uses — immediately followed
-by a small set of real agent cards drawn from the same catalog data the catalog page reads, so that the first
-thing a visitor can click on the landing is an actual agent. Below those, the landing SHALL carry the
+by a small set of real agent cards drawn from the same catalog data the catalog page reads **and ordered by the
+catalog's activity order**, so that the first thing a visitor can click on the landing is an agent that is
+actually serving rather than an arbitrary slice of the registry. Below those, the landing SHALL carry the
 one-sentence positioning, the A2A call sample rendered from the same shared component the docs view uses (single
 source; the two surfaces cannot drift), and a link to the official site's constellation line page
 (`/zh/products/constellation`).
+
+Activity ordering SHALL be a presentation choice, never a filter: a catalog whose agents are all `turns7d: 0`
+SHALL still render cards (registry order serving as the tie-break), and SHALL NOT render an empty landing
+because nothing has been called yet. When the facade does not support the ordering parameter (an older
+deployment), the landing SHALL render the cards it received unchanged — an unsupported ordering MUST NOT produce
+an error state or a blank section.
 
 The live dependency SHALL be bounded: the status endpoint is the landing's only live read, and when it is
 unreachable the readouts render as a plain static line with no layout break, no loading skeleton, and no error
@@ -156,6 +184,21 @@ orientation first).
 
 - **WHEN** a visitor on the intro view clicks the catalog tab or a landing CTA
 - **THEN** the catalog view renders at `#/catalog` with its existing behavior unchanged
+
+#### Scenario: landing cards follow the activity order
+
+- **WHEN** a visitor opens `#/` and the catalog holds both serving agents (with turns) and agents with no calls
+- **THEN** the leading cards come from the activity-ordered list — serving agents before never-called ones — and every card shown is still a real catalog entry
+
+#### Scenario: nothing called yet still renders cards
+
+- **WHEN** every public agent reports `turns7d: 0`
+- **THEN** the landing still renders its card row (registry order as tie-break) and does not fall back to an empty section
+
+#### Scenario: unsupported ordering degrades to what was returned
+
+- **WHEN** the facade ignores or rejects the ordering parameter
+- **THEN** the landing renders whatever cards the response carried, with no error banner and no blank section
 
 ### Requirement: The site footer carries the five-line ladder
 
@@ -1583,3 +1626,19 @@ The ops timeline SHALL render the `connector_identity_unregistered` event with h
 
 - **WHEN** 时间线包含一个本仓库不认识的 kind
 - **THEN** 该行仍按原始 kind + payload 呈现，不隐藏
+
+### Requirement: The site navigation carries a collections entry
+
+站点导航 SHALL 包含一个指向 `#/collections` 的「集合」入口，与介绍 / 目录 / 文档 / 控制台并列。
+该入口 SHALL 对未登录访客同样可见——集合视图自带登录门与说明，MUST NOT 因为登录态而从导航中消失：
+一个只有点开部署向导才能发现的功能等于不存在。
+
+#### Scenario: 集合入口从导航可达
+
+- **WHEN** 访客查看站点顶栏导航
+- **THEN** 可见「集合」入口，点击后到达集合视图
+
+#### Scenario: 集合入口不随登录态消失
+
+- **WHEN** 一个未登录访客与一个已登录部署者分别查看顶栏
+- **THEN** 两者的导航都包含集合入口；未登录时集合视图显示它自己的登录门
