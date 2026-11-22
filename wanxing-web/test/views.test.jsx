@@ -573,7 +573,10 @@ test("7.1 fleetConclusion covers the seven facts and never contradicts the badge
   assert.equal(fleetConclusion({ fact: "failing" }), "持续失败");
   assert.equal(fleetConclusion({ fact: "degraded", health: { lastErrorKind: "rate_limited" } }), "部分失败 · 被限流");
   assert.equal(fleetConclusion({ fact: "stalled", health: { expected_turns: 4 } }), "该跑没跑 · 按声明应有 4 次");
-  assert.equal(fleetConclusion({ fact: "unused", summaryLanded: true }), "尚无调用");
+  // 2026-11-22：结论句必须点明窗口。徽标判的是 turns7d（7 天窗），三格里的
+  // 分钟/结算是 30 天窗——不点明时「尚无调用」会与「近 30 天结算 $0.10」
+  // 读起来自相矛盾（策略工坊助手实撞：调用在 15 天前）。
+  assert.equal(fleetConclusion({ fact: "unused", summaryLanded: true }), "近 7 天无调用");
   assert.equal(fleetConclusion({ fact: "live", sig: { turns7d: 33 }, summaryLanded: true }), "近 7 天 33 回合，无健康告警");
   assert.equal(fleetConclusion({ fact: "live", summaryLanded: false }), "在役");
   assert.equal(fleetConclusion({ fact: null }), null, "没有证据时不编结论");

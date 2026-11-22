@@ -63,7 +63,11 @@ export function fleetConclusion({ fact, sig, health, summaryLanded }) {
       return Number.isFinite(n) ? `该跑没跑 · 按声明应有 ${n} 次` : "该跑没跑";
     }
     case "unused":
-      return summaryLanded ? "尚无调用" : "尚无调用记录";
+      // 窗口必须说出来（2026-11-22）。徽标判的是 turns7d（7 天窗），而旁边
+      // 三格里的分钟与结算是 30 天窗——不点明窗口时，「尚无调用」会和
+      // 「近 30 天结算 $0.10」读起来像自相矛盾，其实只是区间不同
+      // （实撞：策略工坊助手的调用发生在 15 天前，7 天窗内确实为零）。
+      return summaryLanded ? "近 7 天无调用" : "尚无调用记录";
     case "live":
       return summaryLanded && Number.isFinite(turns) && turns > 0
         ? `近 7 天 ${turns} 回合，无健康告警`
