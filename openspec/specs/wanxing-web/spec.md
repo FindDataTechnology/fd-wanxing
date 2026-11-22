@@ -1102,6 +1102,8 @@ wanxing-web SHALL serve a self-hosted loader script that a product-line page mou
 
 The loader SHALL NOT mount the widget when the resolution answers unbound, unknown, paused, or closed, and SHALL report the reason once in the console instead of injecting a dead surface. The iframe source and behavior SHALL remain obtainable directly (the existing embed view URL), so the loader is a host-side convenience, never a new admission path.
 
+The widget's first-paint state SHALL be collapsed unless the host explicitly asks for expanded: the loader SHALL expand the widget on mount only when the tag carries `data-open="1"`, and SHALL mount it collapsed (launcher only) for every other value and for an absent attribute. Expanding on first paint is therefore an opt-in the host states, never a default it has to remember to suppress.
+
 #### Scenario: One tag mounts a working copilot
 
 - **WHEN** a page includes the loader tag for a line bound to a ready agent and supplies no hooks
@@ -1126,6 +1128,16 @@ The loader SHALL NOT mount the widget when the resolution answers unbound, unkno
 
 - **WHEN** a page embeds the existing embed view URL directly, without the loader
 - **THEN** the widget behaves exactly as before the loader existed
+
+#### Scenario: An omitted open flag mounts collapsed
+
+- **WHEN** a host page mounts the loader tag with `data-line` and no `data-open` attribute
+- **THEN** the widget mounts collapsed — the iframe is launcher-sized and its source carries no expand parameter — and the visitor expands it by clicking the launcher
+
+#### Scenario: Expansion stays an explicit host choice
+
+- **WHEN** a host page mounts the loader tag with `data-open="1"`
+- **THEN** the widget mounts expanded, so a surface that is itself the conversation (a signed-in console) keeps its existing first-paint behavior
 
 ### Requirement: The console carries the line-copilot binding panel
 
