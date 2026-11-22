@@ -41,3 +41,16 @@
 - [ ] 5.2 上产前在真机核对首屏：首屏首张卡必须是 serving（或 featured）条目，且 catalogue 第一页
       与 `?sort=activity` 的返回值一致。验证：对线上 `GET /agents?page_size=6&sort=activity` 与页面
       渲染顺序取人工对照截图。
+  - **2026-11-22 12:05 实测：验收前提不成立，卡在部署源不可达。**
+    `GET /api/wanxing/v1/agents?page_size=6&sort=activity` 返回
+    `503 {"code":"DEPLOYMENT_SOURCE_UNAVAILABLE","message":"deployment source unreachable (snapshot hard-stale)"}`；
+    `GET /api/wanxing/v1/status` 同源症状（`agents` 与 `turns7d` 都是 `stale:true, value:null`，
+    只有 `settlement_pending` 因为是账本直读而正常）。
+  - **根因不在 wanxing**：facade 的部署源是 `PACKS_INTERNAL_BASE_URL=http://platform:3100`，
+    而 `kubectl get endpoints -n fd-prod platform` = **`100.64.0.14:3100`** —— 那是失联的 cheap-7。
+    铁证链：platform Deployment 钉死 cheap-7 + hostPath ⇒ cheap-7 NotReady ⇒ endpoint 指向不存在的
+    节点 ⇒ facade 拿不到部署快照（硬陈旧窗 5 分钟）⇒ 503。
+  - 这一条是 `cheap-7` 失联的**第四个受害者**（前三个：platform 502、token 503 已修、
+    fd-zhesi-api Pending）。**它不需要改代码**，等节点回来会自动恢复。
+  - 届时的验收动作不变：`GET /agents?page_size=6&sort=activity` 的头条必须是
+    serving/featured，且与 `/agents` 页面首屏渲染顺序一致（截图对照）。
