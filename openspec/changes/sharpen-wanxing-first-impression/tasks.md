@@ -38,7 +38,7 @@
 ## 5. 收口
 
 - [x] 5.1 全量测试：`cd fd-wanxing && npm test` 与 `cd wanxing-web && npm test` 均绿。
-- [ ] 5.2 上产前在真机核对首屏：首屏首张卡必须是 serving（或 featured）条目，且 catalogue 第一页
+- [x] 5.2 上产前在真机核对首屏：首屏首张卡必须是 serving（或 featured）条目，且 catalogue 第一页
       与 `?sort=activity` 的返回值一致。验证：对线上 `GET /agents?page_size=6&sort=activity` 与页面
       渲染顺序取人工对照截图。
   - **2026-11-22 12:05 实测：验收前提不成立，卡在部署源不可达。**
@@ -54,3 +54,25 @@
     fd-zhesi-api Pending）。**它不需要改代码**，等节点回来会自动恢复。
   - 届时的验收动作不变：`GET /agents?page_size=6&sort=activity` 的头条必须是
     serving/featured，且与 `/agents` 页面首屏渲染顺序一致（截图对照）。
+
+  - **✅ 2026-11-22 12:50 真机验收通过**（cheap-7 恢复后 —— 它 `Ready=True` 的那一刻
+    这条的前提就成立了）。两侧逐条对照，**顺序完全一致**：
+
+    | # | 页面首屏渲染 | API（`?page_size=6&sort=activity`） |
+    |---|---|---|
+    | 1 | 文档工坊 · 报告撰写（`尚无调用`、标签`文档工坊`） | `featured=True`, `state=idle`, `turns7d=0` |
+    | 2 | 识律控制台伴随助手（近 7 天 27 回合） | `serving`, `turns7d=27` |
+    | 3 | 探针 Agent（22） | `serving`, 22 |
+    | 4 | 实论专家（14） | `serving`, 14 |
+    | 5 | 柏讯专家（13） | `serving`, 13 |
+    | 6 | 寻数分身（9） | `serving`, 9 |
+
+    判据核对：
+      · **首张是 featured**：第 1 条 `featured=True`，满足「serving 或 featured」——
+        它同时 `turns7d=0`（尚无调用），正是本条要验的那个边界：**featured 优先于
+        「尚无调用」的冷排位**，而不是被 turns 排序挤到后面；
+      · **顺序与 API 逐位相同**（上表六行）；
+      · **计数一致**：页面 `27 个 agent 已上线 / 134 近 7 天回合`，API `total=27`。
+    截图与 API 响应存档于
+    `.scratch/change-governance-2026-11-21/evidence/wanxing-first-screen-20261122-1250.png`
+    与 `…/wanxing-agents-sort-activity-20261122.json`。
