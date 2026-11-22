@@ -22,11 +22,11 @@ const SRC = readFileSync(path.resolve(import.meta.dirname, "../public/copilot.js
 const ORIGIN = "https://wanxing.test";
 
 // ── Fake DOM: only what copilot.js touches ─────────────────────────────────
-function makeEnv({ resolution, hooks = {} } = {}) {
+function makeEnv({ resolution, hooks = {}, dataOpen = "1" } = {}) {
   const appended = [];
   const warnings = [];
   const listeners = [];
-  const script = { src: `${ORIGIN}/copilot.js`, getAttribute: (k) => (k === "data-line" ? "lex" : k === "data-open" ? "1" : null) };
+  const script = { src: `${ORIGIN}/copilot.js`, getAttribute: (k) => (k === "data-line" ? "lex" : k === "data-open" ? dataOpen : null) };
 
   const el = () => ({
     tagName: "IFRAME",
@@ -92,6 +92,33 @@ test("2.1 ready: the iframe carries the resolved slug and the line accent", asyn
   assert.equal(frame.attrs["data-wanxing-copilot"], "packs-x-lex");
   // Initial size rides cssText (one write for the whole fixed-position box).
   assert.match(frame.style.cssText, /height:640px/);
+});
+
+test("first paint: an omitted data-open mounts collapsed, expanding is opt-in", async () => {
+  const env = makeEnv({
+    dataOpen: null,
+    resolution: { line: "lex", state: "ready", agent: { slug: "packs-x-lex", name: "Lex" }, theme: {}, anonymous: "open" },
+  });
+  env.run();
+  await tick();
+  const frame = env.appended[0];
+  assert.ok(frame, "the widget still mounts");
+  // Both observable halves of "collapsed": launcher-sized frame, and no expand
+  // flag in the source the widget reads to decide its own first state.
+  assert.match(frame.style.cssText, /height:80px/);
+  assert.doesNotMatch(frame.src, /open=1/);
+});
+
+test("first paint: data-open=0 also mounts collapsed", async () => {
+  const env = makeEnv({
+    dataOpen: "0",
+    resolution: { line: "lex", state: "ready", agent: { slug: "packs-x-lex", name: "Lex" }, theme: {}, anonymous: "open" },
+  });
+  env.run();
+  await tick();
+  const frame = env.appended[0];
+  assert.match(frame.style.cssText, /height:80px/);
+  assert.doesNotMatch(frame.src, /open=1/);
 });
 
 test("2.2 state: the frame shrinks with the widget so it cannot eat host clicks", async () => {

@@ -37,7 +37,11 @@
   var LINE = (script.getAttribute("data-line") || "").trim();
   var ACCENT = (script.getAttribute("data-accent") || "").trim();
   var TITLE = (script.getAttribute("data-title") || "").trim();
-  var OPEN = script.getAttribute("data-open") !== "0";
+  // Collapsed on first paint unless the host says otherwise: expanding is the
+  // host's explicit choice (data-open="1"), never a default it must remember to
+  // suppress. Two hosts already shipped a 420x640 panel over their own content
+  // because they omitted the attribute.
+  var OPEN = script.getAttribute("data-open") === "1";
 
   var frame = null;
   var warned = false;
