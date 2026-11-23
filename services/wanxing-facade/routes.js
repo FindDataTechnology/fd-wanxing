@@ -138,7 +138,17 @@ export function registerWanxingRoutes(app, {
   const resolveDeployment = (slug) => (slug ? bookkeeping.resolve(slug) : Promise.resolve(null));
   resolveDeploymentRef = resolveDeployment;
   const listDeployments = async () =>
-    (await bookkeeping.rows()).map((d) => ({ slug: slugFor(d.agentPath), agentPath: d.agentPath, packId: d.packId, agentId: d.agentId }));
+    (await bookkeeping.rows()).map((d) => ({
+      slug: slugFor(d.agentPath),
+      agentPath: d.agentPath,
+      packId: d.packId,
+      agentId: d.agentId,
+      // Published pack version — the catalog's `version` source
+      // (root-cause-catalog-fanout): the registry entry's own version field is
+      // stale for 24 of 45 entries while this matches metadata.packVersion
+      // 34/34 on the deployed set.
+      version: d.version ?? null,
+    }));
 
   // Cross-process fleet reporting (add-fleet-event-backbone 6.3): the facade
   // reports admission/settlement toward the Wanxing observer while it still
@@ -175,6 +185,10 @@ export function registerWanxingRoutes(app, {
   // intent vs EFFECT, and the effect lives where the admission gates do — so
   // the chat face is referenced late-bound, exactly like chatability below.
   let chatFaceRef = null;
+  // The a2a face is created below; its enumeration snapshot is late-bound the
+  // same way so the console reads ONE registry list instead of one read per
+  // deployment.
+  let entrySnapshotRef = null;
   registerConsoleRoutes(app, {
     requireToken: (req) => {
       const t = consoleToken();
@@ -185,6 +199,13 @@ export function registerWanxingRoutes(app, {
     store,
     sub2api,
     registryFetch: doFetch,
+    // Enumeration snapshot (root-cause-catalog-fanout): late-bound below, after
+    // the a2a face that owns the cache exists.
+    snapshotEntries: () => (entrySnapshotRef ? entrySnapshotRef.snapshotEntries() : Promise.resolve(null)),
+    enumerationEntry: (row) => (entrySnapshotRef ? entrySnapshotRef.enumerationEntry(row) : row),
+    // A pause/resume written here must be visible on the next read (the console
+    // promises exactly that); the other door's writes keep the TTL lag.
+    invalidateEntrySnapshot: () => entrySnapshotRef?.invalidateEntries(),
     // Service-config proxy (agent-service-config): raw pass-through so the
     // packs surface's status codes (403/400 MODEL_LANE_REJECTED/503) reach
     // the browser verbatim.
@@ -403,6 +424,7 @@ export function registerWanxingRoutes(app, {
   clusterFace.register(app);
   clusterRef = clusterFace;
   face.register(app);
+  entrySnapshotRef = face;
 
   const chatFace = createChatFace({
     core,

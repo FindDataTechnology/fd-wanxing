@@ -21,6 +21,13 @@ export function registerConsoleRoutes(app, {
   store, // wanxing store (allowlist*)
   sub2api, // client or null
   registryFetch, // (path, init) → Response against the registry
+  // Enumeration reads (root-cause-catalog-fanout): the registry entry snapshot
+  // keyed by agentPath — ONE list read instead of one single read per deploy.
+  // Late-bound (wired after the a2a face exists). Absent = fall back to the
+  // per-agent read, never a failure.
+  snapshotEntries = null,
+  enumerationEntry = (row) => row,
+  invalidateEntrySnapshot = null, // () → void, after this process writes a pause/resume
   packsInternalFetch = null, // (path, init) → Response against the packs surface (config proxy)
   observerFetch = null, // (path) → Response against fleet-observer (service credential inside)
   memoryFetch = null, // (path, init) → Response against fd-memory (platform seam inside); null = lane unconfigured
@@ -59,6 +66,9 @@ export function registerConsoleRoutes(app, {
       });
       if (!reg.ok) throw Object.assign(new Error(`registry write failed (${up.status}/${reg.status})`), { status: 502 });
     }
+    // This process's own write must be readable immediately (the enumeration
+    // snapshot would otherwise show it as not having happened for up to 60s).
+    invalidateEntrySnapshot?.();
     return { agentPath, paused: paused === true };
   };
 
@@ -226,17 +236,30 @@ export function registerConsoleRoutes(app, {
       ? rows.filter((d) => String(d.deployedBy || "").toLowerCase() === String(req.consoleIdentity.email || "").toLowerCase())
       : rows;
     const out = [];
+    // One list read for the whole page (see the a2a face's snapshot note).
+    // Falls back to the per-agent read only when the snapshot is not wired
+    // (tests) or cannot be loaded on a cold cache.
+    let byPath = null;
+    try { byPath = snapshotEntries ? await snapshotEntries() : null; } catch { byPath = null; }
     for (const d of scoped.slice(0, 200)) {
       let name = null, visibility = null, paused = false;
-      try {
-        const r = await registryFetch(`/api/agents${d.agentPath}`);
-        if (r.ok) {
-          const e = await r.json();
-          name = e?.name ?? null;
-          visibility = e?.visibility === "private" ? "private" : "public";
-          paused = e?.metadata?.paused === true;
-        }
-      } catch { /* best-effort enrichment */ }
+      const row = byPath?.get(d.agentPath);
+      if (row) {
+        const e = enumerationEntry(row);
+        name = e?.name ?? null;
+        visibility = e?.visibility === "private" ? "private" : "public";
+        paused = e?.metadata?.paused === true;
+      } else {
+        try {
+          const r = await registryFetch(`/api/agents${d.agentPath}`);
+          if (r.ok) {
+            const e = await r.json();
+            name = e?.name ?? null;
+            visibility = e?.visibility === "private" ? "private" : "public";
+            paused = e?.metadata?.paused === true;
+          }
+        } catch { /* best-effort enrichment */ }
+      }
       out.push({
         slug: slugFor(d.agentPath),
         agentPath: d.agentPath,

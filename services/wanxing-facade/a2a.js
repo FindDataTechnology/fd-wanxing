@@ -301,6 +301,181 @@ export function createA2aFace({
   const pausedTtlMs = 15_000;
   const entryCache = new Map(); // slug → { at, entry }
 
+  // ── Registry entry snapshot (root-cause-catalog-fanout) ───────────────────
+  //
+  // Enumeration faces (catalog, /status, console deployments) used to read the
+  // registry ONE AGENT AT A TIME: 27 sequential single reads measured 3485ms
+  // in the fd-prod pod, while the registry's list face answers the same 45
+  // entries (complete metadata, byte-equal to the single read) in 198ms. Worse,
+  // the per-slug cache had no single-flight, so every visitor arriving after
+  // the 60s TTL re-paid that 27-read cost — 20 concurrent catalog requests
+  // measured 49.9s wall time.
+  //
+  // So enumeration reads ONE paginated list instead. Facts verified against
+  // live fd-1.4.0 (2026-11-23) drive the four synthesized fields below:
+  //   · metadata is byte-identical in both faces (45/45) → paused,
+  //     packVersion, connector_bindings, mcpTools all keep their source;
+  //   · the list lacks version / capabilities / examples and flattens provider.
+  // The card face still reads the entry ONE at a time (agentState) because it
+  // must publish skills WITH descriptions, which the list reduces to names.
+  const registryPagesMax = 100;
+  const entrySnapshot = { at: 0, byPath: new Map(), ready: false };
+  let entryInflight = null;
+  let warnedFallback = false;
+
+  const listPathOf = (p) => (typeof p === "string" ? p : p?.path);
+
+  // Follow has_next to exhaustion. A registry that ignores `offset` and
+  // replays a page must not spin forever; reaching the page cap with has_next
+  // still true is reported loudly rather than served as a complete set.
+  const fetchRegistryEntries = async () => {
+    const all = [];
+    let offset = 0;
+    let reportedTotal = null;
+    const seen = new Set();
+    for (let page = 0; page < registryPagesMax; page += 1) {
+      const r = await registryFetch(`/api/agents?limit=500&offset=${offset}`);
+      if (!r.ok) throw new Error(`registry list failed (${r.status})`);
+      const doc = await r.json();
+      const rows = Array.isArray(doc) ? doc : (doc?.agents ?? doc?.items ?? []);
+      const fresh = rows.filter((row) => {
+        const p = listPathOf(row);
+        if (!p || seen.has(p)) return false;
+        seen.add(p);
+        return true;
+      });
+      if (fresh.length === 0) {
+        if (rows.length > 0) console.warn(`[wanxing:catalog] registry replayed page at offset ${offset} — stopping`);
+        break;
+      }
+      all.push(...fresh);
+      if (Number.isFinite(Number(doc?.total_count))) reportedTotal = Number(doc.total_count);
+      const hasNext =
+        typeof doc?.has_next === "boolean"
+          ? doc.has_next
+          : reportedTotal !== null
+            ? all.length < reportedTotal
+            : rows.length >= 500;
+      if (!hasNext) break;
+      offset += rows.length;
+      if (page === registryPagesMax - 1) {
+        console.warn(`[wanxing:catalog] registry list truncated — read ${all.length} of ${reportedTotal ?? "?"}`);
+      }
+    }
+    return all;
+  };
+
+  // TTL + single-flight, stale-on-hiccup: the same contract the deployment
+  // bookkeeping snapshot has, because both feed the same enumeration faces.
+  //
+  // Degrade-to-per-agent: a registry without the list face (or a test harness
+  // that only stubs the single read) must not blank the catalog. When the list
+  // read reports no usable rows, fall back to the deployment list + one read per
+  // agent — the pre-change behaviour — and say so once, so the slow path is
+  // never silently indistinguishable from the fast one.
+  const fetchViaPerAgentReads = async () => {
+    const deps = await listDeployments();
+    const rows = await Promise.all(
+      deps.map(async (d) => {
+        try {
+          const r = await registryFetch(`/api/agents${d.agentPath}`);
+          if (!r.ok) return null;
+          const entry = await r.json();
+          return entry ? { ...entry, path: d.agentPath } : null;
+        } catch { return null; }
+      }),
+    );
+    return rows.filter(Boolean);
+  };
+
+  const refreshEntrySnapshot = () => {
+    if (!entryInflight) {
+      entryInflight = fetchRegistryEntries()
+        .then((rows) => ({ rows, viaList: true }))
+        .catch(() => ({ rows: null, viaList: false }))
+        .then(async ({ rows, viaList }) => {
+          let finalRows = rows;
+          if (!viaList || finalRows.length === 0) {
+            if (!warnedFallback) {
+              warnedFallback = true;
+              console.warn("[wanxing:catalog] registry list face unavailable — falling back to per-agent reads");
+            }
+            finalRows = await fetchViaPerAgentReads();
+          }
+          const byPath = new Map(finalRows.map((row) => [listPathOf(row), row]));
+          entrySnapshot.byPath = byPath;
+          entrySnapshot.at = Date.now();
+          entrySnapshot.ready = true;
+          entryInflight = null;
+          return byPath;
+        })
+        .catch((e) => {
+          // Cold start only: an already-serving snapshot is never cleared here.
+          entryInflight = null;
+          throw e;
+        });
+    }
+    return entryInflight;
+  };
+
+  // The synthesized view of one list row, in the shape the single read would
+  // have given an enumeration consumer. `dep` supplies the published pack
+  // version (the registry's own `version` field is stale for 24 of 45 entries
+  // while the deployment row matches metadata.packVersion 34/34).
+  function enumerationEntry(row, dep = null) {
+    if (!row) return null;
+    // Precedence: the deployment row (published version) → the entry's own
+    // packVersion → the full entry's `version` (the fallback path's only
+    // source). Emitted as `null` rather than omitting the key: the catalog
+    // contract has always carried `version`, and a vanished key reads as a
+    // contract regression.
+    const packVersion = dep?.version ?? row.metadata?.packVersion ?? row.version;
+    return {
+      ...row,
+      version: packVersion != null ? String(packVersion) : null,
+      capabilities: row.capabilities ?? (row.streaming ? { streaming: true } : {}),
+      provider:
+        row.provider ??
+        (row.provider_organization || row.provider_url
+          ? { organization: row.provider_organization ?? undefined, url: row.provider_url ?? undefined }
+          : undefined),
+    };
+  }
+
+  // Entries for an enumeration face, keyed by agentPath. Never throws on a
+  // stale-but-usable snapshot; a cold cache whose first load fails propagates
+  // to the caller (which translates it to the explicit unavailable error).
+  async function snapshotEntries() {
+    if (!entrySnapshot.ready) return refreshEntrySnapshot();
+    if (Date.now() - entrySnapshot.at >= entryTtlMs) void refreshEntrySnapshot().catch(() => {});
+    return entrySnapshot.byPath;
+  }
+
+  // A write through THIS process must be visible on the very next read — the
+  // console's pause/resume already promises that, and a 60s snapshot would
+  // otherwise show its own write as not having happened. Clearing `ready`
+  // (not just the timestamp) makes the next read BLOCK on a refresh; merely
+  // backdating would serve the stale map while refreshing in the background.
+  // Writes from the other door (壹座) keep the TTL, which is the documented lag.
+  function invalidateEntries() {
+    entrySnapshot.ready = false;
+    entrySnapshot.at = 0;
+  }
+
+  // The listed cluster units, on the same TTL as everything else that feeds
+  // the catalog: units() derives them from the cluster index AND the
+  // deployment list on every call, which the catalog used to pay per request.
+  const unitsCache = { at: 0, list: [] };
+  async function snapshotClusterUnits() {
+    if (!clusterUnits) return [];
+    if (Date.now() - unitsCache.at < entryTtlMs) return unitsCache.list;
+    try {
+      unitsCache.list = (await clusterUnits()) ?? [];
+      unitsCache.at = Date.now();
+    } catch { /* keep the last-known list */ }
+    return unitsCache.list;
+  }
+
   // One browse fetch feeds both the curation join and the cluster index on
   // the entry cache's cadence; a failure throws to the caller, which keeps
   // its own last-known map.
@@ -617,11 +792,17 @@ export function createA2aFace({
     };
   }
 
-  function publicCard(slug, entry, req, declaration = null) {
+  function publicCard(slug, entry, req, declaration = null, publishedVersion = null) {
     return {
       name: entry.name,
       description: entry.description,
-      version: entry.version,
+      // The PUBLISHED pack version, so the card and the catalog cannot
+      // disagree (root-cause-catalog-fanout): the registry entry's own
+      // `version` is stale for 24 of 45 entries, while the deployment row
+      // matches metadata.packVersion 34/34. Absent a deployment row the
+      // entry's value is the only thing left. Stringified like the catalog's,
+      // so one agent never reads as `9` on one face and `"9"` on the other.
+      version: publishedVersion != null ? String(publishedVersion) : entry.version,
       provider: publicProvider(entry.provider),
       capabilities: entry.capabilities ?? { streaming: true },
       skills: entry.skills ?? [],
@@ -838,11 +1019,12 @@ export function createA2aFace({
         if (hardStale()) throw new Error("snapshot hard-stale");
         const deps = await listDeployments();
         const turns = await turns7dMap().catch(() => null);
+        const byPath = await snapshotEntries().catch(() => new Map());
         if (Array.isArray(deps)) {
           catalog = 0;
           turns7d = 0;
           for (const dep of deps) {
-            const entry = await entryFor(dep.slug, dep);
+            const entry = byPath.get(dep.agentPath);
             if (!entry || entry.visibility === "private") continue;
             catalog += 1;
             turns7d += turns?.get(dep.slug) ?? 0;
@@ -877,7 +1059,7 @@ export function createA2aFace({
         curationMap(),
         turns7dMap(),
         clusterMap(),
-        clusterUnits ? clusterUnits().catch(() => []) : [],
+        snapshotClusterUnits(),
       ]);
       const listedUnits = new Map((listed ?? []).map((u) => [u.id, u]));
       // One declaration read per distinct pack, hoisted out of the loop.
@@ -888,8 +1070,15 @@ export function createA2aFace({
       const staleNow = hardStale();
       const snapAt = snapshotAt ? snapshotAt() : null;
       const statusAsOf = Number.isFinite(snapAt) ? new Date(snapAt).toISOString() : null;
+      // One list read for the whole response (see the snapshot note above).
+      let entries;
+      try {
+        entries = await snapshotEntries();
+      } catch (e) {
+        return sourceUnavailable(res, String(e?.message || e));
+      }
       for (const dep of deps) {
-        const entry = await entryFor(dep.slug, dep);
+        const entry = enumerationEntry(entries.get(dep.agentPath), dep);
         if (!entry || entry.visibility === "private") continue;
         const cur = dep.packId != null ? curation.get(dep.packId) : null;
         // The entry's REAL pause state. This used to be passed as a literal
@@ -952,7 +1141,7 @@ export function createA2aFace({
       // keeps the legacy full-list shape — only the additive entry fields
       // above differ, which JSON consumers ignore.
       const q = req.query ?? {};
-      const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined || q.cluster !== undefined;
+      const hasFilter = q.q !== undefined || q.category !== undefined || q.featured !== undefined || q.cluster !== undefined || q.slug !== undefined;
       const wantsFacets = q.facets === "1" || q.facets === "true";
       // `sort` is a presentation modifier, not a filter: only the documented
       // value takes effect, anything else (including absent) keeps the
@@ -966,6 +1155,9 @@ export function createA2aFace({
       if (q.category !== undefined) list = list.filter((a) => (a.category ?? "") === String(q.category));
       if (q.featured !== undefined && !["", "0", "false"].includes(String(q.featured))) list = list.filter((a) => a.featured === true);
       if (q.cluster !== undefined) list = list.filter((a) => a.cluster?.id === String(q.cluster));
+      // Exact-slug lookup (root-cause-catalog-fanout): the detail view needs ONE
+      // catalog row, and used to page_size=200 the whole catalog to find it.
+      if (q.slug !== undefined) list = list.filter((a) => a.slug === String(q.slug));
       if (needle) {
         list = list.filter((a) =>
           [a.name, a.description, a.slug, ...(a.tags ?? [])].join(" ").toLowerCase().includes(needle),
@@ -1019,9 +1211,9 @@ export function createA2aFace({
         return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
       }
       const marker = clusterMarkerFor(state, await clusterMap());
-      const unit = marker && clusterUnits ? (await clusterUnits().catch(() => [])).find((u) => u.id === marker.id) ?? null : null;
+      const unit = marker && clusterUnits ? (await snapshotClusterUnits()).find((u) => u.id === marker.id) ?? null : null;
       res.json({
-        ...publicCard(req.params.agentSlug, state.entry, req, await declarationFor(state)),
+        ...publicCard(req.params.agentSlug, state.entry, req, await declarationFor(state), state.version),
         ...(chatability?.(state) ? { chatable: true } : {}),
         ...(marker
           ? {
@@ -1351,5 +1543,5 @@ export function createA2aFace({
     });
   }
 
-  return { register, entryFor, agentState, clusterMap, clusterMarkerFor, runMemberTurn };
+  return { register, entryFor, agentState, clusterMap, clusterMarkerFor, runMemberTurn, snapshotEntries, enumerationEntry, invalidateEntries };
 }

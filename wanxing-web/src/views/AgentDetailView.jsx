@@ -1,8 +1,13 @@
 // Agent detail view (wanxing-first-visitor 4.1): the catalog card's click-through.
-// One catalog fetch reused for the entry (examples/turns7d/category/chatable ride
-// the same shape the cards render); the A2A card endpoint is NOT used here so the
-// detail and the grid can never disagree about fields. Non-chatable agents render
-// their examples read-only with an honest reason, mirroring the grid's gray state.
+// Two reads, one per source of truth (root-cause-catalog-fanout):
+//   · the catalog row, narrowed by `?slug=` — status, turns7d, curation, the
+//     pillar facts (toolFace / memory) and chatability, i.e. everything the
+//     grid also shows, so the two faces cannot disagree;
+//   · the agent card — skills WITH their descriptions, the published version
+//     and the declared example prompts, none of which the catalog list carries
+//     faithfully (it reduces skills to names).
+// The view used to enumerate the whole catalog (one paged request) to locate
+// a single agent.
 //
 // wanxing-first-impression 4.x: the page is organized as three parts — what it
 // is / how it is doing now / how to reach it — and the reason a visitor cannot
@@ -12,7 +17,6 @@ import { factOf, badgeFor } from "../status-facts.js";
 import { label, isTranslated } from "../labels.js";
 import { WANXING_BASE } from "../components/A2aSample.jsx";
 
-const DETAIL_PAGE_SIZE = 200;
 
 // One copy-pasteable call for THIS agent: the shared sample writes
 // <agentSlug>, which leaves the reader editing before it runs. Here the slug is
@@ -31,6 +35,26 @@ const DETAIL_PAGE_SIZE = 200;
 //     part of the catalog payload, so there is nothing to render even if we
 //     wanted to — keep it that way (anonymous face).
 const AXIS_TITLES = { store: "存放", read: "读取", write: "写入", process: "加工" };
+
+// The catalog row owns the STATE fields (the grid renders those, so the detail
+// must not disagree with the card clicked to get here); the agent card owns the
+// fields the list cannot carry faithfully — skills WITH descriptions, the
+// published version, the declared examples. A plain `{...card, ...row}` would
+// let the list's name-only `skills` overwrite the card's described ones.
+export const DETAIL_STATE_FIELDS = [
+  "status", "status_as_of", "turns7d", "category", "featured", "cluster",
+  "chatable", "toolFace", "memory", "external_systems",
+];
+
+export function mergeDetail(row, card) {
+  const merged = { ...(row ?? {}), ...(card ?? {}) };
+  if (row) {
+    for (const k of DETAIL_STATE_FIELDS) {
+      if (row[k] !== undefined) merged[k] = row[k];
+    }
+  }
+  return merged;
+}
 
 /**
  * The deployment's external-system requirements (surface-connector-requirements
@@ -216,16 +240,21 @@ export function AgentDetailView({ focusSlug }) {
     let live = true;
     setLoading(true);
     setErr(null);
-    fetch(`/api/wanxing/v1/agents?page_size=${DETAIL_PAGE_SIZE}`)
+    const rowReq = fetch(`/api/wanxing/v1/agents?page_size=1&slug=${encodeURIComponent(focusSlug)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`catalog HTTP ${r.status}`);
         return r.json();
       })
-      .then((d) => {
+      .then((d) => (d.agents ?? [])[0] ?? null)
+      .catch(() => null); // a missing row is reported by the card read below
+    const cardReq = fetch(`/api/wanxing/v1/a2a/${encodeURIComponent(focusSlug)}/.well-known/agent-card.json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    Promise.all([rowReq, cardReq])
+      .then(([row, card]) => {
         if (!live) return;
-        const hit = (d.agents ?? []).find((a) => a.slug === focusSlug);
-        if (!hit) throw new Error("AGENT_NOT_FOUND");
-        setAgent(hit);
+        if (!row && !card) throw new Error("AGENT_NOT_FOUND");
+        setAgent({ slug: focusSlug, ...mergeDetail(row, card) });
       })
       .catch((e) => live && setErr(String(e?.message || e)))
       .finally(() => live && setLoading(false));

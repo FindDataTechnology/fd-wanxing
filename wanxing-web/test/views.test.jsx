@@ -421,6 +421,31 @@ test("4.1/4.2/4.3 详情页三段结构、可见性成句、无示例不编造",
   assert.ok(html.includes('data-testid="agent-detail-loading"'), "加载态骨架仍在");
 });
 
+// ── root-cause-catalog-fanout: 详情页两次读 + 字段归属 ───────────────────────
+test("detail reads the catalog row by ?slug= and the agent card; no full-catalog enumeration", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/views/AgentDetailView.jsx", import.meta.url), "utf8");
+  assert.ok(src.includes("slug=${encodeURIComponent(focusSlug)}"), "目录行按 slug 精确取，不再拉全量");
+  assert.ok(!src.includes("DETAIL_PAGE_SIZE"), "详情页不得为找一个 agent 而枚举整个目录");
+  assert.ok(src.includes("page_size=1&slug="), "目录读限定为一行");
+  assert.ok(src.includes(".well-known/agent-card.json"), "技能描述与已发布版本来自卡片面");
+});
+
+test("mergeDetail: 目录行定状态字段，卡片定技能描述与已发布版本", async () => {
+  const { mergeDetail } = await import("../src/views/AgentDetailView.jsx");
+  const row = { slug: "s1", name: "甲", status: "serving", turns7d: 9, version: "9", skills: ["a"], chatable: true };
+  const card = { slug: "s1", version: "9", skills: [{ id: "a", name: "a", description: "做什么" }], examples: ["问一句"] };
+  const m = mergeDetail(row, card);
+  assert.equal(m.status, "serving", "状态取自目录行（与网格同源）");
+  assert.equal(m.turns7d, 9);
+  assert.equal(m.chatable, true);
+  assert.deepEqual(m.skills, card.skills, "带描述的技能不被列表的名字数组覆盖");
+  assert.deepEqual(m.examples, ["问一句"], "示例问句来自卡片面");
+  assert.equal(m.version, "9", "两面的版本相等");
+  // row 缺席时（卡片独有）也不能崩
+  assert.deepEqual(mergeDetail(null, card).skills, card.skills);
+});
+
 test("4.1 the detail source carries the three sections and per-agent call samples", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/views/AgentDetailView.jsx", import.meta.url), "utf8");
