@@ -99,6 +99,57 @@
     });
   }
 
+  // ── 与同页其它右下角挂件共存 ───────────────────────────────────────────────
+  //
+  // A host page may already carry another bottom-right launcher (the official
+  // site runs the Chatwoot support bubble at the same corner). Two floating
+  // docks on top of each other is the worst of both: the lower one looks broken
+  // and cannot be clicked. Measured 2026-11-23 on www.finddatatech.cloud — the
+  // 64px Chatwoot bubble sat exactly under this 420x80 dock.
+  //
+  // We do NOT try to merge the two products (they do different jobs). We just
+  // get out of each other's way: when another kept-in-corner launcher is
+  // present, shift this dock left by its width so both stay reachable.
+  //
+  // Detection is by known selectors, not "anything fixed in the corner" — a
+  // random fixed element (a cookie bar, a chat from a third party) must not
+  // push the dock around. The list is one entry today; adding a vendor means
+  // adding its selector here, deliberately.
+  var OTHER_DOCK_SELECTORS = [".woot-widget-bubble", "#chatwoot_live_chat_widget"];
+
+  function otherDockWidth() {
+    var gap = 0;
+    for (var i = 0; i < OTHER_DOCK_SELECTORS.length; i += 1) {
+      var el = document.querySelector(OTHER_DOCK_SELECTORS[i]);
+      if (!el) continue;
+      var r = el.getBoundingClientRect();
+      // Only counts if it is actually rendered and sitting in the bottom-right
+      // band this dock would occupy. A hidden or elsewhere-positioned widget
+      // does not move us.
+      if (r.width <= 0 || r.height <= 0) continue;
+      if (window.innerWidth - r.right > 120) continue;
+      if (window.innerHeight - r.bottom > 160) continue;
+      if (r.width > gap) gap = r.width;
+    }
+    return gap;
+  }
+
+  // Apply (or clear) the offset at mount time and whenever the other widget
+  // appears/disappears — it loads asynchronously and may arrive later (or after
+  // a route change). One observer, disconnected when the dock is gone.
+  var offsetObserver = null;
+  function applyCoexistenceOffset() {
+    if (!frame) return;
+    var gap = otherDockWidth();
+    frame.style.right = gap ? gap + 16 + "px" : "0px";
+  }
+  function watchOtherDocks() {
+    if (offsetObserver || typeof MutationObserver !== "function") return;
+    offsetObserver = new MutationObserver(function () { applyCoexistenceOffset(); });
+    offsetObserver.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener("resize", applyCoexistenceOffset);
+  }
+
   function mount(slug, theme) {
     if (frame) return;
     var accent = ACCENT || theme || "";
@@ -115,7 +166,7 @@
     // The widget draws its own launcher inside a transparent document, so the
     // iframe covers the dock area and floats over the host page.
     frame.style.cssText = [
-      "position:fixed", "bottom:0", "right:0", "width:420px",
+      "position:fixed", "bottom:0", "right:" + (otherDockWidth() ? otherDockWidth() + 16 : 0) + "px", "width:420px",
       "height:" + (OPEN ? "640px" : "80px"),
       "max-width:100vw", "max-height:100vh", "border:0", "background:transparent",
       "z-index:2147483000", "color-scheme:normal", "transition:height .2s ease",
@@ -195,6 +246,9 @@
     api.pushContext = function () { sendContext(slug); };
 
     document.body.appendChild(frame);
+    // The other dock may load before or after us; watch and re-offset.
+    applyCoexistenceOffset();
+    watchOtherDocks();
   }
 
 
