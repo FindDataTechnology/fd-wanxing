@@ -634,3 +634,15 @@ test("EmbedView hides the human button when the host declared no open_support", 
     location.hash = "";
   }
 });
+
+// Verb-name contract (found live 2026-11-23): the loader admits a host verb only
+// if it matches /^[a-z][a-z-]{0,31}$/ — UNDERSCORES ARE REJECTED. A verb named
+// `open_support` is therefore silently dropped from declaredVerbs(), the widget
+// never learns it exists, and the button that depends on it never renders — with
+// no error anywhere. This pins the shape so a future verb cannot repeat it.
+test("host intent verb names must survive the loader's character class", () => {
+  const ADMITTED = /^[a-z][a-z-]{0,31}$/;
+  assert.ok(ADMITTED.test("open-support"), "the human-handoff verb keeps a hyphen");
+  assert.ok(ADMITTED.test("navigate"), "the original verb still passes");
+  assert.ok(!ADMITTED.test("open_support"), "underscores are refused — this is the trap");
+});

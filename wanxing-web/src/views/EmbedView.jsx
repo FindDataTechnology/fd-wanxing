@@ -339,7 +339,7 @@ export function EmbedView({ focusSlug } = {}) {
     setSupportPending(true);
     setSupportNote("");
     try {
-      const r = await fireHostIntent("open_support");
+      const r = await fireHostIntent("open-support");
       // A refusal is said out loud: silently doing nothing would read as
       // "the button is broken", and the visitor would stop trying.
       if (!r.ok) setSupportNote(r.message || "打开失败，请稍后再试");
@@ -755,7 +755,7 @@ export function EmbedView({ focusSlug } = {}) {
           confused), because "I cannot reach a person" is the worst failure a
           support entry can have. Only rendered when the host declared the
           verb — a button that always errors is worse than no button. */}
-      {hostIntents.includes("open_support") && (
+      {hostIntents.includes("open-support") && (
         <div className={`flex items-center gap-2 border-t px-3 py-1.5 text-[12px] ${dark ? "border-slate-700" : "border-slate-200"}`}>
           <span className={subtle}>需要真人？</span>
           <button
