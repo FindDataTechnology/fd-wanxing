@@ -400,13 +400,33 @@ export function EmbedView({ focusSlug } = {}) {
       params: { message: { role: "user", parts: [{ kind: "text", text }], context_id: ctxFor(slug) } },
     });
 
+    // A turn MUST be bounded. Without this, a request the facade never answers
+    // (measured 2026-11-23: a stale Logto refresh token made the console path
+    // 502, and the widget then sat on "回合进行中…" forever because the fetch
+    // simply never settled) leaves `sending` true for the page's lifetime —
+    // the visitor sees a spinner and no way forward. The server's own ceiling
+    // is 600s (turn forward); we give up a little before that so the UI can
+    // say something true instead of hanging.
+    const TURN_TIMEOUT_MS = 570_000;
     const doTurn = async (bearer, tierUsed) => {
       const url = useKey ? `/api/wanxing/v1/a2a/${encodeURIComponent(slug)}` : `/api/wanxing/v1/chat/${encodeURIComponent(slug)}`;
-      return fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID(), Authorization: `Bearer ${useKey ? ownKey : bearer}` },
-        body: rpcBody,
-      }).then((r) => ({ r, tierUsed }));
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TURN_TIMEOUT_MS);
+      try {
+        return await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID(), Authorization: `Bearer ${useKey ? ownKey : bearer}` },
+          body: rpcBody,
+          signal: ctrl.signal,
+        }).then((r) => ({ r, tierUsed }));
+      } catch (e) {
+        // Name the timeout so the caller can render an honest sentence rather
+        // than the fetch's opaque "The user aborted a request".
+        if (e?.name === "AbortError") throw new Error("本次回合超时（服务器长时间未回应）。可以重发，或稍后再试。");
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
     };
 
     try {
