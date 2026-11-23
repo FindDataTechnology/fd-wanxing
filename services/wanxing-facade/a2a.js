@@ -479,14 +479,29 @@ export function createA2aFace({
   // One browse fetch feeds both the curation join and the cluster index on
   // the entry cache's cadence; a failure throws to the caller, which keeps
   // its own last-known map.
+  //
+  // SINGLE-FLIGHT is load-bearing here, not a nicety: packs browse measured
+  // 541ms against the live surface, so after the TTL expires every concurrent
+  // catalog request that starts its own fetch re-pays it. Measured in the
+  // fd-prod pod 2026-11-24: 16 concurrent catalog reads right after expiry
+  // took 6406ms, versus 79ms for /status (which had already refreshed the
+  // shared snapshot). One in-flight browse, shared by every waiter.
   const browseCache = { at: 0, rows: null };
+  let browseInflight = null;
   const browseRows = async () => {
     if (!packsBrowseFetch) return [];
     if (browseCache.rows && Date.now() - browseCache.at < entryTtlMs) return browseCache.rows;
-    const rows = (await packsBrowseFetch()) ?? [];
-    browseCache.rows = rows;
-    browseCache.at = Date.now();
-    return rows;
+    if (!browseInflight) {
+      browseInflight = (async () => {
+        try {
+          const rows = (await packsBrowseFetch()) ?? [];
+          browseCache.rows = rows;
+          browseCache.at = Date.now();
+          return rows;
+        } finally { browseInflight = null; }
+      })();
+    }
+    return browseInflight;
   };
 
   // Curation join (add-catalog-facets): the facet packs browse mapped
@@ -494,17 +509,24 @@ export function createA2aFace({
   // browse that fails or omits a pack leaves that entry signal-less (it
   // renders ungrouped) — the catalog never blocks on the curation join.
   const curationCache = { at: 0, map: new Map() };
+  let curationInflight = null;
   const curationMap = async () => {
     if (!packsBrowseFetch) return curationCache.map;
     if (Date.now() - curationCache.at < entryTtlMs) return curationCache.map;
-    try {
-      const packs = await browseRows();
-      const map = new Map();
-      for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
-      curationCache.map = map;
-      curationCache.at = Date.now();
-    } catch { /* unreachable join degrades to the last-known map */ }
-    return curationCache.map;
+    if (!curationInflight) {
+      curationInflight = (async () => {
+        try {
+          const packs = await browseRows();
+          const map = new Map();
+          for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
+          curationCache.map = map;
+          curationCache.at = Date.now();
+        } catch { /* unreachable join degrades to the last-known map */ }
+        finally { curationInflight = null; }
+        return curationCache.map;
+      })();
+    }
+    return curationInflight;
   };
 
   // Cluster index (add-cluster-catalog-grouping D1/D2): a pack groups only
@@ -528,9 +550,22 @@ export function createA2aFace({
   // none is exactly the case this projection exists to show, and its registry
   // entry has no connector trace at all.
   const declarationCache = { at: 0, map: new Map() }; // packId -> array | null
+  let declarationInflight = null;
   const connectorDeclarations = async (deps) => {
     if (!packsDetailFetch || !packsBrowseFetch) return declarationCache.map;
     if (Date.now() - declarationCache.at < entryTtlMs) return declarationCache.map;
+    // Single-flight for the same reason browseRows has it: this loop issues one
+    // detail read per declaring pack, sequentially, so N concurrent catalog
+    // requests would otherwise each run the whole loop.
+    if (!declarationInflight) {
+      declarationInflight = (async () => {
+        try { return await refreshDeclarations(deps); } finally { declarationInflight = null; }
+      })();
+    }
+    return declarationInflight;
+  };
+
+  const refreshDeclarations = async (deps) => {
     let browse;
     try {
       browse = await browseRows();
@@ -575,37 +610,44 @@ export function createA2aFace({
     dep?.packId == null ? null : ((await connectorDeclarations([dep])).get(dep.packId) ?? null);
 
   const clusterCache = { at: 0, map: new Map(), details: new Map() }; // details: `${id}@${version}` → entry | null
+  let clusterInflight = null;
   const clusterMap = async () => {
     if (!packsBrowseFetch || !packsDetailFetch) return clusterCache.map;
     if (Date.now() - clusterCache.at < entryTtlMs) return clusterCache.map;
-    try {
-      const packs = await browseRows();
-      const next = new Map();
-      const details = new Map();
-      for (const p of packs) {
-        if (!(Number(p.agentCount) > 1)) continue;
-        const key = `${p.id}@${p.version}`;
-        let entry = clusterCache.details.get(key);
-        if (entry === undefined) {
-          try {
-            entry = clusterEntryOf(p, await packsDetailFetch(p.id));
-          } catch {
-            const prev = clusterCache.map.get(p.id);
-            if (prev) {
-              next.set(p.id, prev);
-              details.set(`${prev.id}@${prev.version}`, prev);
+    if (!clusterInflight) {
+      clusterInflight = (async () => {
+        try {
+          const packs = await browseRows();
+          const next = new Map();
+          const details = new Map();
+          for (const p of packs) {
+            if (!(Number(p.agentCount) > 1)) continue;
+            const key = `${p.id}@${p.version}`;
+            let entry = clusterCache.details.get(key);
+            if (entry === undefined) {
+              try {
+                entry = clusterEntryOf(p, await packsDetailFetch(p.id));
+              } catch {
+                const prev = clusterCache.map.get(p.id);
+                if (prev) {
+                  next.set(p.id, prev);
+                  details.set(`${prev.id}@${prev.version}`, prev);
+                }
+                continue;
+              }
             }
-            continue;
+            details.set(key, entry);
+            if (entry) next.set(p.id, entry);
           }
-        }
-        details.set(key, entry);
-        if (entry) next.set(p.id, entry);
-      }
-      clusterCache.map = next;
-      clusterCache.details = details;
-      clusterCache.at = Date.now();
-    } catch { /* browse failure keeps the last-known index */ }
-    return clusterCache.map;
+          clusterCache.map = next;
+          clusterCache.details = details;
+          clusterCache.at = Date.now();
+        } catch { /* browse failure keeps the last-known index */ }
+        finally { clusterInflight = null; }
+        return clusterCache.map;
+      })();
+    }
+    return clusterInflight;
   };
   // The marker a deployment carries when it is a declared member of an
   // indexed pack: role from the declaration, `members` the declared team

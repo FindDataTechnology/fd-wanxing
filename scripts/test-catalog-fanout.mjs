@@ -217,3 +217,34 @@ test("degrade: a failing list read falls back to per-agent reads", async () => {
     assert.equal(h.counts.single, 2, "the fallback read one entry per deployment");
   } finally { h.srv.close(); }
 });
+
+// ── the SAME herd problem one layer down: packs browse ────────────────────
+test("catalog: concurrent readers share ONE packs browse (the 541ms upstream hop)", async () => {
+  const deployments = [mkDep(1), mkDep(2), mkDep(3)];
+  const rows = deployments.map((d, i) => listRow(i + 1));
+  const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "s-")), "wanxing.db") });
+  const sub2api = { userId: 7, email: "p@f", degraded: () => false, async probeKeyLiveness() { return { ok: true }; }, async findUserByKey() { return null; }, async findUserByEmail() { return { userId: 7, email: "p@f" }; }, async adjustBalance() { return { ok: true }; } };
+  const core = createWanxingCore({ store, sub2api, config: { ratePerMin: 0.1, rpmMax: 1000 } });
+  let browses = 0;
+  const face = createA2aFace({
+    core, resolveDeployment: async (s) => deployments.find((d) => d.slug === s) ?? null, listDeployments: async () => deployments,
+    hardStale: () => false, ensureFresh: async () => {}, report: null, forwardHeaders: () => ({}),
+    registryFetch: async (p) => (p.startsWith("/api/agents?")
+      ? new Response(JSON.stringify({ agents: rows, total_count: rows.length, has_next: false }), { headers: { "Content-Type": "application/json" } })
+      : new Response("{}", { status: 404 })),
+    packsBrowseFetch: async () => {
+      browses += 1;
+      await new Promise((r) => setTimeout(r, 30));
+      return deployments.map((d) => ({ id: d.packId, category: "legal", featured: false, agentCount: 1 }));
+    },
+    packsDetailFetch: async () => ({ manifest: {} }),
+    chatability: () => true, config: { agentUrlFor: (p) => `http://up${p}/` }, upstreamFetch: async () => new Response("{}", { status: 200 }),
+  });
+  const app = express(); face.register(app);
+  const srv = app.listen(0, "127.0.0.1");
+  await new Promise((r) => srv.once("listening", r));
+  try {
+    await Promise.all(Array.from({ length: 12 }, () => fetch(`http://127.0.0.1:${srv.address().port}/api/wanxing/v1/agents`).then((r) => r.json())));
+    assert.equal(browses, 1, "12 concurrent catalog reads must share one packs browse, not issue 12");
+  } finally { srv.close(); }
+});
