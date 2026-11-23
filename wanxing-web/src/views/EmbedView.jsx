@@ -101,6 +101,11 @@ export function EmbedView({ focusSlug } = {}) {
   const [messages, setMessages] = useState(() => (slug ? loadHist(slug) : []));
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // The fixed human-escape button's own state, kept apart from `sending` so the
+  // button stays usable while a turn is in flight (that is exactly when a
+  // visitor gives up on the AI).
+  const [supportPending, setSupportPending] = useState(false);
+  const [supportNote, setSupportNote] = useState("");
   const [notice, setNotice] = useState("");
   const [tier, setTier] = useState(() => (slug && credGet(slug)?.idToken ? "tenant" : "anon"));
   const [email, setEmail] = useState(() => (slug ? credGet(slug)?.email ?? "" : ""));
@@ -302,6 +307,46 @@ export function EmbedView({ focusSlug } = {}) {
       intentWaiters.current.push({ askId, questionId: question.id, done });
       postToHost({ type: "wx-copilot-intent", askId, questionId: question.id, verb: parsed.verb, arg: parsed.arg });
     });
+
+  // A host intent fired by the VISITOR (not by the model). Same wire shape as
+  // runIntent, but there is no ask behind it: the button itself is the request.
+  // This exists because "hand me to a human" must not depend on the model
+  // deciding to emit a card — measured 2026-11-23: an agent whose tool face had
+  // no handoff tool still *claimed* it had tried to transfer, so a visitor can
+  // be told they were handed off when nothing happened. A fixed button is the
+  // one path that works regardless of what the model says.
+  const fireHostIntent = (verb, arg = "") =>
+    new Promise((resolve) => {
+      if (window.parent === window || !hostOriginRef.current) {
+        return resolve({ ok: false, message: "当前页面不支持此操作（无宿主）" });
+      }
+      if (!hostIntents.includes(verb)) {
+        return resolve({ ok: false, message: `当前页面不支持此操作（宿主未声明 ${verb}）` });
+      }
+      // Synthesize the ids the host echoes back; the host only round-trips them.
+      const askId = `u-${Date.now()}`;
+      const questionId = `intent:${verb}:`;
+      const t = setTimeout(() => {
+        intentWaiters.current = intentWaiters.current.filter((w) => w.done !== done);
+        resolve({ ok: false, message: "宿主未响应" });
+      }, 8_000);
+      const done = (result) => { clearTimeout(t); resolve(result); };
+      intentWaiters.current.push({ askId, questionId, done });
+      postToHost({ type: "wx-copilot-intent", askId, questionId, verb, arg });
+    });
+
+  const onOpenSupport = async () => {
+    setSupportPending(true);
+    setSupportNote("");
+    try {
+      const r = await fireHostIntent("open_support");
+      // A refusal is said out loud: silently doing nothing would read as
+      // "the button is broken", and the visitor would stop trying.
+      if (!r.ok) setSupportNote(r.message || "打开失败，请稍后再试");
+    } finally {
+      setSupportPending(false);
+    }
+  };
 
   // Submit (or cancel) the live ask through the side route under the ask's
   // own turn credential, then converge the card locally — the stream's
@@ -704,6 +749,28 @@ export function EmbedView({ focusSlug } = {}) {
       )}
 
       {notice && <div className={`px-3 py-1 text-[11px] ${subtle}`}>{notice}</div>}
+
+      {/* Human escape hatch. Deliberately NOT a model-emitted card: it is here
+          for every visitor, in every state (mid-turn, out of quota, model
+          confused), because "I cannot reach a person" is the worst failure a
+          support entry can have. Only rendered when the host declared the
+          verb — a button that always errors is worse than no button. */}
+      {hostIntents.includes("open_support") && (
+        <div className={`flex items-center gap-2 border-t px-3 py-1.5 text-[12px] ${dark ? "border-slate-700" : "border-slate-200"}`}>
+          <span className={subtle}>需要真人？</span>
+          <button
+            type="button"
+            data-testid="wx-embed-open-support"
+            disabled={supportPending}
+            onClick={onOpenSupport}
+            className="rounded border px-2 py-0.5 disabled:opacity-50"
+            style={{ borderColor: accent, color: accent }}
+          >
+            {supportPending ? "正在打开…" : "联系人工客服"}
+          </button>
+          {supportNote && <span className={subtle}>{supportNote}</span>}
+        </div>
+      )}
 
       <form
         className={`flex gap-2 border-t p-2 ${dark ? "border-slate-700" : "border-slate-200"}`}

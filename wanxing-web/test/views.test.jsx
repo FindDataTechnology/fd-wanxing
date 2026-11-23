@@ -615,3 +615,22 @@ test("4.1 集合入口在导航里，且不受登录态影响", async () => {
   const collectionsIdx = navBlock.indexOf("#/collections");
   assert.ok(collectionsIdx > -1 && collectionsIdx < signedInIdx, "集合入口必须排在登录态分支之前");
 });
+
+// The fixed human-escape button must only exist where the host declared the
+// verb. A widget rendered with no host (the static case here) has an empty
+// intent list, so the button must be ABSENT rather than present-and-broken —
+// measured 2026-11-23: an agent with no handoff tool still told a visitor it
+// had "tried to transfer", so a button that always errors is the same lie in
+// UI form.
+test("EmbedView hides the human button when the host declared no open_support", () => {
+  location.hash = "#/embed/demo-agent?open=1";
+  try {
+    const html = renderOk(<EmbedView focusSlug="demo-agent" />, "EmbedView no-host");
+    assert.ok(
+      !html.includes('data-testid="wx-embed-open-support"'),
+      "no host ⇒ no open_support verb ⇒ the button must not render",
+    );
+  } finally {
+    location.hash = "";
+  }
+});
