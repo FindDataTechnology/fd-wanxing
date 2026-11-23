@@ -100,12 +100,19 @@ export function createBookkeepingCache({
       return snap?.bySlug.get(slug) ?? null;
     },
 
-    // Blocking best-effort refresh for the enumeration guard (fd-prod
-    // finding #2): once past the hard window the guard would otherwise block
-    // the only path that ever triggers a refresh — an idle facade deadlocks
-    // its own catalog. Fresh caches no-op; failures are swallowed by callers.
+    // Best-effort refresh for the enumeration guard (fd-prod finding #2): once
+    // past the HARD window the guard would otherwise block the only path that
+    // ever triggers a refresh — an idle facade deadlocks its own catalog.
+    //
+    // Blocking is scoped to exactly that case (cold, or past hard stale). In
+    // between, a TTL-expired snapshot is served WHILE a background refresh runs
+    // — the same shape `rows()` already uses. Blocking on every TTL expiry made
+    // every 15th second of catalog traffic wait out the packs hop (measured
+    // 2026-11-24 in fd-prod: catalog median 205ms against 4ms for /status,
+    // which had already refreshed the shared snapshot).
     async poke() {
-      if (!snap || now() - snap.at >= ttlMs) await refresh();
+      if (!snap || now() - snap.at > hardStaleMs) await refresh();
+      else if (now() - snap.at >= ttlMs) void refresh().catch(() => {});
       return true;
     },
     stalenessMs() {
