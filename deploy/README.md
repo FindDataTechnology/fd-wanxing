@@ -10,7 +10,7 @@
 |---|---|---|
 | fleet-observer | wanxing-observer.yaml | NodePort **31881**（runner 直投 /ingest，tailscale 可达） |
 | wanxing-facade | wanxing-facade.yaml | ClusterIP（仅 web 的 nginx 反代后面） |
-| wanxing-web | wanxing-web.yaml | NodePort **31880** ← cheap-1 SafeLine→Caddy→tailscale（wanxing.finddatatech.cloud，与 paas-admin 同法） |
+| wanxing-web | wanxing-web.yaml | NodePort **31880** ← 边缘节点 SafeLine→Caddy→tailscale（wanxing.finddatatech.cloud，与 paas-admin 同法） |
 
 滚动 = 在 fd-infra-deploy 改对应 yaml 的镜像 sha- tag 并推送；数据根 PVC 只前进不回滚。
 
@@ -18,14 +18,14 @@
 
 1. **GitHub 仓 secrets** `TCR_USERNAME`/`TCR_PASSWORD`（org secrets 对私有仓不可用，逐仓设）→
    Run workflow：三镜像落 `hkccr.ccs.tencentyun.com/yizuo/{wanxing-facade,fleet-observer,wanxing-web}`。
-2. **cheap-3** `/etc/tcr-relay/repos.conf` 加三行同名 repo（relay 只认清单，≤5min 回灌 ccr）。
+2. **relay 节点** `/etc/tcr-relay/repos.conf` 加三行同名 repo（relay 只认清单，≤5min 回灌 ccr）。
 3. **fd-prod 集群 Secret**（fd-prod ns，键全下划线）：
    `kubectl -n fd-prod create secret generic wanxing-fleet --from-literal=ingest_token=… \
    --from-literal=registry_url=… --from-literal=registry_token=… --from-literal=backend_token=… \
    --from-literal=sub2api_base_url=… --from-literal=sub2api_admin_key=… \
    --from-literal=packs_internal_base_url=…`（值从 paas fd-prod 现行 env 平移）
 4. **回填镜像 tag**：三份 yaml 的 `sha-TBD` → 首推 sha（ccr 侧等 relay 回灌后）→ push fd-infra-deploy。
-5. **Caddy（cheap-1）+ DNS**：`wanxing.finddatatech.cloud` → NodePort 31880（照 paas-admin 条目抄）。
+5. **Caddy（边缘节点）+ DNS**：`wanxing.finddatatech.cloud` → NodePort 31880（照 paas-admin 条目抄）。
 
 ## 上线顺序与回滚
 

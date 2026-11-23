@@ -90,7 +90,7 @@ async function harness() {
     mk("packs-a-agent", "lease.renewed", BASE - 600, { unit: "work-1", holder: "wu-1", attempt: 2 }),
     mk("packs-a-agent", "lease.expired", BASE - 500, { unit: "work-2", holder: "wu-2", attempt: 1 }),
     {
-      id: `cell-${BASE}`, source: "cell", agent: "cell:cheap-1", kind: "cell_stats", ts: BASE - 400,
+      id: `cell-${BASE}`, source: "cell", agent: "cell:边缘节点", kind: "cell_stats", ts: BASE - 400,
       payload: { executions: 3, workers: 4, jobs: 1, agentBusy: 2 },
     },
   ]);

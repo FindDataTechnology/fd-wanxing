@@ -1,5 +1,5 @@
 # Container images — GitHub Actions → Tencent TCR, canonical pipeline
-# (paas repo docs/IMAGE-RELEASE.md): push hkccr (HK, fast leg), cheap-3 tcr-relay
+# (paas repo docs/IMAGE-RELEASE.md): push hkccr (HK, fast leg), relay 节点 tcr-relay
 # replicates to ccr (≤5min). Cluster references use the ccr prefix after the
 # relay lands the tag.
 #
@@ -8,7 +8,7 @@
 #
 # Secrets (per-repo — org-level secrets do NOT apply to private repos):
 #   TCR_USERNAME / TCR_PASSWORD  (hk push credential)
-# cheap-3 /etc/tcr-relay/repos.conf must list each <namespace>/<repo>.
+# relay 节点 /etc/tcr-relay/repos.conf must list each <namespace>/<repo>.
 name: images
 
 # 2026-11-09 按 image-quota-allocation R2 停用私有仓自动出片：出片由
