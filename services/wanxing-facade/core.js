@@ -170,6 +170,11 @@ export function createWanxingCore({ store, sub2api, resolveDeployment = null, co
   function admit(caller, agent) {
     if (!agent.exists) return authError(404, "AGENT_NOT_FOUND", "no such agent is deployed on this platform");
     if (agent.paused) return authError(423, "AGENT_PAUSED", "this agent is paused");
+    // Disabled in the registry = not servable, the same rule 壹座 applies
+    // (wanxing-fleet filters `is_enabled !== false`). Distinct from paused: a
+    // pause is temporary and the deployer's, a disable is the registry's own
+    // off-switch. Both refuse, with different codes so a caller can tell why.
+    if (agent.disabled) return authError(423, "AGENT_DISABLED", "this agent is disabled in the registry");
     if (agent.visibility === "private" && !store.allowlistHas(agent.slug, caller.userId)) {
       return authError(403, "CALLER_NOT_AUTHORIZED", `caller ${caller.email || caller.userId} is not on this agent's allowlist`);
     }

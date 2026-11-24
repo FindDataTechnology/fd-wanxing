@@ -248,3 +248,32 @@ test("catalog: concurrent readers share ONE packs browse (the 541ms upstream hop
     assert.equal(browses, 1, "12 concurrent catalog reads must share one packs browse, not issue 12");
   } finally { srv.close(); }
 });
+
+// ── a registry-disabled entry is not served anywhere ──────────────────────
+test("disabled entries vanish from catalog, status and card, and refuse admission", async () => {
+  const live = mkDep(1);
+  const off = mkDep(2);
+  const rows = [
+    listRow(1),
+    // is_enabled:false is the registry's own off-switch; the row is still
+    // public and not paused — the case the facade used to ignore entirely.
+    listRow(2, { is_enabled: false, visibility: "public" }),
+  ];
+  const h = await harness({ rows, deployments: [live, off] });
+  try {
+    const cat = await getJson(h.base, "/api/wanxing/v1/agents");
+    assert.deepEqual(cat.agents.map((a) => a.slug), [live.slug], "the disabled agent is absent from the catalog");
+
+    const status = await getJson(h.base, "/api/wanxing/v1/status");
+    assert.equal(status.agents.value, 1, "the catalog-size aggregate counts servable agents only");
+
+    const card = await fetch(`${h.base}/api/wanxing/v1/a2a/${off.slug}/.well-known/agent-card.json`);
+    assert.equal(card.status, 404, "no public card for a disabled agent");
+
+    const state = await h.face.agentState(off.slug);
+    assert.equal(state.disabled, true, "agentState reports the flag distinctly from paused");
+    const verdict = h.core.admit({ userId: 1, email: "a@b" }, state);
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.code ?? verdict.error?.code, "AGENT_DISABLED", "refusal names the registry switch, not 'not found'");
+  } finally { h.srv.close(); }
+});

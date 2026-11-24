@@ -719,6 +719,14 @@ export function createA2aFace({
       slug,
       visibility: entry?.visibility === "private" ? "private" : "public",
       paused: entry?.metadata?.paused === true,
+      // A DISABLED registry entry is not servable — the same rule 壹座 applies
+      // (`wanxing-fleet.js` filters `is_enabled !== false`). The facade used to
+      // ignore this field entirely, so an operator disabling an agent in the
+      // registry left it listed, chatable and card-readable here (2026-11-24:
+      // the probe agent stayed chatable:true after being disabled). `disabling`
+      // is distinct from `paused` on purpose: they are two different operator
+      // actions and the visitor-facing sentence differs.
+      disabled: entry?.is_enabled === false,
       entry,
       agentPath: dep.agentPath,
       packId: dep.packId ?? null,
@@ -1067,7 +1075,9 @@ export function createA2aFace({
           turns7d = 0;
           for (const dep of deps) {
             const entry = byPath.get(dep.agentPath);
-            if (!entry || entry.visibility === "private") continue;
+            // Disabled entries are not servable, so they are not catalog size
+            // either (same rule as the catalog loop below).
+            if (!entry || entry.visibility === "private" || entry.is_enabled === false) continue;
             catalog += 1;
             turns7d += turns?.get(dep.slug) ?? 0;
           }
@@ -1121,7 +1131,7 @@ export function createA2aFace({
       }
       for (const dep of deps) {
         const entry = enumerationEntry(entries.get(dep.agentPath), dep);
-        if (!entry || entry.visibility === "private") continue;
+        if (!entry || entry.visibility === "private" || entry.is_enabled === false) continue;
         const cur = dep.packId != null ? curation.get(dep.packId) : null;
         // The entry's REAL pause state. This used to be passed as a literal
         // `paused: false` into the chatability gate, so a paused agent was
@@ -1249,7 +1259,10 @@ export function createA2aFace({
       } catch (e) {
         return sourceUnavailable(res, String(e?.message || e));
       }
-      if (!state.exists || state.visibility === "private") {
+      // A disabled entry has no public card, the same as a private one: the
+      // card face is a discovery face, and advertising an agent the registry
+      // has switched off would send a caller into a guaranteed refusal.
+      if (!state.exists || state.visibility === "private" || state.disabled) {
         return res.status(404).json({ error: { code: "AGENT_NOT_FOUND", message: "no public agent at this route" } });
       }
       const marker = clusterMarkerFor(state, await clusterMap());

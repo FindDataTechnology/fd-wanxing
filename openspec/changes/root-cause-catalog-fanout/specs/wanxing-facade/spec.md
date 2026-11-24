@@ -99,3 +99,26 @@ The facade SHALL maintain an in-process cached snapshot of the deployment bookke
 
 - **WHEN** the deployment bookkeeping snapshot is fresh but the registry-entry snapshot cannot be refreshed
 - **THEN** enumeration still uses the last-known registry entries, and the two snapshots' staleness do not substitute for one another
+
+## ADDED Requirements
+
+### Requirement: A registry-disabled entry is not served anywhere
+
+registry 条目的 `is_enabled` 为假时，该 agent SHALL 视为不可服务，SHALL NOT 出现在公开目录、`facets` 计数、`/status` 的目录规模、公开卡片面，也 SHALL NOT 被标记 chatable。API 车道与对话车道的准入 SHALL 拒绝它，并以独立于「已暂停」的代码说明原因（两件事、两种运维动作）。
+
+判定 SHALL 只读 registry 条目的既有字段，MUST NOT 引入门面自己维护的下架名单。
+
+#### Scenario: A disabled agent disappears from the catalog
+
+- **WHEN** 一个公开 agent 在 registry 被置为 `is_enabled = false`
+- **THEN** 下一次快照刷新后它从目录、`facets` 计数与 `/status` 的目录规模中消失，卡片面 404，`chatAble` 为假
+
+#### Scenario: The API lane names the reason
+
+- **WHEN** 调用者向一个被禁用（但未暂停）的 agent 发起 `message/send`
+- **THEN** 准入返回 `AGENT_DISABLED`，而不是通用的未找到或已暂停
+
+#### Scenario: Disabled and paused are not the same fact
+
+- **WHEN** 一个 agent 处于 `paused`（部署者动作）而另一个处于 `is_enabled = false`（registry 动作）
+- **THEN** 两者被拒绝的代码不同，界面也 SHALL NOT 把其中一个说成另一个

@@ -181,6 +181,10 @@ export function createChatFace({
 
   const chatable = (state) =>
     Boolean(state?.exists) && state.visibility !== "private" && !state.paused &&
+    // A disabled entry is not servable (same rule as the API lane's admit).
+    // Without this the /status probe answered chatAble:true for an agent the
+    // registry had switched off (measured 2026-11-24).
+    !state.disabled &&
     (subsidyOpen() || hostRemaining(state.slug) > 0);
 
   // The waterfall (D4): subsidy first, host allowance second; a chat turn
