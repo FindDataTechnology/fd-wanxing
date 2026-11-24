@@ -1000,6 +1000,11 @@ visibility the visitor is subject to (public, paused, or login required) stated 
 a disabled control. Example prompts deep-link into the chat view with the draft pre-filled; when the agent
 declares no examples the detail SHALL NOT invent any, and SHALL offer the plain chat entry instead.
 
+The detail view SHALL read the agent's card face (`…/.well-known/agent-card.json`) for the fields the catalog
+list cannot carry faithfully — skills with their descriptions, the version, the declared example prompts — and
+MUST NOT enumerate the whole catalog to locate one agent. The version and skills it shows SHALL agree with what
+that agent's card reports.
+
 #### Scenario: A visitor inspects an agent
 
 - **WHEN** a visitor clicks a catalog card
@@ -1019,6 +1024,16 @@ declares no examples the detail SHALL NOT invent any, and SHALL offer the plain 
 
 - **WHEN** a visitor opens the detail view of a paused or private agent
 - **THEN** the reason they cannot chat is stated in words ("已暂停" / "需登录" / "未对访客开放"), not left to a grayed control
+
+#### Scenario: Skill descriptions come from the card face
+
+- **WHEN** an agent declares skills that carry descriptions
+- **THEN** the detail view lists each skill with its description, and the version shown equals the card's version
+
+#### Scenario: An unknown slug is reported, not searched for
+
+- **WHEN** a visitor opens a detail URL for a slug that has no public agent
+- **THEN** the view reports the agent as not found, and no full-catalog enumeration is issued to establish that
 
 ### Requirement: The docs face states the concrete base URL and discovery endpoints
 
