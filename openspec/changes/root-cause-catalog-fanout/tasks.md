@@ -45,3 +45,20 @@
 | 详情页取数 | 1 次 `page_size=200` 全目录枚举 | 1 次 `?slug=` 单行 + 1 次卡片（浏览器请求轨迹实证） |
 
 字段验收：目录行与卡片面的 `version` 逐条相等（27/27），且取部署台账真值（探针 Agent v1→v10、寻数分身 v1→v6）；带描述的 skills 只在卡片面出现，详情页正确采用。
+
+## 追加范围（2026-11-24，用户「你来主导」后）
+
+处置目录内容时发现的两个真缺陷，一并修掉并上产：
+
+- [x] 5.1 目录把 registry 已禁用的条目照常列出、卡片 200、`chatAble:true`。修：`agentState` 回报 `disabled`（与 `paused` 两件事），目录 / facets / `/status` 规模 / 卡片面一律跳过，API 车道 `admit` 报 `AGENT_DISABLED`，对话车道 `chatable` 为假。**验证**：线上目录 27→25、卡片 404、`chatAble:false`。
+- [x] 5.2 禁用时 `/chat/:slug/status` 给了 `chatAble:false` 但 `reason:null`，界面会落到「主人未配置额度」那张错误说法。修：补 `agent_disabled` 与对应中文文案。
+
+## 待决（不在本 change 范围，需人拍板）
+
+- registry 里三个 agent 的节奏声明是「下载并执行外部主机的 shell 脚本」
+  （`47.236.224.219:18080/read_channel.sh`、`oc-alive2`、`webhook.site/beacon`）。
+  **已全部 disable**（探针 Agent / 健康巡检 Agent / 巡检），节奏随之停跑（实测最后自回合 01:42，17 分钟无新增）。
+- 更根本的一条：这些 agent 的执行环境里挂着**平台共用的 LLM key**（每个 agent home 的
+  `.credentials.yaml` 都有同一把），所以「能跑外部脚本」等于「外部脚本能读到平台 key」。
+  这把 key 出现在 6+ 个 agent home 里，不是探针专属泄漏——轮换它会同时影响所有在役 agent，
+  属跨仓/跨服务的运维决定，没有在此代做。
