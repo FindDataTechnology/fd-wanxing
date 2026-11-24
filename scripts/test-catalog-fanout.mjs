@@ -277,3 +277,30 @@ test("disabled entries vanish from catalog, status and card, and refuse admissio
     assert.equal(verdict.code ?? verdict.error?.code, "AGENT_DISABLED", "refusal names the registry switch, not 'not found'");
   } finally { h.srv.close(); }
 });
+
+test("chat status names the registry switch instead of going silent", async () => {
+  const { createChatFace } = await import("../services/wanxing-facade/chat.js");
+  // A disabled-but-public agent: chatAble false AND a reason that says which
+  // switch did it. "false with no reason" reads as "chat not open yet".
+  const deploys = [mkDep(1)];
+  const store = createWanxingStore({ file: path.join(mkdtempSync(path.join(tmp, "s-")), "wanxing.db") });
+  const sub2api = { userId: 7, email: "p@f", degraded: () => false, async probeKeyLiveness() { return { ok: true }; }, async findUserByKey() { return null; }, async findUserByEmail() { return null; }, async adjustBalance() { return { ok: true }; } };
+  const core = createWanxingCore({ store, sub2api, config: { ratePerMin: 0.1, rpmMax: 100 } });
+  const state = { exists: true, slug: deploys[0].slug, visibility: "public", paused: false, disabled: true, entry: { name: "X" }, agentPath: deploys[0].agentPath };
+  const chat = createChatFace({
+    core, store, logto: { configured: false, verifyIdToken: async () => null },
+    agentState: async () => state, resolveDeployment: async () => deploys[0],
+    forwardHeaders: () => ({}), hostSettle: async () => ({ settled: true }), sub2api,
+    subsidyKey: "sk-p", subsidyUserId: 7, chat: { rpmMax: 100, subsidyEnabled: true },
+    config: { agentUrlFor: (p) => `http://up${p}/` }, upstreamFetch: async () => new Response("{}", { status: 200 }),
+  });
+  assert.equal(chat.chatable(state), false, "a disabled agent is not chatable even with subsidy open");
+  const app = express(); chat.register(app);
+  const srv = app.listen(0, "127.0.0.1");
+  await new Promise((r) => srv.once("listening", r));
+  try {
+    const j = await (await fetch(`http://127.0.0.1:${srv.address().port}/api/wanxing/v1/chat/${deploys[0].slug}/status`)).json();
+    assert.equal(j.chatAble, false);
+    assert.equal(j.reason, "agent_disabled");
+  } finally { srv.close(); }
+});

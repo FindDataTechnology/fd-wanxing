@@ -150,6 +150,9 @@ export function ChatView({ focusSlug } = {}) {
   const agentName = status?.agent?.name ?? slug;
   const chatAble = status?.chatAble === true;
   const paused = status?.reason === "agent_paused";
+  // Regisry-disabled is its own sentence: "temporarily paused" would imply a
+  // resume is imminent, which is not what a registry off-switch means.
+  const disabled = status?.reason === "agent_disabled";
   // Not-open = the agent itself has no lane for this visitor (subsidy off and
   // no pool). Exhausted = lanes exist but this visitor's allowance is spent —
   // the conversation stays mounted with the own-key bridge at hand.
@@ -316,6 +319,10 @@ export function ChatView({ focusSlug } = {}) {
       ) : paused ? (
         <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-4 py-3 text-sm">
           该 agent 已暂停，暂不可对话。
+        </div>
+      ) : disabled ? (
+        <div className="rounded-lg border border-slate-300 dark:border-slate-700 px-4 py-3 text-sm">
+          该 agent 已在注册处停用，暂不可对话。
         </div>
       ) : blocked ? (
         <div className="rounded-lg border border-slate-300 dark:border-slate-700 px-4 py-3 text-sm">

@@ -379,7 +379,15 @@ export function createChatFace({
       const slug = state.slug;
       const out = {
         chatAble: chatable(state),
-        reason: state.paused ? "agent_paused" : (!subsidyOpen() && hostRemaining(slug) <= 0 ? "chat_not_open" : null),
+        reason: state.paused
+          ? "agent_paused"
+          // A disabled agent says SO. Reporting chatAble:false with no reason
+          // reads as "chat is just not open yet" — a different, wrong story.
+          : state.disabled
+            ? "agent_disabled"
+            : !subsidyOpen() && hostRemaining(slug) <= 0
+              ? "chat_not_open"
+              : null,
         subsidy: subsidyOpen() ? "on" : "off",
         agent: { name: state.entry?.name ?? slug, description: state.entry?.description ?? "" },
       };
