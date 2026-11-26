@@ -2477,6 +2477,7 @@ test("4.1 the body-less-timeout hint names the self-loop POSSIBILITY, not a verd
   assert.match(msg, /self-loop/);
   assert.match(msg, /proxy_pass_url/, "must name the field an operator has to fix");
   assert.doesNotMatch(msg, /\bis\b.*(?:wrong|the cause)/i, "must not assert it is the cause");
+});
 // ── D6 usage mirror: the client speaks the documented contract over real HTTP ─
 //
 // The unit arms in test-wanxing-plans.mjs prove the kernel calls the mirror at
