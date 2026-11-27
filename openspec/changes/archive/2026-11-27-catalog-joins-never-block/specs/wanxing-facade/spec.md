@@ -24,7 +24,7 @@
 
 #### Scenario: A cold join blocks exactly once
 
-- **WHEN** 进程启动后第一次读取目录，四个 join 均无快照
+- **WHEN** 进程启动后第一次读取目录，五个 join 均无快照
 - **THEN** 请求等待首份快照加载完成后应答；后续请求不再付费等待
 
 #### Scenario: Concurrent readers share one refresh
