@@ -255,11 +255,20 @@ export function StatsView() {
     let alive = true;
     setErr(null);
     const q = `?days=${days}`;
+    // 每个请求都要检查 r.ok。只对 overview 检查时，另外三路 401/503 的错误体会被
+    // 当成数据：`.json()` 成功、`rows` 为 undefined，界面渲染成「窗口内无数据」——
+    // 有故障却既不显示数据也不显示错误（2026-11-27 真机走查：登录后首次进消耗页
+    // 全空，刷新才出数）。统一 reject，让下面的 catch 把 err 显示出来。
+    const load = (path, label) =>
+      authFetch(path).then((r) => {
+        if (!r.ok) throw new Error(`${label} HTTP ${r.status}`);
+        return r.json();
+      });
     Promise.all([
-      authFetch(`/api/fleet/v1/stats/overview${q}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`overview HTTP ${r.status}`)))),
-      authFetch(`/api/fleet/v1/stats/by-agent${q}`).then((r) => r.json()),
-      authFetch(`/api/fleet/v1/stats/by-model${q}`).then((r) => r.json()),
-      authFetch(`/api/fleet/v1/stats/daily${q}`).then((r) => r.json()),
+      load(`/api/fleet/v1/stats/overview${q}`, "overview"),
+      load(`/api/fleet/v1/stats/by-agent${q}`, "by-agent"),
+      load(`/api/fleet/v1/stats/by-model${q}`, "by-model"),
+      load(`/api/fleet/v1/stats/daily${q}`, "daily"),
     ])
       .then(([ov, ba, bm, dl]) => {
         if (!alive) return;

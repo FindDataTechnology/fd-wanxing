@@ -671,3 +671,49 @@ test("host intent verb names must survive the loader's character class", () => {
   assert.ok(ADMITTED.test("navigate"), "the original verb still passes");
   assert.ok(!ADMITTED.test("open_support"), "underscores are refused — this is the trap");
 });
+
+// ── 我的任务空态（2026-11-27 真机走查）──────────────────────────────────────
+// 此前 missions 为空数组时页面只剩一行表单 + 一片空白：访客看不出「任务是
+// 什么」，也无法区分「还没建过」和「读失败」。空态必须自解释并给下一步。
+//
+// 注意：MissionsView 不接受 props，自己 fetch；静态渲染下 effect 不跑，
+// 所以这里只能断言「加载中文案」这一条可静态观察的路径。空态/列表的分支
+// 由下面的源码契约测试钉住（渲染分支依赖异步数据，静态渲染覆盖不到）。
+test("MissionsView 首次渲染给出「读取中」而不是一片空白", async () => {
+  const { MissionsView } = await import("../src/views/console/MissionsView.jsx");
+  const html = renderOk(createElement(MissionsView), "MissionsView initial");
+  assert.ok(html.includes('data-testid="missions-loading"'), "首帧要有可读状态，而不是留白");
+  assert.ok(html.includes("读取任务列表中"), "要明说正在做什么");
+  assert.ok(!html.includes('data-testid="missions-empty"'), "尚未拿到数据时不能谎称「还没有任务」");
+});
+
+// 源码契约：三个分支必须在，且空态文案覆盖「是什么 + 下一步」。
+// 这是静态渲染够不着的部分，用源码断言防止将来被删掉。
+test("MissionsView 三个数据分支齐全，空态文案自解释", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/views/console/MissionsView.jsx", import.meta.url), "utf8");
+  assert.ok(src.includes('data-testid="missions-loading"'), "缺「读取中」分支");
+  assert.ok(src.includes('data-testid="missions-empty"'), "缺空态分支");
+  assert.ok(src.includes('data-testid="missions-list"'), "缺列表分支");
+  assert.ok(/还没有任务/.test(src), "空态要明说当前状态");
+  assert.ok(/时间窗/.test(src) && /成本上限/.test(src), "空态要解释任务由哪几件构成");
+  assert.ok(/运维面/.test(src), "空态要指出下一步去哪看进度");
+});
+
+// ── 消耗页四路请求都要查 r.ok（2026-11-27 真机走查）─────────────────────────
+// 只有 overview 检查时，另外三路 401/503 的错误体会被 `.json()` 当成数据，
+// rows 为 undefined ⇒ 界面渲染成「窗口内无数据」：有故障却既不显示数据也不
+// 显示错误。真机实测：登录后首次进消耗页全空，刷新才出数。
+test("StatsView 的每一路统计请求都检查 r.ok", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/views/console/StatsView.jsx", import.meta.url), "utf8");
+  const four = ["stats/overview", "stats/by-agent", "stats/by-model", "stats/daily"];
+  for (const p of four) {
+    assert.ok(src.includes(p), `缺 ${p} 请求`);
+  }
+  // 统一 loader 里必须有 !r.ok 的判断——否则错误体会被当数据。
+  assert.ok(/if \(!r\.ok\) throw new Error/.test(src), "四路必须统一检查 r.ok 并抛出");
+  // 反向自证：不允许再有裸 `.then((r) => r.json())` 直连 authFetch。
+  const bare = src.match(/authFetch\([^)]*\)\.then\(\(r\) =>\s*r\.json\(\)\)/g) || [];
+  assert.equal(bare.length, 0, `发现 ${bare.length} 处裸 fetch→json（错误体会被当数据）`);
+});

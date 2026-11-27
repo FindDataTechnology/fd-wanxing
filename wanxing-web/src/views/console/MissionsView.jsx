@@ -138,6 +138,18 @@ export function MissionsView() {
           </button>
         </div>
       </form>
+      {/* 空态既要说明「这里是什么」，也要给下一步。此前只有表单 + 一片空白，
+          访客看不出任务是干什么的、也不知道「空了」是正常的还是坏了
+          （2026-11-27 真机走查）。 */}
+      {missions && (missions.missions ?? []).length === 0 && (
+        <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1 py-2" data-testid="missions-empty">
+          <div>还没有任务。任务 = 一句话目标 + 时间窗 + 成本上限 + 验收方式：planner 按它出计划，你在上面批准后执行，花的是你的调用额度。</div>
+          <div className="text-slate-400">填好上面一行就能建第一条；提交后在「运维面」按 24h 窗口看进度。</div>
+        </div>
+      )}
+      {!missions && !missionErr && (
+        <div className="text-xs text-slate-400 py-2" data-testid="missions-loading">读取任务列表中…</div>
+      )}
       {missions && (missions.missions ?? []).length > 0 && (
         <div className="text-xs space-y-1" data-testid="missions-list">
           {(missions.missions ?? []).map((m) => (
