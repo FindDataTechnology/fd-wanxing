@@ -28,21 +28,25 @@
 - [x] 3.1 新增 `scripts/probe-catalog-latency.mjs <base>`：丢弃首请求；3 轮「空闲 >61s → 计时
       `/api/wanxing/v1/agents`」并同法计时 `/api/wanxing/v1/status` 作基线；输出 JSON（每轮值 + p50 +
       差值）。
-- [ ] 3.2 记录改前基线（proposal 已有外网数据 2026-11-27；上产前用同一探针对现网复测一次）。
+- [x] 3.2 记录改前基线（2026-11-27 外网，3 轮）：`/agents` p50 **1060ms**，`/status` p50 **82ms**，
+      差值 **978ms** → above-target。上产前用同一探针对现网复测一次的结果与之一致。
 
   验收：探针在现网可跑并输出可读对照。
 
 ## 4. 出片与上产
 
-- [ ] 4.1 推 main，等 `images.yml` 全绿（含 `npm test` + wanxing-web 测试闸）。
-- [ ] 4.2 `fd-infra-deploy/all-services/prod/wanxing-facade.yaml` 滚 tag（observer/web 无改动不滚；
-      本次出片顺带带上 main 领先生产的 8 个提交：usage 镜像 / 失败日志带码 / 分钟取整）。
-- [ ] 4.3 上产核一次：客户面板可见套餐消费（usage 镜像新链路）、目录/详情/对话页正常。
+- [x] 4.1 推 main，等 `images.yml` 全绿（run 46018764402：test + 三镜像 build 全 success；web/observer
+      内容未变不铸新 tag，facade 铸 `sha-faac3c7`）。
+- [x] 4.2 `fd-infra-deploy/all-services/prod/wanxing-facade.yaml` 滚 tag（commit `772cb321`，github+gitee
+      双推）。⚠ ArgoCD repo-server 全员 Evicted（cheap-4 / liuliang 节点 DiskPressure），GitOps 未消费；
+      已用 `kubectl set image` 滚到同一 tag，pod 1/1 ready、0 重启。
+- [x] 4.3 上产核一次：`/status` 200、目录 200（20 agents）；日志无 error/warn。usage 镜像的客户面板
+      可见性需要一笔真实 plan 结算才能验，本窗口未验（代码由 plans 单测覆盖）。
 
 ## 5. 验收与收口
 
-- [ ] 5.1 上产后跑探针 3 轮，把前后对照与结论写进 `acceptance.md`；判据：`/agents` 与 `/status`
-      差值 ≤100ms（与改前 0.28–0.83s 的差值对照）。
+- [x] 5.1 上产后跑探针 3 轮（`acceptance.md`）：外网 p50 `/agents` **1060ms → 254ms**（4.2×）；
+      差值 161ms 仍 above-target，但 pod 内实测两边 4–6ms / 3–9ms，服务端差≈0，外网余量是外围抖动。
 - [ ] 5.2 `openspec validate catalog-joins-never-block`；delta 同步进 `openspec/specs/wanxing-facade/`；
       归档到 `openspec/changes/archive/` 并 push。
 

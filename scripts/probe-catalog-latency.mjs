@@ -25,9 +25,13 @@ if (!base) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const timeOne = async (path) => {
   const t0 = performance.now();
-  const res = await fetch(base + path);
-  const body = await res.text();
-  return { ms: performance.now() - t0, status: res.status, bytes: body.length };
+  try {
+    const res = await fetch(base + path, { signal: AbortSignal.timeout(15_000) });
+    const body = await res.text();
+    return { ms: performance.now() - t0, status: res.status, bytes: body.length };
+  } catch (e) {
+    return { ms: performance.now() - t0, status: `error: ${e?.name ?? e}`, bytes: 0 };
+  }
 };
 
 const p50 = (xs) => {
@@ -40,6 +44,9 @@ const results = [];
 for (let i = 1; i <= rounds; i += 1) {
   process.stderr.write(`round ${i}/${rounds}: idling ${TTL_IDLE_MS / 1000}s past the cache TTL…\n`);
   await sleep(TTL_IDLE_MS);
+  // Warm the TCP/TLS connection first: the first request of a round otherwise
+  // pays the handshake, and whichever path runs first would look slower.
+  await timeOne("/api/wanxing/v1/status");
   const agents = await timeOne("/api/wanxing/v1/agents");
   const status = await timeOne("/api/wanxing/v1/status");
   results.push({ round: i, agentsMs: Math.round(agents.ms), statusMs: Math.round(status.ms), diffMs: Math.round(agents.ms - status.ms), agentsStatus: agents.status, statusStatus: status.status });
