@@ -265,11 +265,16 @@ test("A index: a version bump whose detail fails keeps the last-known entry; onc
     version = 2;
     fail = true;
     assert.equal(nameOfA(await withClockSkew(61_000, read)), "投研三镜头", "a failed detail keeps the last-known entry");
+    await new Promise((r) => setTimeout(r, 40));
     assert.deepEqual(detailCalls, ["p1", "p1"], "the new key was tried");
 
-    // The detail recovers: the new declaration lands.
+    // The detail recovers. The refresh lands BEHIND the read (catalog-joins-
+    // never-block: an expired join answers from the last value), so the next
+    // read after the background refresh is the one that sees the new name.
     fail = false;
-    assert.equal(nameOfA(await withClockSkew(122_000, read)), "改名小队", "a republish re-reads under the new key");
+    await withClockSkew(122_000, read);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(nameOfA(await read()), "改名小队", "a republish re-reads under the new key");
     assert.deepEqual(detailCalls, ["p1", "p1", "p1"]);
   } finally {
     await new Promise((r) => server.close(r));

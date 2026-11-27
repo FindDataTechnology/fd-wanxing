@@ -11,6 +11,7 @@
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { statusFor } from "./core.js";
+import { createSnapshotCache } from "./snapshot-cache.js";
 import { postJsonWithDeadline } from "./lib/postJsonWithDeadline.js";
 
 const sha256 = (v) => createHash("sha256").update(String(v)).digest("hex");
@@ -465,16 +466,14 @@ export function createA2aFace({
   // The listed cluster units, on the same TTL as everything else that feeds
   // the catalog: units() derives them from the cluster index AND the
   // deployment list on every call, which the catalog used to pay per request.
-  const unitsCache = { at: 0, list: [] };
-  async function snapshotClusterUnits() {
-    if (!clusterUnits) return [];
-    if (Date.now() - unitsCache.at < entryTtlMs) return unitsCache.list;
-    try {
-      unitsCache.list = (await clusterUnits()) ?? [];
-      unitsCache.at = Date.now();
-    } catch { /* keep the last-known list */ }
-    return unitsCache.list;
-  }
+  // SWR like the other four joins — it sits in the same Promise.all, so a
+  // blocking reader here would re-introduce the wait they just removed.
+  const unitsCache = createSnapshotCache({
+    ttlMs: entryTtlMs,
+    fallback: [],
+    load: async () => (clusterUnits ? (await clusterUnits()) ?? [] : []),
+  });
+  const snapshotClusterUnits = () => unitsCache.get();
 
   // One browse fetch feeds both the curation join and the cluster index on
   // the entry cache's cadence; a failure throws to the caller, which keeps
@@ -508,26 +507,18 @@ export function createA2aFace({
   // pack-id → {category, featured}, cached on the entry cache's cadence. A
   // browse that fails or omits a pack leaves that entry signal-less (it
   // renders ungrouped) — the catalog never blocks on the curation join.
-  const curationCache = { at: 0, map: new Map() };
-  let curationInflight = null;
-  const curationMap = async () => {
-    if (!packsBrowseFetch) return curationCache.map;
-    if (Date.now() - curationCache.at < entryTtlMs) return curationCache.map;
-    if (!curationInflight) {
-      curationInflight = (async () => {
-        try {
-          const packs = await browseRows();
-          const map = new Map();
-          for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
-          curationCache.map = map;
-          curationCache.at = Date.now();
-        } catch { /* unreachable join degrades to the last-known map */ }
-        finally { curationInflight = null; }
-        return curationCache.map;
-      })();
-    }
-    return curationInflight;
-  };
+  const curationCache = createSnapshotCache({
+    ttlMs: entryTtlMs,
+    fallback: new Map(),
+    load: async () => {
+      if (!packsBrowseFetch) return new Map();
+      const packs = await browseRows();
+      const map = new Map();
+      for (const p of packs) map.set(p.id, { category: String(p.category ?? ""), featured: p.featured === true });
+      return map;
+    },
+  });
+  const curationMap = () => curationCache.get();
 
   // Cluster index (add-cluster-catalog-grouping D1/D2): a pack groups only
   // when its manifest DECLARES `cluster` — the author's declaration is the
@@ -549,28 +540,31 @@ export function createA2aFace({
   // than from the deployed wiring — a pack that declares bindings but minted
   // none is exactly the case this projection exists to show, and its registry
   // entry has no connector trace at all.
-  const declarationCache = { at: 0, map: new Map() }; // packId -> array | null
-  let declarationInflight = null;
+  // SWR like the other joins: a refresh no longer holds the catalog hostage.
+  // The load always returns the merged map (carrying the previous one), so a
+  // round that read nothing new just re-stamps the snapshot; a pack whose
+  // detail read failed is retried on the next TTL rather than on every
+  // request — the same stale-on-hiccup cadence as its siblings.
+  // Union, not last-writer-wins: declarationFor([one]) is also a caller, and a
+  // single-dep refresh must not shrink the next round's coverage.
+  let declarationDeps = new Map(); // packId → dep
+  const declarationCache = createSnapshotCache({
+    ttlMs: entryTtlMs,
+    fallback: new Map(),
+    load: (prev) => refreshDeclarations([...declarationDeps.values()], prev ?? new Map()),
+  });
   const connectorDeclarations = async (deps) => {
-    if (!packsDetailFetch || !packsBrowseFetch) return declarationCache.map;
-    if (Date.now() - declarationCache.at < entryTtlMs) return declarationCache.map;
-    // Single-flight for the same reason browseRows has it: this loop issues one
-    // detail read per declaring pack, sequentially, so N concurrent catalog
-    // requests would otherwise each run the whole loop.
-    if (!declarationInflight) {
-      declarationInflight = (async () => {
-        try { return await refreshDeclarations(deps); } finally { declarationInflight = null; }
-      })();
-    }
-    return declarationInflight;
+    if (!packsDetailFetch || !packsBrowseFetch) return declarationCache.peek() ?? new Map();
+    for (const d of deps) if (d?.packId != null) declarationDeps.set(d.packId, d);
+    return declarationCache.get();
   };
 
-  const refreshDeclarations = async (deps) => {
+  const refreshDeclarations = async (deps, prev) => {
     let browse;
     try {
       browse = await browseRows();
     } catch {
-      return declarationCache.map;
+      return prev;
     }
     // A pack the listing does NOT mention is NOT "declares nothing": it can be
     // private, or past the listing's page cap (measured 2026-11-20 on prod — 156
@@ -580,13 +574,11 @@ export function createA2aFace({
     const listed = new Map(
       (Array.isArray(browse) ? browse : []).map((row) => [row?.id, Number(row?.connectorBindingCount) > 0]),
     );
-    const next = new Map(declarationCache.map);
-    let read = false;
+    const next = new Map(prev);
     for (const dep of deps) {
       if (dep.packId == null || next.has(dep.packId)) continue;
       if (listed.get(dep.packId) === false) {
         next.set(dep.packId, null);
-        read = true;
         continue;
       }
       try {
@@ -598,57 +590,47 @@ export function createA2aFace({
         // retry next round rather than caching a false "nothing declared".
         continue;
       }
-      read = true;
-    }
-    if (read) {
-      declarationCache.map = next;
-      declarationCache.at = Date.now();
     }
     return next;
   };
   const declarationFor = async (dep) =>
     dep?.packId == null ? null : ((await connectorDeclarations([dep])).get(dep.packId) ?? null);
 
-  const clusterCache = { at: 0, map: new Map(), details: new Map() }; // details: `${id}@${version}` → entry | null
-  let clusterInflight = null;
-  const clusterMap = async () => {
-    if (!packsBrowseFetch || !packsDetailFetch) return clusterCache.map;
-    if (Date.now() - clusterCache.at < entryTtlMs) return clusterCache.map;
-    if (!clusterInflight) {
-      clusterInflight = (async () => {
-        try {
-          const packs = await browseRows();
-          const next = new Map();
-          const details = new Map();
-          for (const p of packs) {
-            if (!(Number(p.agentCount) > 1)) continue;
-            const key = `${p.id}@${p.version}`;
-            let entry = clusterCache.details.get(key);
-            if (entry === undefined) {
-              try {
-                entry = clusterEntryOf(p, await packsDetailFetch(p.id));
-              } catch {
-                const prev = clusterCache.map.get(p.id);
-                if (prev) {
-                  next.set(p.id, prev);
-                  details.set(`${prev.id}@${prev.version}`, prev);
-                }
-                continue;
-              }
+  // Detail entries are memoized by `${id}@${version}` across refreshes; that
+  // memo is local to the loader (the SWR cache only holds the resulting map).
+  let clusterDetails = new Map();
+  const clusterCache = createSnapshotCache({
+    ttlMs: entryTtlMs,
+    fallback: new Map(),
+    load: async (prevMap) => {
+      if (!packsBrowseFetch || !packsDetailFetch) return new Map();
+      const packs = await browseRows();
+      const next = new Map();
+      const details = new Map();
+      for (const p of packs) {
+        if (!(Number(p.agentCount) > 1)) continue;
+        const key = `${p.id}@${p.version}`;
+        let entry = clusterDetails.get(key);
+        if (entry === undefined) {
+          try {
+            entry = clusterEntryOf(p, await packsDetailFetch(p.id));
+          } catch {
+            const prev = prevMap?.get(p.id);
+            if (prev) {
+              next.set(p.id, prev);
+              details.set(`${prev.id}@${prev.version}`, prev);
             }
-            details.set(key, entry);
-            if (entry) next.set(p.id, entry);
+            continue;
           }
-          clusterCache.map = next;
-          clusterCache.details = details;
-          clusterCache.at = Date.now();
-        } catch { /* browse failure keeps the last-known index */ }
-        finally { clusterInflight = null; }
-        return clusterCache.map;
-      })();
-    }
-    return clusterInflight;
-  };
+        }
+        details.set(key, entry);
+        if (entry) next.set(p.id, entry);
+      }
+      clusterDetails = details;
+      return next;
+    },
+  });
+  const clusterMap = () => clusterCache.get();
   // The marker a deployment carries when it is a declared member of an
   // indexed pack: role from the declaration, `members` the declared team
   // size. An agent the declaration does not name is not a member — it
@@ -664,17 +646,16 @@ export function createA2aFace({
   // Activity signal: per-slug external turns over the trailing 7 days, both
   // lanes — the facade's own usage ledger read back (M4② 热度口径: featured
   // 策展优先档 + turns7d 真实外部使用；安装数无回流不采用).
-  const turnsCache = { at: 0, map: new Map() };
-  const turns7dMap = async () => {
-    if (!usageTurnsByAgent) return turnsCache.map;
-    if (Date.now() - turnsCache.at < entryTtlMs) return turnsCache.map;
-    try {
+  const turnsCache = createSnapshotCache({
+    ttlMs: entryTtlMs,
+    fallback: new Map(),
+    load: async () => {
+      if (!usageTurnsByAgent) return new Map();
       const map = await usageTurnsByAgent(Date.now() - 7 * 24 * 3600_000);
-      turnsCache.map = map instanceof Map ? map : new Map(Object.entries(map ?? {}));
-      turnsCache.at = Date.now();
-    } catch { /* ledger hiccup degrades to the last-known counts */ }
-    return turnsCache.map;
-  };
+      return map instanceof Map ? map : new Map(Object.entries(map ?? {}));
+    },
+  });
+  const turns7dMap = () => turnsCache.get();
 
   // The deployment source (packs internal API, add-facet-platform S0) being
   // unreachable is a 503, never a hang and never a silent "no agents": the
@@ -1115,7 +1096,7 @@ export function createA2aFace({
       ]);
       const listedUnits = new Map((listed ?? []).map((u) => [u.id, u]));
       // One declaration read per distinct pack, hoisted out of the loop.
-      const declarations = await connectorDeclarations(deps).catch(() => declarationCache.map);
+      const declarations = await connectorDeclarations(deps).catch(() => declarationCache.peek() ?? new Map());
       // One derivation of the snapshot instant for the whole response, and one
       // read of the hard-stale flag (close-wanxing-domain-linkage D2). Both are
       // per-response facts, not per-entry ones.
