@@ -50,11 +50,13 @@ agents: [5,5,6,85,4,4] ms
       本窗口没有真实套餐消费；代码路径由单测覆盖（`scripts/test-wanxing-plans.mjs`）
 - [x] 顺带带上 main 领先生产 8 个提交（消费镜像/失败日志带码/分钟取整）
 
-## 上产方式（重要，非标准路径）
+## 上产方式
 
-`fd-infra-deploy` 已推到 github+gitee（`772cb321`），但 **ArgoCD `all-services-prod` 没有消费它**：
-`argocd` 命名空间没有 Running 的 repo-server（全部 Evicted/Completed，6h55m 前批量被驱逐），
-且 `cheap-4` 与 `liuliangjkiimypbdzxa` 两个节点处于 **DiskPressure**。
-为避免继续等一个不会自愈的 GitOps，直接用 `kubectl set image` 滚了 facade（与已推清单同一镜像 tag，
-ArgoCD 恢复后 reconcile 到同一目标，不会回退）。**GitOps 停摆本身是待修的基础设施问题**，
-不在本 change 范围。
+`fd-infra-deploy` 推到 github+gitee（`772cb321`），ArgoCD `all-services-prod` **在 23:00:17 CST
+自动同步了该 revision**（history id 2155），facade 滚到 `sha-faac3c7`，pod 1/1 ready、0 重启。
+
+> 订正：过程中我曾判断「ArgoCD 停摆、repo-server 全员 Evicted，需 `kubectl set image` 绕行」——
+> 那是**错的**。`kubectl get pods | head -20` 把按字母序排在后面的 Running pod
+> `argocd-repo-server-9c74cbfff-zn5q7`（已跑 7h）截掉了。实际 GitOps 正常，手动 set image
+> （同一 tag）是多余动作，与清单一致、无回退风险。同期 `cheap-4` / `liuliangjkiimypbdzxa`
+> 的 DiskPressure 是一过性的（23:04→23:11 自愈，imageFs 仍有 4.5G 空闲），非事故。
